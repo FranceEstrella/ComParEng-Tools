@@ -1,0 +1,31 @@
+{
+  "dependencies": {
+    "@emotion/is-prop-valid": "latest",
+    "@radix-ui/react-progress": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "date-fns": "latest",
+    "framer-motion": "latest",
+    "html-to-image": "latest",
+    "html2canvas": "latest",
+    "ics": "latest",
+    "ics-js": "^1.1.0",
+    "lucide-react": "^0.454.0",
+    "next": "15.2.4",
+    "next-themes": "latest",
+    "react": "^19",
+    "react-colorful": "latest",
+    "react-dom": "^19",
+    "tailwind-merge": "^2.5.5",
+    "tailwindcss-animate": "^1.0.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "postcss": "^8.5",
+    "typescript": "^5"
+  }
+}
