@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@emotion/is-prop-valid": "latest",
-    "@headlessui/react": "^2.2.5",
+    "@headlessui/react": "^1.7.18",
     "@heroicons/react": "^2.0.18",
     "@radix-ui/react-progress": "latest",
     "class-variance-authority": "^0.7.1",
