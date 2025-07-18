@@ -1,5 +1,6 @@
 {
   "name": "course-tracker",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "build": "next build",
@@ -7,10 +8,6 @@
     "lint": "next lint",
     "start": "next start",
     "vercel-build": "next build"
-  },
-  "overrides": {
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
   },
   "dependencies": {
     "@emotion/is-prop-valid": "latest",
