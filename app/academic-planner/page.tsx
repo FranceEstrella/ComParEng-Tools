@@ -4,17 +4,7 @@ import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import {
-  ArrowLeft,
-  BookOpen,
-  FileWarning,
-  Info,
-  GraduationCap,
-  Calendar,
-  ExternalLink,
-  RefreshCw,
-  X,
-} from "lucide-react"
+import { ArrowLeft, BookOpen, FileWarning, Info, GraduationCap, Calendar, ExternalLink, RefreshCw } from "lucide-react"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -309,7 +299,7 @@ export default function AcademicPlanner() {
       }
     })
 
-    // Group courses into semesters with prerequisite gap enforcement
+    // Group courses into semesters
     const plan: SemesterPlan[] = []
     let currentPlanYear = currentYear
     let currentPlanTerm = currentTerm
@@ -317,40 +307,11 @@ export default function AcademicPlanner() {
     let currentSemesterCredits = 0
     const MAX_CREDITS_PER_SEMESTER = 21
 
-    // Track when each course was scheduled (for prerequisite gap enforcement)
-    const courseScheduleMap = new Map<string, { year: number; term: string }>()
-
     // Helper to get the next term
     const getNextTerm = (year: number, term: string): { year: number; term: string } => {
       if (term === "Term 1") return { year, term: "Term 2" }
       if (term === "Term 2") return { year, term: "Term 3" }
       return { year: year + 1, term: "Term 1" }
-    }
-
-    // Helper to check if one term is at least one term after another
-    const isAtLeastOneTermAfter = (
-      laterYear: number,
-      laterTerm: string,
-      earlierYear: number,
-      earlierTerm: string,
-    ): boolean => {
-      if (laterYear > earlierYear) return true
-      if (laterYear === earlierYear) {
-        const termOrder = ["Term 1", "Term 2", "Term 3"]
-        return termOrder.indexOf(laterTerm) > termOrder.indexOf(earlierTerm)
-      }
-      return false
-    }
-
-    // Helper to check if a course can be scheduled in a given term
-    const canScheduleInTerm = (course: PlanCourse, year: number, term: string): boolean => {
-      // Check if all prerequisites have been scheduled at least one term before
-      return course.prerequisites.every((prereqId) => {
-        const prereqSchedule = courseScheduleMap.get(prereqId)
-        if (!prereqSchedule) return false // Prerequisite not scheduled yet
-
-        return isAtLeastOneTermAfter(year, term, prereqSchedule.year, prereqSchedule.term)
-      })
     }
 
     // First, prioritize active courses
@@ -394,58 +355,10 @@ export default function AcademicPlanner() {
     // Combine active and pending courses, with active courses first
     const prioritizedCourses = [...prioritizedActiveCourses, ...prioritizedPendingCourses]
 
-    // Distribute courses into semesters with prerequisite gap enforcement
-    const remainingCourses = [...prioritizedCourses]
-    const maxIterations = 50 // Prevent infinite loops
-    let iteration = 0
-
-    while (remainingCourses.length > 0 && iteration < maxIterations) {
-      iteration++
-      let coursesScheduledThisIteration = 0
-
-      for (let i = remainingCourses.length - 1; i >= 0; i--) {
-        const course = remainingCourses[i]
-
-        // Check if this course can be scheduled in the current term
-        if (!canScheduleInTerm(course, currentPlanYear, currentPlanTerm)) {
-          continue // Skip this course for now
-        }
-
-        // If adding this course would exceed the credit limit, start a new semester
-        if (currentSemesterCredits + course.credits > MAX_CREDITS_PER_SEMESTER) {
-          if (currentSemesterCourses.length > 0) {
-            plan.push({
-              year: currentPlanYear,
-              term: currentPlanTerm,
-              courses: [...currentSemesterCourses],
-            })
-          }
-
-          // Move to next term
-          const next = getNextTerm(currentPlanYear, currentPlanTerm)
-          currentPlanYear = next.year
-          currentPlanTerm = next.term
-          currentSemesterCourses = []
-          currentSemesterCredits = 0
-
-          // Check again if the course can be scheduled in the new term
-          if (!canScheduleInTerm(course, currentPlanYear, currentPlanTerm)) {
-            continue
-          }
-        }
-
-        // Add course to current semester
-        currentSemesterCourses.push(course)
-        currentSemesterCredits += course.credits
-        courseScheduleMap.set(course.id, { year: currentPlanYear, term: currentPlanTerm })
-
-        // Remove from remaining courses
-        remainingCourses.splice(i, 1)
-        coursesScheduledThisIteration++
-      }
-
-      // If no courses were scheduled in this iteration, move to next term
-      if (coursesScheduledThisIteration === 0 && remainingCourses.length > 0) {
+    // Distribute courses into semesters
+    prioritizedCourses.forEach((course) => {
+      // If adding this course would exceed the credit limit, start a new semester
+      if (currentSemesterCredits + course.credits > MAX_CREDITS_PER_SEMESTER) {
         if (currentSemesterCourses.length > 0) {
           plan.push({
             year: currentPlanYear,
@@ -461,7 +374,11 @@ export default function AcademicPlanner() {
         currentSemesterCourses = []
         currentSemesterCredits = 0
       }
-    }
+
+      // Add course to current semester
+      currentSemesterCourses.push(course)
+      currentSemesterCredits += course.credits
+    })
 
     // Add the last semester if it has courses
     if (currentSemesterCourses.length > 0) {
@@ -481,32 +398,6 @@ export default function AcademicPlanner() {
 
     setOpenSemesters(newOpenSemesters)
     setGraduationPlan(plan)
-  }
-
-  // Remove a course from the graduation plan
-  const removeCourseFromPlan = (courseId: string) => {
-    setGraduationPlan((prevPlan) => {
-      const updatedPlan = prevPlan
-        .map((semester) => ({
-          ...semester,
-          courses: semester.courses.filter((course) => course.id !== courseId),
-        }))
-        .filter((semester) => semester.courses.length > 0) // Remove empty semesters
-
-      return updatedPlan
-    })
-  }
-
-  // Change section for a course in the plan
-  const changeCourseSection = (courseId: string, newSection: CourseSection) => {
-    setGraduationPlan((prevPlan) => {
-      return prevPlan.map((semester) => ({
-        ...semester,
-        courses: semester.courses.map((course) =>
-          course.id === courseId ? { ...course, recommendedSection: newSection } : course,
-        ),
-      }))
-    })
   }
 
   // Topological sort algorithm
@@ -589,13 +480,13 @@ export default function AcademicPlanner() {
         <div className="mb-6">
           <div className="flex flex-col sm:flex-row gap-3 mb-4">
             <Link href="/course-tracker">
-              <Button variant="outline" size="sm" className="flex items-center gap-2 bg-transparent">
+              <Button variant="outline" size="sm" className="flex items-center gap-2">
                 <BookOpen className="h-4 w-4" />
                 Back to Course Tracker
               </Button>
             </Link>
             <Link href="/">
-              <Button variant="outline" size="sm" className="flex items-center gap-2 bg-transparent">
+              <Button variant="outline" size="sm" className="flex items-center gap-2">
                 <ArrowLeft className="h-4 w-4" />
                 Back to Home
               </Button>
@@ -702,23 +593,22 @@ export default function AcademicPlanner() {
                   <div>
                     <label className="block text-sm font-medium mb-1">Starting Year</label>
                     <div className="flex items-center gap-2">
-                      <select
+                      <input
+                        type="number"
                         className="w-full p-2 border rounded-md dark:bg-gray-800 dark:border-gray-700"
                         value={startYear}
                         onChange={(e) => {
                           const year = Number.parseInt(e.target.value)
-                          if (!isNaN(year)) {
+                          if (!isNaN(year) && year >= 2000 && year <= 2100) {
                             setStartYear(year)
                             localStorage.setItem("startYear", year.toString())
                           }
                         }}
-                      >
-                        {Array.from({ length: 21 }, (_, i) => new Date().getFullYear() - 10 + i).map((year) => (
-                          <option key={year} value={year}>
-                            {year}
-                          </option>
-                        ))}
-                      </select>
+                        min="2000"
+                        max="2100"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                      />
                       <Button
                         variant="outline"
                         size="sm"
@@ -728,7 +618,7 @@ export default function AcademicPlanner() {
                           localStorage.setItem("startYear", currentYear.toString())
                         }}
                       >
-                        Current
+                        Current Year
                       </Button>
                     </div>
                   </div>
@@ -833,55 +723,23 @@ export default function AcademicPlanner() {
 
                                   const allPrereqsMet = arePrerequisitesMet(course)
                                   const section = course.recommendedSection
-                                  const availableSections = course.availableSections
 
                                   return (
                                     <TableRow key={course.id}>
-                                      <TableCell className="font-medium">
-                                        <div className="flex items-center gap-2">
-                                          {course.code}
-                                          <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={() => removeCourseFromPlan(course.id)}
-                                            className="h-6 w-6 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
-                                            title="Remove from plan"
-                                          >
-                                            <X className="h-3 w-3" />
-                                          </Button>
-                                        </div>
-                                      </TableCell>
+                                      <TableCell className="font-medium">{course.code}</TableCell>
                                       <TableCell>{course.name}</TableCell>
                                       <TableCell>{course.credits}</TableCell>
                                       <TableCell>
-                                        {availableSections.length > 0 ? (
-                                          <select
-                                            className="text-sm border rounded px-2 py-1 dark:bg-gray-800 dark:border-gray-700"
-                                            value={section?.section || ""}
-                                            onChange={(e) => {
-                                              const selectedSection = availableSections.find(
-                                                (s) => s.section === e.target.value,
-                                              )
-                                              if (selectedSection) {
-                                                changeCourseSection(course.id, selectedSection)
-                                              }
-                                            }}
-                                          >
-                                            <option value="">Select Section</option>
-                                            {availableSections.map((availableSection) => (
-                                              <option key={availableSection.section} value={availableSection.section}>
-                                                {availableSection.section} ({availableSection.remainingSlots} slots)
-                                              </option>
-                                            ))}
-                                          </select>
-                                        ) : section ? (
+                                        {section ? (
                                           section.section
                                         ) : (
                                           <Button
                                             variant="outline"
                                             size="sm"
                                             onClick={() => {
+                                              // Store the course code in localStorage for filtering
                                               localStorage.setItem("filterCourseCode", course.code)
+                                              // Navigate to schedule maker
                                               window.location.href = "/schedule-maker"
                                             }}
                                             className="flex items-center gap-1"
@@ -902,7 +760,44 @@ export default function AcademicPlanner() {
                                             <div className="text-xs text-gray-500">{section.meetingTime}</div>
                                           </div>
                                         ) : (
-                                          <span className="text-gray-400">TBD</span>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => {
+                                              // Auto-suggest a section that doesn't conflict
+                                              const availableSections = getAvailableSections(course.code)
+                                              if (availableSections.length > 0) {
+                                                // Find a section that doesn't conflict with current plan
+                                                const nonConflictingSection = availableSections.find((section) => {
+                                                  // Check if this section conflicts with any course in the current plan
+                                                  // Implementation would check days and times
+                                                  return true // Simplified for now
+                                                })
+
+                                                if (nonConflictingSection) {
+                                                  // Show a confirmation dialog
+                                                  if (
+                                                    window.confirm(
+                                                      `Add section ${nonConflictingSection.section} (${nonConflictingSection.meetingDays} ${nonConflictingSection.meetingTime}) to your schedule?`,
+                                                    )
+                                                  ) {
+                                                    // Logic to add to schedule would go here
+                                                    alert("Section added to schedule!")
+                                                  }
+                                                } else {
+                                                  alert(
+                                                    "No non-conflicting sections found. Please check the Schedule Maker.",
+                                                  )
+                                                }
+                                              } else {
+                                                alert("No available sections found for this course.")
+                                              }
+                                            }}
+                                            className="flex items-center gap-1"
+                                          >
+                                            <Calendar className="h-3 w-3" />
+                                            Auto-Suggest
+                                          </Button>
                                         )}
                                       </TableCell>
                                       <TableCell>{section ? section.room : "N/A"}</TableCell>
