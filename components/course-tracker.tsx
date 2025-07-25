@@ -1097,14 +1097,17 @@ export default function CourseTracker() {
                             </div>
                             <div className="flex items-center gap-2">
                               <Button
+                                asChild={true}
                                 variant="outline"
                                 size="sm"
                                 className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors"
                                 onClick={(e) => markYearAsPassed(yearNum, e)}
                               >
-                                {areAllCoursesPassed(yearNum)
-                                  ? "Unmark All"
-                                  : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.status !== "passed").length})`}
+                                <span>
+                                  {areAllCoursesPassed(yearNum)
+                                    ? "Unmark All"
+                                    : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.status !== "passed").length})`}
+                                </span>
                               </Button>
                               {openYears[yearNum] ? (
                                 <ChevronDown className="h-5 w-5" />
