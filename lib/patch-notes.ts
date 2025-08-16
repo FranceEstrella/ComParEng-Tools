@@ -1,61 +1,73 @@
 export interface PatchNote {
   version: string
   date: string
-  changes: string[]
+  title: string
+  changes: {
+    type: "new" | "improved" | "fixed"
+    description: string
+  }[]
 }
 
 export const patchNotes: PatchNote[] = [
   {
-    "version": "v1.39",
-    "date": "April 13, 2025",
-    "changes": [
-      "Fixed issue in Calendar View.",
-      "Corrected an error where Thursday schedules were incorrectly interpreted as Tuesday schedules.",
-      "Resolved a text rendering problem when saving the schedule as an image.",
-      "Fixed a bug preventing course addition when schedule slots were full.",
-      "Added functionality to save the schedule as an .ics file for calendar application import.",
-      "Implemented autosave for the schedule maker across different sessions.",
-      "Introduced a Table View for both available and selected courses tabs.",
-      "Added a toggle button to display courses for different programs.",
-      "Enabled customization of the title and color of course blocks in the added courses section of the schedule view.",
-      "Grouped available courses by department.",
-      "Added sorting options for available courses by department, course code, section, available slots, and meeting days.",
-      "Implemented a 'Replace Section' button for existing courses in the schedule, allowing users to select a different section from the available courses.",
-      "Enabled customization of the calendar title."
-    ]
-  },
-  {
-    version: "v1.38",
-    date: "April 10, 2025",
+    version: "1.40",
+    date: "August 16, 2025",
+    title: "Advanced Academic Planning & Course Management",
     changes: [
-      "Fixed 'Reset All Progress' button error in Course Tracker",
-      "Added Patch Notes section to the home page",
-      "Improved Schedule Maker with department filtering and grouping",
-      "Added option to show all extracted courses in Schedule Maker",
-      "Added manual extension installation guide",
-      "Allow adding courses with no available slots to schedule",
-      "Added course section replacement option",
-      "Fixed visual bug in downloaded schedule images",
-      "Changed calendar integration to use Google Calendar",
-      "Minimized redundancy in time and room information display",
-      "Fixed consistency of navigation buttons across all pages",
+      {
+        type: "new",
+        description: "Import/Export graduation plans in JSON, CSV, and TXT formats for backup and sharing",
+      },
+      {
+        type: "new",
+        description: "Undo functionality - reverse your last course moves with one click",
+      },
+      {
+        type: "new",
+        description: "Move history tracking - see all recent changes to your graduation plan",
+      },
+      {
+        type: "new",
+        description: "Bulk course selection and moving - select multiple courses and move them together",
+      },
+      {
+        type: "new",
+        description: "Course swapping - easily swap positions of two courses between terms",
+      },
+      {
+        type: "new",
+        description: "Unscheduled courses section - manage courses removed from your plan",
+      },
+      {
+        type: "new",
+        description: "Floating unscheduled courses card - quick access when scrolling through your plan",
+      },
+      {
+        type: "improved",
+        description:
+          "Enhanced conflict detection with warnings for credit limits, prerequisites, and schedule overlaps",
+      },
+      {
+        type: "improved",
+        description: "Active courses are now prioritized first in graduation plan generation",
+      },
+      {
+        type: "improved",
+        description: "Expected graduation calculation now shows the term after your final planned semester",
+      },
+      {
+        type: "improved",
+        description: "Cleaner schedule display format in course tables",
+      },
+      {
+        type: "improved",
+        description: "Simplified section dropdown display without slot counts",
+      },
+      {
+        type: "improved",
+        description: "Better course status notices for users with all pending courses",
+      },
     ],
   },
-  {
-    version: "v1.37",
-    date: "April 5, 2025",
-    changes: [
-      "Fixed newline character in calendar export",
-      "Completed LOCATION field in ICS file",
-      "Enhanced course conflict detection",
-      "Improved course addition logic",
-      "Added department sorting feature",
-      "Enhanced calendar export functionality",
-      "Added dynamic button text",
-      "Added reset progress button",
-      "Improved search experience",
-      "Added year synchronization in Academic Planner",
-      "Added cross-component communication",
-    ],
-  },
+  // ... rest of the existing patch notes
 ]
