@@ -346,18 +346,24 @@ export default function AcademicPlanner() {
 
   // Helper to check if a course can be scheduled in a given term (considering prerequisites)
   const canScheduleInTerm = (course: PlanCourse, targetYear: number, targetTerm: string): boolean => {
-    // Check if all prerequisites have been scheduled at least one term before
+    // Check if all prerequisites have been scheduled at least one term before OR are already passed
     return course.prerequisites.every((prereqId) => {
-      // Find where this prerequisite is scheduled in the current plan
+      // First check if prerequisite is already passed
+      const prereqCourse = findCourseById(prereqId)
+      if (prereqCourse && prereqCourse.status === "passed") {
+        return true
+      }
+
+      // Then check if prerequisite is scheduled in the current plan
       for (const semester of graduationPlan) {
         const prereqCourse = semester.courses.find((c) => c.id === prereqId)
         if (prereqCourse) {
           return isAtLeastOneTermAfter(targetYear, targetTerm, semester.year, semester.term)
         }
       }
-      // If prerequisite is not in the plan, check if it's already passed
-      const prereqCourse = findCourseById(prereqId)
-      return prereqCourse && prereqCourse.status === "passed"
+
+      // If prerequisite is not found in plan and not passed, it can't be scheduled
+      return false
     })
   }
 
@@ -928,6 +934,12 @@ export default function AcademicPlanner() {
     const pendingCourses = courses.filter((course) => course.status === "pending")
     const activeCourses = courses.filter((course) => course.status === "active")
 
+    console.log("Generating plan with:", {
+      pendingCount: pendingCourses.length,
+      activeCount: activeCourses.length,
+      totalCourses: courses.length,
+    })
+
     // If we have no courses to plan, return early
     if (pendingCourses.length === 0 && activeCourses.length === 0) {
       setGraduationPlan([])
@@ -943,6 +955,11 @@ export default function AcademicPlanner() {
     // Perform topological sort to respect prerequisites
     const sortedPendingCourses = topologicalSort(pendingCourses, dependencyGraph)
     const sortedActiveCourses = topologicalSort(activeCourses, dependencyGraph)
+
+    console.log("Sorted courses:", {
+      sortedPending: sortedPendingCourses.length,
+      sortedActive: sortedActiveCourses.length,
+    })
 
     // Enhance courses with section availability info
     const enhancedActiveCourses: PlanCourse[] = sortedActiveCourses.map((course) => {
@@ -982,84 +999,83 @@ export default function AcademicPlanner() {
     // Track when each course was scheduled (for prerequisite gap enforcement)
     const courseScheduleMap = new Map<string, { year: number; term: string }>()
 
+    // Add passed courses to the schedule map so prerequisites work correctly
+    courses
+      .filter((c) => c.status === "passed")
+      .forEach((course) => {
+        // Assume passed courses were completed in their original term or earlier
+        courseScheduleMap.set(course.id, { year: course.year + startYear - 1, term: course.term })
+      })
+
     // Helper to check if a course can be scheduled in a given term
-    const canScheduleInTerm = (course: PlanCourse, year: number, term: string): boolean => {
+    const canScheduleInTermLocal = (course: PlanCourse, year: number, term: string): boolean => {
       // Check if all prerequisites have been scheduled at least one term before
       return course.prerequisites.every((prereqId) => {
         const prereqSchedule = courseScheduleMap.get(prereqId)
-        if (!prereqSchedule) return false // Prerequisite not scheduled yet
-
+        if (!prereqSchedule) {
+          // Check if prerequisite is already passed
+          const prereqCourse = findCourseById(prereqId)
+          return prereqCourse && prereqCourse.status === "passed"
+        }
         return isAtLeastOneTermAfter(year, term, prereqSchedule.year, prereqSchedule.term)
       })
     }
 
-    // First, prioritize active courses
-    const prioritizedActiveCourses = [...enhancedActiveCourses].sort((a, b) => {
-      // First priority: courses with available sections
-      if (!a.needsPetition && b.needsPetition) return -1
-      if (a.needsPetition && !b.needsPetition) return 1
+    // Prioritize active courses first, then pending courses that can be taken
+    const allCoursesToSchedule = [...enhancedActiveCourses, ...enhancedPendingCourses]
 
-      // Second priority: courses in the current term
-      const aInTerm = a.term === currentPlanTerm
-      const bInTerm = b.term === currentPlanTerm
-      if (aInTerm && !bInTerm) return -1
-      if (!aInTerm && bInTerm) return 1
+    console.log("All courses to schedule:", allCoursesToSchedule.length)
 
-      // Third priority: courses with more available sections
-      return b.availableSections.length - a.availableSections.length
-    })
+    // Sort courses by priority
+    allCoursesToSchedule.sort((a, b) => {
+      // First priority: active courses
+      if (a.status === "active" && b.status !== "active") return -1
+      if (a.status !== "active" && b.status === "active") return 1
 
-    // Then, prioritize pending courses that can be taken (prerequisites are met)
-    const prioritizedPendingCourses = [...enhancedPendingCourses].sort((a, b) => {
-      // First priority: courses with prerequisites met
+      // Second priority: courses with prerequisites met
       const aPrereqsMet = arePrerequisitesMet(a)
       const bPrereqsMet = arePrerequisitesMet(b)
       if (aPrereqsMet && !bPrereqsMet) return -1
       if (!aPrereqsMet && bPrereqsMet) return 1
 
-      // Second priority: courses with available sections
+      // Third priority: courses with available sections
       if (!a.needsPetition && b.needsPetition) return -1
       if (a.needsPetition && !b.needsPetition) return 1
 
-      // Third priority: courses in the current term
-      const aInTerm = a.term === currentPlanTerm
-      const bInTerm = b.term === currentPlanTerm
-      if (aInTerm && !bInTerm) return -1
-      if (!aInTerm && bInTerm) return 1
-
-      // Fourth priority: courses with more available sections
-      return b.availableSections.length - a.availableSections.length
+      // Fourth priority: by original year and term
+      if (a.year !== b.year) return a.year - b.year
+      const termOrder = ["Term 1", "Term 2", "Term 3"]
+      return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
     })
 
-    // Combine active and pending courses, with active courses first
-    const prioritizedCourses = [...prioritizedActiveCourses, ...prioritizedPendingCourses]
-
-    // Distribute courses into semesters with prerequisite gap enforcement
-    const remainingCourses = [...prioritizedCourses]
-    const maxIterations = 50 // Prevent infinite loops
+    // Distribute courses into semesters
+    const remainingCourses = [...allCoursesToSchedule]
+    const maxIterations = 100 // Prevent infinite loops
     let iteration = 0
 
     while (remainingCourses.length > 0 && iteration < maxIterations) {
       iteration++
       let coursesScheduledThisIteration = 0
 
+      console.log(`Iteration ${iteration}: ${remainingCourses.length} courses remaining`)
+
+      // Try to schedule courses in the current term
       for (let i = remainingCourses.length - 1; i >= 0; i--) {
         const course = remainingCourses[i]
 
         // Check if this course can be scheduled in the current term
-        if (!canScheduleInTerm(course, currentPlanYear, currentPlanTerm)) {
+        if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) {
           continue // Skip this course for now
         }
 
         // If adding this course would exceed the credit limit, start a new semester
-        if (currentSemesterCredits + course.credits > MAX_CREDITS_PER_SEMESTER) {
-          if (currentSemesterCourses.length > 0) {
-            plan.push({
-              year: currentPlanYear,
-              term: currentPlanTerm,
-              courses: [...currentSemesterCourses],
-            })
-          }
+        if (currentSemesterCredits + course.credits > MAX_CREDITS_PER_SEMESTER && currentSemesterCourses.length > 0) {
+          // Save current semester
+          plan.push({
+            year: currentPlanYear,
+            term: currentPlanTerm,
+            courses: [...currentSemesterCourses],
+          })
 
           // Move to next term
           const next = getNextTerm(currentPlanYear, currentPlanTerm)
@@ -1069,7 +1085,7 @@ export default function AcademicPlanner() {
           currentSemesterCredits = 0
 
           // Check again if the course can be scheduled in the new term
-          if (!canScheduleInTerm(course, currentPlanYear, currentPlanTerm)) {
+          if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) {
             continue
           }
         }
@@ -1082,24 +1098,29 @@ export default function AcademicPlanner() {
         // Remove from remaining courses
         remainingCourses.splice(i, 1)
         coursesScheduledThisIteration++
+
+        console.log(`Scheduled ${course.code} in ${currentPlanYear} ${currentPlanTerm}`)
       }
 
       // If no courses were scheduled in this iteration, move to next term
       if (coursesScheduledThisIteration === 0 && remainingCourses.length > 0) {
+        // Save current semester if it has courses
         if (currentSemesterCourses.length > 0) {
           plan.push({
             year: currentPlanYear,
             term: currentPlanTerm,
             courses: [...currentSemesterCourses],
           })
+          currentSemesterCourses = []
+          currentSemesterCredits = 0
         }
 
         // Move to next term
         const next = getNextTerm(currentPlanYear, currentPlanTerm)
         currentPlanYear = next.year
         currentPlanTerm = next.term
-        currentSemesterCourses = []
-        currentSemesterCredits = 0
+
+        console.log(`Moving to next term: ${currentPlanYear} ${currentPlanTerm}`)
       }
     }
 
@@ -1112,7 +1133,12 @@ export default function AcademicPlanner() {
       })
     }
 
-    // Initialize all semesters as closed
+    console.log(
+      "Final plan:",
+      plan.map((s) => `${s.year} ${s.term}: ${s.courses.length} courses`),
+    )
+
+    // Initialize all semesters as closed except the first one
     const newOpenSemesters: { [key: string]: boolean } = {}
     plan.forEach((semester, index) => {
       const key = `${semester.year}-${semester.term}`
