@@ -4,7 +4,7 @@ import type React from "react"
 
 import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
   ArrowLeft,
@@ -24,6 +24,7 @@ import {
   ArrowUpDown,
   Undo,
   Upload,
+  Plus,
 } from "lucide-react"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -172,6 +173,8 @@ export default function AcademicPlanner() {
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([])
   const [importError, setImportError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [unscheduledCoursesRef, setUnscheduledCoursesRef] = useState<HTMLDivElement | null>(null)
+  const [showFloatingUnscheduled, setShowFloatingUnscheduled] = useState(false)
 
   // Load saved course statuses and available sections on component mount
   useEffect(() => {
@@ -257,6 +260,22 @@ export default function AcademicPlanner() {
   useEffect(() => {
     detectConflicts()
   }, [graduationPlan])
+
+  // Track visibility of unscheduled courses section
+  useEffect(() => {
+    if (!unscheduledCoursesRef) return
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setShowFloatingUnscheduled(!entry.isIntersecting && getUnscheduledCourses().length > 0)
+      },
+      { threshold: 0.1 },
+    )
+
+    observer.observe(unscheduledCoursesRef)
+
+    return () => observer.disconnect()
+  }, [unscheduledCoursesRef, graduationPlan])
 
   // Check if a course is an internship course
   const isInternshipCourse = (course: Course): boolean => {
@@ -498,8 +517,8 @@ export default function AcademicPlanner() {
             if (!prereqScheduled) {
               newConflicts.push({
                 type: "prerequisite",
-                severity: "error",
                 message: `${course.code} requires ${prereqCourse.code} but it's not scheduled in the plan`,
+                severity: "error",
                 affectedCourses: [course.id, prereqId],
               })
             }
@@ -1648,7 +1667,14 @@ export default function AcademicPlanner() {
     if (graduationPlan.length === 0) return "N/A"
 
     const lastSemester = graduationPlan[graduationPlan.length - 1]
-    return `${lastSemester.year} ${lastSemester.term}`
+
+    // Check if the last semester contains Internship 2
+    const hasInternship2 = lastSemester.courses.some((course) => course.name.toUpperCase().includes("INTERNSHIP 2"))
+
+    // If it has Internship 2, graduation is the next term
+    // Otherwise, graduation is also the next term after the last planned semester
+    const nextTerm = getNextTerm(lastSemester.year, lastSemester.term)
+    return `${nextTerm.year} ${nextTerm.term}`
   }
 
   // Calculate total remaining credits
@@ -1659,6 +1685,147 @@ export default function AcademicPlanner() {
   // Open the student portal course offerings page
   const openStudentPortal = () => {
     window.open("https://solar.feutech.edu.ph/course/offerings", "_blank")
+  }
+
+  // Add this helper function after the other helper functions (around line 200)
+  // Get courses that are not in the graduation plan
+  const getUnscheduledCourses = (): PlanCourse[] => {
+    const coursesInPlan = new Set<string>()
+
+    // Collect all course IDs that are in the graduation plan
+    graduationPlan.forEach((semester) => {
+      semester.courses.forEach((course) => {
+        coursesInPlan.add(course.id)
+      })
+    })
+
+    // Find pending and active courses that are not in the plan
+    const unscheduledCourses = courses
+      .filter((course) => (course.status === "pending" || course.status === "active") && !coursesInPlan.has(course.id))
+      .map((course) => {
+        const availableSections = getAvailableSections(course.code)
+        const needsPetition = !hasAvailableSections(course.code)
+        const recommendedSection = findBestSection(course.code)
+
+        return {
+          ...course,
+          availableSections,
+          needsPetition,
+          recommendedSection,
+        }
+      })
+
+    return unscheduledCourses
+  }
+
+  // Add course to a specific term
+  const addCourseToTerm = (courseId: string, targetYear: number, targetTerm: string) => {
+    const course = findCourseById(courseId)
+    if (!course) return
+
+    // Create enhanced course
+    const availableSections = getAvailableSections(course.code)
+    const needsPetition = !hasAvailableSections(course.code)
+    const recommendedSection = findBestSection(course.code)
+
+    const planCourse: PlanCourse = {
+      ...course,
+      availableSections,
+      needsPetition,
+      recommendedSection,
+    }
+
+    setGraduationPlan((prevPlan) => {
+      // Check if target semester already exists
+      const targetSemesterIndex = prevPlan.findIndex(
+        (semester) => semester.year === targetYear && semester.term === targetTerm,
+      )
+
+      const updatedPlan = [...prevPlan]
+
+      if (targetSemesterIndex !== -1) {
+        // Add to existing semester
+        updatedPlan[targetSemesterIndex] = {
+          ...updatedPlan[targetSemesterIndex],
+          courses: [...updatedPlan[targetSemesterIndex].courses, planCourse],
+        }
+      } else {
+        // Create new semester
+        const newSemester: SemesterPlan = {
+          year: targetYear,
+          term: targetTerm,
+          courses: [planCourse],
+        }
+
+        // Insert in chronological order
+        let insertIndex = updatedPlan.length
+        for (let i = 0; i < updatedPlan.length; i++) {
+          const semester = updatedPlan[i]
+          if (
+            semester.year > targetYear ||
+            (semester.year === targetYear &&
+              ["Term 1", "Term 2", "Term 3"].indexOf(semester.term) >
+                ["Term 1", "Term 2", "Term 3"].indexOf(targetTerm))
+          ) {
+            insertIndex = i
+            break
+          }
+        }
+        updatedPlan.splice(insertIndex, 0, newSemester)
+      }
+
+      // Sort semesters chronologically
+      updatedPlan.sort((a, b) => {
+        if (a.year !== b.year) return a.year - b.year
+        const termOrder = ["Term 1", "Term 2", "Term 3"]
+        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+      })
+
+      return updatedPlan
+    })
+
+    // Add to history
+    addToMoveHistory({
+      type: "single",
+      description: `Added ${course.code} to ${targetYear} ${targetTerm}`,
+      changes: [
+        {
+          courseId,
+          fromYear: 0, // Not from any term
+          fromTerm: "unscheduled",
+          toYear: targetYear,
+          toTerm: targetTerm,
+        },
+      ],
+    })
+  }
+
+  // Convert 24-hour time to 12-hour format
+  const formatTime = (time: string): string => {
+    if (!time || time === "TBD") return time
+
+    const [hours, minutes] = time.split(":")
+    const hour = Number.parseInt(hours)
+    const ampm = hour >= 12 ? "PM" : "AM"
+    const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour
+
+    return `${displayHour}:${minutes}${ampm}`
+  }
+
+  // Format meeting days and times
+  const formatSchedule = (meetingDays: string, meetingTime: string): string => {
+    if (!meetingDays || !meetingTime || meetingTime === "TBD") return "TBD"
+
+    const days = parseDays(meetingDays)
+      .map((day) => getFullDayName(day))
+      .join("/")
+
+    if (meetingTime.includes("-")) {
+      const [startTime, endTime] = meetingTime.split("-")
+      return `${days}\n${formatTime(startTime)}-${formatTime(endTime)}`
+    }
+
+    return `${days}\n${formatTime(meetingTime)}`
   }
 
   return (
@@ -1779,6 +1946,45 @@ export default function AcademicPlanner() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* Notice for all pending courses */}
+            {courses.filter((c) => c.status === "active").length === 0 &&
+              courses.filter((c) => c.status === "pending").length > 0 && (
+                <Alert
+                  data-alert="course-status-notice"
+                  className="mb-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300"
+                >
+                  <Info className="h-4 w-4" />
+                  <AlertTitle>Course Status Notice</AlertTitle>
+                  <AlertDescription>
+                    All your courses are marked as "pending". For a more personalized graduation plan, consider updating
+                    your course statuses in the Course Tracker to mark completed courses as "passed" and current courses
+                    as "active".
+                    <br />
+                    <br />
+                    The current plan shows the default curriculum progression. You can still use all planning features
+                    to customize your path.
+                    <div className="mt-3">
+                      <Link href="/course-tracker">
+                        <Button size="sm" className="mr-2">
+                          <BookOpen className="h-4 w-4 mr-1" />
+                          Update Course Status
+                        </Button>
+                      </Link>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const alert = document.querySelector('[data-alert="course-status-notice"]') as HTMLElement
+                          if (alert) alert.style.display = "none"
+                        }}
+                      >
+                        Continue with Default Plan
+                      </Button>
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              )}
 
             {/* Current Term Settings */}
             <Card className="mb-6">
@@ -2085,102 +2291,121 @@ export default function AcademicPlanner() {
               </CardContent>
             </Card>
 
-            {/* Bulk Actions */}
-            {selectedCourses.size > 0 && (
-              <Card className="mb-6">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Move className="h-5 w-5" />
-                    Bulk Actions
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center gap-4">
-                    <Badge variant="secondary">{selectedCourses.size} courses selected</Badge>
-                    <Dialog open={bulkMoveDialogOpen} onOpenChange={setBulkMoveDialogOpen}>
-                      <DialogTrigger asChild>
-                        <Button className="flex items-center gap-2">
-                          <Move className="h-4 w-4" />
-                          Move Selected Courses
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent>
-                        <DialogHeader>
-                          <DialogTitle>Move Multiple Courses</DialogTitle>
-                          <DialogDescription>
-                            Select a term to move {selectedCourses.size} selected courses to. Only terms where all
-                            selected courses can be legally scheduled are shown.
-                          </DialogDescription>
-                        </DialogHeader>
-                        <div className="py-4">
-                          <Select value={bulkMoveTargetTerm} onValueChange={setBulkMoveTargetTerm}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select target term" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {getCommonAvailableTerms(Array.from(selectedCourses)).map((term) => (
-                                <SelectItem key={`${term.year}-${term.term}`} value={`${term.year}-${term.term}`}>
-                                  {term.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          {/* Credit limit warning */}
-                          {bulkMoveTargetTerm && (
-                            <div className="mt-3">
-                              {(() => {
-                                const [year, term] = bulkMoveTargetTerm.split("-")
-                                const targetSemester = graduationPlan.find(
-                                  (s) => s.year === Number.parseInt(year) && s.term === term,
-                                )
-                                const currentCredits = targetSemester
-                                  ? targetSemester.courses.reduce((sum, c) => sum + c.credits, 0)
-                                  : 0
-                                const selectedCredits = Array.from(selectedCourses).reduce((sum, courseId) => {
-                                  for (const semester of graduationPlan) {
-                                    const course = semester.courses.find((c) => c.id === courseId)
-                                    if (course) return sum + course.credits
-                                  }
-                                  return sum
-                                }, 0)
-                                const totalCredits = currentCredits + selectedCredits
+            {/* Unscheduled Courses - moved here for better visibility */}
+            {getUnscheduledCourses().length > 0 && (
+              <div ref={setUnscheduledCoursesRef} className="mb-6">
+                <h2 className="text-2xl font-bold mb-4">Unscheduled Courses</h2>
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <BookOpen className="h-5 w-5" />
+                      Courses Not Yet Scheduled
+                    </CardTitle>
+                    <CardDescription>
+                      These courses are marked as pending or active but are not currently placed in any semester of your
+                      graduation plan.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Course Code</TableHead>
+                          <TableHead>Course Name</TableHead>
+                          <TableHead>Credits</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Prerequisites Met</TableHead>
+                          <TableHead>Available Sections</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {getUnscheduledCourses().map((course) => {
+                          const allPrereqsMet = arePrerequisitesMet(course)
+                          const availableTerms = getAvailableTermsForMove(course)
 
-                                if (totalCredits > 21) {
-                                  return (
-                                    <Alert className="bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800">
-                                      <AlertTriangle className="h-4 w-4" />
-                                      <AlertDescription>
-                                        Warning: Moving these courses will result in {totalCredits} credits for this
-                                        term (exceeds recommended 21 credit limit).
-                                      </AlertDescription>
-                                    </Alert>
-                                  )
-                                }
-                                return null
-                              })()}
-                            </div>
-                          )}
-                        </div>
-                        <DialogFooter>
-                          <Button variant="outline" onClick={() => setBulkMoveDialogOpen(false)}>
-                            Cancel
-                          </Button>
-                          <Button onClick={handleBulkMove} disabled={!bulkMoveTargetTerm}>
-                            Move Courses
-                          </Button>
-                        </DialogFooter>
-                      </DialogContent>
-                    </Dialog>
-                    <Button
-                      variant="outline"
-                      onClick={() => setSelectedCourses(new Set())}
-                      className="flex items-center gap-2"
-                    >
-                      Clear Selection
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+                          return (
+                            <TableRow key={course.id}>
+                              <TableCell className="font-medium">{course.code}</TableCell>
+                              <TableCell>{course.name}</TableCell>
+                              <TableCell>{course.credits}</TableCell>
+                              <TableCell>
+                                <Badge
+                                  variant={course.status === "active" ? "default" : "secondary"}
+                                  className={
+                                    course.status === "active"
+                                      ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
+                                      : ""
+                                  }
+                                >
+                                  {course.status}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                <Badge
+                                  variant={allPrereqsMet ? "default" : "destructive"}
+                                  className={
+                                    allPrereqsMet
+                                      ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                                      : ""
+                                  }
+                                >
+                                  {allPrereqsMet ? "Yes" : "No"}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                {course.needsPetition ? (
+                                  <Badge variant="destructive">Needs Petition</Badge>
+                                ) : (
+                                  <Badge
+                                    variant="outline"
+                                    className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                                  >
+                                    {course.availableSections.length} sections
+                                  </Badge>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Select
+                                  onValueChange={(value) => {
+                                    const [year, term] = value.split("-")
+                                    addCourseToTerm(course.id, Number.parseInt(year), term)
+                                  }}
+                                >
+                                  <SelectTrigger className="w-40">
+                                    <SelectValue placeholder="Add to term..." />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {availableTerms.map((term) => (
+                                      <SelectItem key={`${term.year}-${term.term}`} value={`${term.year}-${term.term}`}>
+                                        <div className="flex items-center gap-2">
+                                          <Plus className="h-3 w-3" />
+                                          {term.label}
+                                        </div>
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+
+                    {getUnscheduledCourses().some((course) => !arePrerequisitesMet(course)) && (
+                      <Alert className="mt-4 bg-orange-50 dark:bg-orange-900/20 border-orange-200 dark:border-orange-800">
+                        <Info className="h-4 w-4" />
+                        <AlertTitle>Prerequisites Not Met</AlertTitle>
+                        <AlertDescription>
+                          Some unscheduled courses have prerequisites that are not yet completed. Make sure to complete
+                          the prerequisites before scheduling these courses.
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
             )}
 
             {/* Graduation Plan */}
@@ -2362,7 +2587,7 @@ export default function AcademicPlanner() {
                                                   key={availableSection.section}
                                                   value={availableSection.section}
                                                 >
-                                                  {availableSection.section} ({availableSection.remainingSlots} slots)
+                                                  {availableSection.section}
                                                 </SelectItem>
                                               ))}
                                             </SelectContent>
@@ -2386,13 +2611,8 @@ export default function AcademicPlanner() {
                                       </TableCell>
                                       <TableCell>
                                         {section ? (
-                                          <div>
-                                            <div>
-                                              {parseDays(section.meetingDays)
-                                                .map((day) => getFullDayName(day))
-                                                .join(", ")}
-                                            </div>
-                                            <div className="text-xs text-gray-500">{section.meetingTime}</div>
+                                          <div className="text-sm whitespace-pre-line">
+                                            {formatSchedule(section.meetingDays, section.meetingTime)}
                                           </div>
                                         ) : (
                                           <span className="text-gray-400">TBD</span>
@@ -2499,13 +2719,73 @@ export default function AcademicPlanner() {
                 </div>
               )}
             </div>
+
+            {/* Floating Unscheduled Courses Card */}
+            {showFloatingUnscheduled && (
+              <div className="fixed bottom-6 right-6 z-50 animate-in fade-in-0 slide-in-from-bottom-2">
+                <Card className="w-80 shadow-lg border-2 border-blue-200 dark:border-blue-800">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2">
+                        <BookOpen className="h-4 w-4" />
+                        Unscheduled Courses ({getUnscheduledCourses().length})
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          unscheduledCoursesRef?.scrollIntoView({ behavior: "smooth" })
+                        }}
+                        className="h-6 w-6 p-0"
+                      >
+                        <ArrowUpDown className="h-3 w-3" />
+                      </Button>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                      {getUnscheduledCourses()
+                        .slice(0, 3)
+                        .map((course) => (
+                          <div key={course.id} className="flex items-center justify-between text-xs">
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium truncate">{course.code}</div>
+                              <div className="text-gray-500 truncate">{course.name}</div>
+                            </div>
+                            <Badge
+                              variant={course.status === "active" ? "default" : "secondary"}
+                              className="ml-2 text-xs"
+                            >
+                              {course.status}
+                            </Badge>
+                          </div>
+                        ))}
+                      {getUnscheduledCourses().length > 3 && (
+                        <div className="text-xs text-gray-500 text-center pt-1">
+                          +{getUnscheduledCourses().length - 3} more courses
+                        </div>
+                      )}
+                    </div>
+                    <Button
+                      size="sm"
+                      className="w-full mt-3"
+                      onClick={() => {
+                        unscheduledCoursesRef?.scrollIntoView({ behavior: "smooth" })
+                      }}
+                    >
+                      View All Unscheduled
+                    </Button>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* Bottom Navigation */}
+            <div className="mt-10 mb-6">
+              <QuickNavigation />
+            </div>
           </>
         )}
-
-        {/* Bottom Navigation */}
-        <div className="mt-10 mb-6">
-          <QuickNavigation />
-        </div>
       </div>
     </div>
   )

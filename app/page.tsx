@@ -78,7 +78,7 @@ export default function Home() {
                   </Button>
                   <Dialog>
                     <DialogTrigger asChild>
-                      <Button variant="outline" className="w-full sm:w-auto">
+                      <Button variant="outline" className="w-full sm:w-auto bg-transparent">
                         View Installation Guide
                       </Button>
                     </DialogTrigger>
@@ -96,10 +96,9 @@ export default function Home() {
                         </div>
 
                         <div className="bg-gray-100 dark:bg-gray-800 p-4 rounded-md">
-
                           <ol className="list-decimal pl-5 space-y-2">
                             <li>
-                              Download the extension from the &nbsp; 
+                              Download the extension from the &nbsp;
                               <Button
                                 variant="link"
                                 className="text-blue-600 dark:text-blue-400 p-0 h-auto font-normal"
@@ -289,7 +288,7 @@ export default function Home() {
                           {note.changes.map((change, index) => (
                             <li key={index} className="flex items-start">
                               <span className="mr-2">•</span>
-                              <span>{change}</span>
+                              <span>{change.description}</span>
                             </li>
                           ))}
                         </ul>
