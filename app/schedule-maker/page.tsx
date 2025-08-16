@@ -19,6 +19,7 @@ import {
   Download,
   Palette,
   Edit,
+  GraduationCap,
 } from "lucide-react"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -30,28 +31,50 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Switch } from "@/components/ui/switch"
 import { HexColorPicker } from "react-colorful"
-import { toPng } from "html-to-image"
 import React from "react"
 import { createEvents } from "ics"
 import html2canvas from "html2canvas"
-import { format } from "date-fns"
 
 // Time slot constants
-const DAYS = ["M", "Tu", "W", "Th", "F", "S"] as const;
-type DayToken = typeof DAYS[number];
+const DAYS = ["M", "Tu", "W", "Th", "F", "S"] as const
+type DayToken = (typeof DAYS)[number]
 
 const TIME_SLOTS = [
-  "07:00", "07:30", "08:00", "08:30", "09:00", "09:30", 
-  "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", 
-  "13:00", "13:30", "14:00", "14:30", "15:00", "15:30",
-  "16:00", "16:30", "17:00", "17:30", "18:00", "18:30",
-  "19:00", "19:30", "20:00", "20:30", "21:00"
+  "07:00",
+  "07:30",
+  "08:00",
+  "08:30",
+  "09:00",
+  "09:30",
+  "10:00",
+  "10:30",
+  "11:00",
+  "11:30",
+  "12:00",
+  "12:30",
+  "13:00",
+  "13:30",
+  "14:00",
+  "14:30",
+  "15:00",
+  "15:30",
+  "16:00",
+  "16:30",
+  "17:00",
+  "17:30",
+  "18:00",
+  "18:30",
+  "19:00",
+  "19:30",
+  "20:00",
+  "20:30",
+  "21:00",
 ]
 
 // Helper to calculate time slot position
 const getTimePosition = (time: string) => {
-  const [hours, minutes] = time.split(':').map(Number)
-  return (hours - 7) * 2 + (minutes / 30)
+  const [hours, minutes] = time.split(":").map(Number)
+  return (hours - 7) * 2 + minutes / 30
 }
 
 // Calculate duration in 30-min slots
@@ -98,6 +121,32 @@ interface SelectedCourse extends CourseSection {
 interface CourseCustomization {
   customTitle?: string
   color?: string
+}
+
+// Quick Navigation Component
+const QuickNavigation = () => {
+  return (
+    <div className="flex flex-col sm:flex-row gap-3 justify-center">
+      <Link href="/course-tracker">
+        <Button className="w-full sm:w-auto bg-gradient-to-r from-blue-600 to-blue-800 hover:from-blue-700 hover:to-blue-900 text-white flex items-center gap-2">
+          <BookOpen className="h-4 w-4" />
+          Course Tracker
+        </Button>
+      </Link>
+      <Link href="/academic-planner">
+        <Button className="w-full sm:w-auto bg-gradient-to-r from-green-600 to-green-800 hover:from-green-700 hover:to-green-900 text-white flex items-center gap-2">
+          <GraduationCap className="h-4 w-4" />
+          Academic Planner
+        </Button>
+      </Link>
+      <Link href="/">
+        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
+          <ArrowLeft className="h-4 w-4" />
+          Back to Home
+        </Button>
+      </Link>
+    </div>
+  )
 }
 
 // Sample data for available courses - used as fallback
@@ -182,71 +231,66 @@ const extractDepartmentCode = (courseCode: string): string => {
 
 // Updated day mapping
 const dayAbbreviationToDay = {
-  M: 1,    // Monday
-  Tu: 2,   // Tuesday
-  W: 3,    // Wednesday
-  Th: 4,   // Thursday
-  F: 5,    // Friday
-  S: 6,    // Saturday
+  M: 1, // Monday
+  Tu: 2, // Tuesday
+  W: 3, // Wednesday
+  Th: 4, // Thursday
+  F: 5, // Friday
+  S: 6, // Saturday
 }
 
 // New robust day parser
 function parseDays(daysString: string): DayToken[] {
-  const tokens: DayToken[] = [];
-  let i = 0;
-  const s = daysString.toUpperCase().replace(/\s+/g, '');
+  const tokens: DayToken[] = []
+  let i = 0
+  const s = daysString.toUpperCase().replace(/\s+/g, "")
 
   while (i < s.length) {
-    if (s[i] === 'M') {
-      tokens.push('M');
-      i++;
-    } 
-    else if (s[i] === 'W') {
-      tokens.push('W');
-      i++;
-    }
-    else if (s[i] === 'F') {
-      tokens.push('F');
-      i++;
-    }
-    else if (s[i] === 'S') {
-      tokens.push('S');
-      i++;
-    }
-    else if (s[i] === 'T') {
+    if (s[i] === "M") {
+      tokens.push("M")
+      i++
+    } else if (s[i] === "W") {
+      tokens.push("W")
+      i++
+    } else if (s[i] === "F") {
+      tokens.push("F")
+      i++
+    } else if (s[i] === "S") {
+      tokens.push("S")
+      i++
+    } else if (s[i] === "T") {
       // Check for Thursday
-      if (i + 1 < s.length && s[i+1] === 'H') {
-        tokens.push('Th');
-        i += 2;
-      } 
+      if (i + 1 < s.length && s[i + 1] === "H") {
+        tokens.push("Th")
+        i += 2
+      }
       // Otherwise it's Tuesday
       else {
-        tokens.push('Tu');
-        i++;
+        tokens.push("Tu")
+        i++
       }
-    }
-    else {
+    } else {
       // Skip invalid characters but warn
-      console.warn(`Invalid day character: ${s[i]} in "${daysString}"`);
-      i++;
+      console.warn(`Invalid day character: ${s[i]} in "${daysString}"`)
+      i++
     }
   }
 
-  return tokens;
+  return tokens
 }
 
 // Day string validator
 function validateDayString(days: string): boolean {
-  const validPattern = /^([MTWFS]|TU|TH)+$/i;
-  return validPattern.test(days.replace(/\s+/g, ''));
+  const validPattern = /^([MTWFS]|TU|TH)+$/i
+  return validPattern.test(days.replace(/\s+/g, ""))
 }
 
 // Helper function to determine text color based on background color
 const getContrastColor = (hexColor: string): string => {
   // Convert hex to RGB
-  const r = parseInt(hexColor.substr(1, 2), 16)
-  const g = parseInt(hexColor.substr(3, 2), 16)
-  const b = parseInt(hexColor.substr(5, 2), 16)
+  const r = Number.parseInt(hexColor.substr(1, 2), 16)
+  const g = Number.parseInt(hexColor.substr(3, 2), 16)
+  const b = Number.parseInt(hexColor.substr(5, 2), 16)
 
   // Calculate luminance
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
@@ -277,7 +321,7 @@ export default function ScheduleMaker() {
   const [tempCustomTitle, setTempCustomTitle] = useState("")
   const [tempCustomColor, setTempCustomColor] = useState("#3b82f6")
   const [scheduleTitle, setScheduleTitle] = useState(
-    typeof window !== 'undefined' ? localStorage.getItem('scheduleTitle') || 'Weekly Schedule' : 'Weekly Schedule'
+    typeof window !== "undefined" ? localStorage.getItem("scheduleTitle") || "Weekly Schedule" : "Weekly Schedule",
   )
 
   useEffect(() => {
@@ -331,22 +375,25 @@ export default function ScheduleMaker() {
   // Convert 24-hour time to 12-hour format
   const convertTo12Hour = (time24: string): string => {
     if (!time24) return "TBD"
-    
+
     // Handle time ranges (e.g., "13:00-14:30")
     if (time24.includes("-")) {
       const [start, end] = time24.split("-")
       return `${convertTo12Hour(start)} - ${convertTo12Hour(end)}`
     }
-    
+
     // Handle multiple time slots (e.g., "13:00 / 15:00")
     if (time24.includes(" / ")) {
-      return time24.split(" / ").map(t => convertTo12Hour(t)).join(" / ")
+      return time24
+        .split(" / ")
+        .map((t) => convertTo12Hour(t))
+        .join(" / ")
     }
-    
+
     // Convert single time
     const [hours, minutes] = time24.split(":")
-    const hourNum = parseInt(hours, 10)
-    
+    const hourNum = Number.parseInt(hours, 10)
+
     if (hourNum === 0) {
       return `12:${minutes} AM`
     } else if (hourNum < 12) {
@@ -361,16 +408,16 @@ export default function ScheduleMaker() {
   // Clean and normalize room string
   const cleanRoomString = (roomString: string): string => {
     if (!roomString) return "TBD"
-    
+
     // Split by possible delimiters
     const rooms = roomString.split(/ \/ |\/|\/\/|, /)
-    
+
     // If all rooms are the same after trimming, return just one
-    const uniqueRooms = [...new Set(rooms.map(room => room.trim()))]
+    const uniqueRooms = [...new Set(rooms.map((room) => room.trim()))]
     if (uniqueRooms.length === 1) {
       return uniqueRooms[0]
     }
-    
+
     // Otherwise return the original string
     return roomString
   }
@@ -378,15 +425,15 @@ export default function ScheduleMaker() {
   // Clean and normalize time string
   const cleanTimeString = (timeString: string): string => {
     if (!timeString) return "TBD"
-    
+
     const times = timeString.split(" / ")
-    
+
     // If all times are the same, just convert one to 12-hour format
     if (times.every((time) => time === times[0])) {
       const [start, end] = times[0].split("-")
       return `${convertTo12Hour(start)} - ${convertTo12Hour(end)}`
     }
-    
+
     // Otherwise convert each time range individually
     return times
       .map((time) => {
@@ -408,13 +455,20 @@ export default function ScheduleMaker() {
   // Get full day name
   const getFullDayName = (day: DayToken): string => {
     switch (day) {
-      case "M": return "Monday"
-      case "Tu": return "Tuesday"
-      case "W": return "Wednesday"
-      case "Th": return "Thursday"
-      case "F": return "Friday"
-      case "S": return "Saturday"
-      default: return day
+      case "M":
+        return "Monday"
+      case "Tu":
+        return "Tuesday"
+      case "W":
+        return "Wednesday"
+      case "Th":
+        return "Thursday"
+      case "F":
+        return "Friday"
+      case "S":
+        return "Saturday"
+      default:
+        return day
     }
   }
 
@@ -433,7 +487,7 @@ export default function ScheduleMaker() {
       const newDaysSet = new Set(newDays)
 
       // Check if any days overlap
-      const daysOverlap = [...newDaysSet].some(day => selectedDaysSet.has(day))
+      const daysOverlap = [...newDaysSet].some((day) => selectedDaysSet.has(day))
       if (!daysOverlap) return false
 
       // Only check time overlap if days overlap
@@ -495,7 +549,7 @@ export default function ScheduleMaker() {
 
     const { start, end } = parseTimeRange(course.meetingTime)
     const parsedDays = parseDays(course.meetingDays)
-    
+
     const newCourse = {
       ...course,
       name: courseDetailsMap[course.courseCode]?.name || "Unknown Course",
@@ -504,14 +558,12 @@ export default function ScheduleMaker() {
       timeEnd: end,
       parsedDays,
       displayTime: cleanTimeString(course.meetingTime),
-      displayRoom: cleanRoomString(course.room)
+      displayRoom: cleanRoomString(course.room),
     }
 
     if (existingCourse) {
       setSelectedCourses((prev) =>
-        prev.map((selected) =>
-          selected.courseCode === course.courseCode ? newCourse : selected
-        )
+        prev.map((selected) => (selected.courseCode === course.courseCode ? newCourse : selected)),
       )
     } else {
       setSelectedCourses((prev) => [...prev, newCourse])
@@ -533,59 +585,82 @@ export default function ScheduleMaker() {
   }
 
   // New ICS file generator
- const downloadICSFile = () => {
-  if (selectedCourses.length === 0) return;
+  const downloadICSFile = () => {
+    if (selectedCourses.length === 0) return
 
-  const events = selectedCourses.map(course => {
-    const startDateObj = new Date(startDate);
-    const dayNumbers = course.parsedDays.map(day => {
-      switch (day) {
-        case 'M': return 'MO';
-        case 'Tu': return 'TU';
-        case 'W': return 'WE';
-        case 'Th': return 'TH';
-        case 'F': return 'FR';
-        case 'S': return 'SA';
-        default: return 'MO';
+    const events = selectedCourses.map((course) => {
+      const startDateObj = new Date(startDate)
+      const dayNumbers = course.parsedDays.map((day) => {
+        switch (day) {
+          case "M":
+            return "MO"
+          case "Tu":
+            return "TU"
+          case "W":
+            return "WE"
+          case "Th":
+            return "TH"
+          case "F":
+            return "FR"
+          case "S":
+            return "SA"
+          default:
+            return "MO"
+        }
+      })
+
+      const [startHour, startMinute] = course.timeStart.split(":").map(Number)
+      const [endHour, endMinute] = course.timeEnd.split(":").map(Number)
+
+      const event = {
+        title:
+          customizations[`${course.courseCode}-${course.section}`]?.customTitle ||
+          `${course.courseCode} - ${course.name}`,
+        description: `Section: ${course.section}\nRoom: ${course.displayRoom}`,
+        location: course.displayRoom,
+        start: [
+          startDateObj.getFullYear(),
+          startDateObj.getMonth() + 1,
+          startDateObj.getDate(),
+          startHour,
+          startMinute,
+        ] as [number, number, number, number, number],
+        end: [startDateObj.getFullYear(), startDateObj.getMonth() + 1, startDateObj.getDate(), endHour, endMinute] as [
+          number,
+          number,
+          number,
+          number,
+          number,
+        ],
+        recurrenceRule: `FREQ=WEEKLY;BYDAY=${dayNumbers.join(",")};COUNT=15`, // ~15 week semester
+        alarms: [
+          {
+            action: "display",
+            description: "Reminder",
+            trigger: { hours: 1, minutes: 0, before: true },
+          },
+        ],
       }
-    });
 
-    const [startHour, startMinute] = course.timeStart.split(':').map(Number);
-    const [endHour, endMinute] = course.timeEnd.split(':').map(Number);
+      return event
+    })
 
-    const event = {
-      title: customizations[`${course.courseCode}-${course.section}`]?.customTitle || `${course.courseCode} - ${course.name}`,
-      description: `Section: ${course.section}\nRoom: ${course.displayRoom}`,
-      location: course.displayRoom,
-      start: [startDateObj.getFullYear(), startDateObj.getMonth() + 1, startDateObj.getDate(), startHour, startMinute] as [number, number, number, number, number],
-      end: [startDateObj.getFullYear(), startDateObj.getMonth() + 1, startDateObj.getDate(), endHour, endMinute] as [number, number, number, number, number],
-      recurrenceRule: `FREQ=WEEKLY;BYDAY=${dayNumbers.join(',')};COUNT=15`, // ~15 week semester
-      alarms: [{
-        action: 'display',
-        description: 'Reminder',
-        trigger: { hours: 1, minutes: 0, before: true }
-      }]
-    };
+    createEvents(events, (error, value) => {
+      if (error) {
+        console.error("Error generating ICS file:", error)
+        return
+      }
 
-    return event;
-  });
-
-  createEvents(events, (error, value) => {
-    if (error) {
-      console.error('Error generating ICS file:', error);
-      return;
-    }
-
-    const blob = new Blob([value], { type: 'text/calendar' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'my-schedule.ics';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  });
-};
+      const blob = new Blob([value], { type: "text/calendar" })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = "my-schedule.ics"
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    })
+  }
 
   // Group courses by department
   const groupCoursesByDepartment = (courses: CourseSection[]) => {
@@ -762,79 +837,78 @@ export default function ScheduleMaker() {
     return Array.from(departments).sort()
   }, [availableCourses])
 
-const downloadScheduleImage = async () => {
-  if (!scheduleRef.current) return;
-  
-  try {
-    // Store original styles
-    const dayHeaders = scheduleRef.current.querySelectorAll('.day-header');
-    const originalStyles = Array.from(dayHeaders).map(header => ({
-      element: header as HTMLElement,
-      display: (header as HTMLElement).style.display,
-      alignItems: (header as HTMLElement).style.alignItems,
-      justifyContent: (header as HTMLElement).style.justifyContent,
-      height: (header as HTMLElement).style.height
-    }));
+  const downloadScheduleImage = async () => {
+    if (!scheduleRef.current) return
 
-    // Apply temporary styles for perfect centering during capture
-    dayHeaders.forEach(header => {
-      const el = header as HTMLElement;
-      el.style.display = 'flex';
-      el.style.alignItems = 'center';
-      el.style.justifyContent = 'center';
-      el.style.height = '44px'; // Match your header height
-    });
+    try {
+      // Store original styles
+      const dayHeaders = scheduleRef.current.querySelectorAll(".day-header")
+      const originalStyles = Array.from(dayHeaders).map((header) => ({
+        element: header as HTMLElement,
+        display: (header as HTMLElement).style.display,
+        alignItems: (header as HTMLElement).style.alignItems,
+        justifyContent: (header as HTMLElement).style.justifyContent,
+        height: (header as HTMLElement).style.height,
+      }))
 
-    // Hide the edit button temporarily
-    const editButtons = scheduleRef.current.querySelectorAll('.edit-button');
-    editButtons.forEach(button => (button as HTMLElement).style.display = 'none');
+      // Apply temporary styles for perfect centering during capture
+      dayHeaders.forEach((header) => {
+        const el = header as HTMLElement
+        el.style.display = "flex"
+        el.style.alignItems = "center"
+        el.style.justifyContent = "center"
+        el.style.height = "44px" // Match your header height
+      })
 
-    // Small delay to ensure styles are applied
-    await new Promise(resolve => setTimeout(resolve, 50));
+      // Hide the edit button temporarily
+      const editButtons = scheduleRef.current.querySelectorAll(".edit-button")
+      editButtons.forEach((button) => ((button as HTMLElement).style.display = "none"))
 
-    const canvas = await html2canvas(scheduleRef.current, {
-      scale: 2,
-      useCORS: true,
-      logging: false,
-      backgroundColor: 'white',
-      scrollX: 0,
-      scrollY: 0,
-      windowWidth: scheduleRef.current.scrollWidth,
-      windowHeight: scheduleRef.current.scrollHeight
-    });
+      // Small delay to ensure styles are applied
+      await new Promise((resolve) => setTimeout(resolve, 50))
 
-    // Restore all original styles
-    originalStyles.forEach(style => {
-      style.element.style.display = style.display;
-      style.element.style.alignItems = style.alignItems;
-      style.element.style.justifyContent = style.justifyContent;
-      style.element.style.height = style.height;
-    });
+      const canvas = await html2canvas(scheduleRef.current, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: "white",
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: scheduleRef.current.scrollWidth,
+        windowHeight: scheduleRef.current.scrollHeight,
+      })
 
-    // Restore the edit buttons
-    editButtons.forEach(button => (button as HTMLElement).style.display = '');
+      // Restore all original styles
+      originalStyles.forEach((style) => {
+        style.element.style.display = style.display
+        style.element.style.alignItems = style.alignItems
+        style.element.style.justifyContent = style.justifyContent
+        style.element.style.height = style.height
+      })
 
-    const link = document.createElement('a');
-    link.download = `schedule-${new Date().toISOString().slice(0,10)}.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
+      // Restore the edit buttons
+      editButtons.forEach((button) => ((button as HTMLElement).style.display = ""))
 
-  } catch (err) {
-    console.error('Error generating image:', err);
+      const link = document.createElement("a")
+      link.download = `schedule-${new Date().toISOString().slice(0, 10)}.png`
+      link.href = canvas.toDataURL("image/png")
+      link.click()
+    } catch (err) {
+      console.error("Error generating image:", err)
+    }
   }
-};
 
   // Save course customization
   const saveCustomization = () => {
     if (!editingCourse) return
-    
+
     const key = `${editingCourse.courseCode}-${editingCourse.section}`
-    setCustomizations(prev => ({
+    setCustomizations((prev) => ({
       ...prev,
       [key]: {
         customTitle: tempCustomTitle || editingCourse.courseCode,
         color: tempCustomColor,
-      }
+      },
     }))
     setEditingCourse(null)
   }
@@ -852,7 +926,7 @@ const downloadScheduleImage = async () => {
 
     const handleSave = () => {
       setScheduleTitle(tempTitle)
-      localStorage.setItem('scheduleTitle', tempTitle)
+      localStorage.setItem("scheduleTitle", tempTitle)
       setIsEditing(false)
     }
 
@@ -865,8 +939,12 @@ const downloadScheduleImage = async () => {
               onChange={(e) => setTempTitle(e.target.value)}
               className="text-center text-lg font-bold w-64"
             />
-            <Button size="sm" onClick={handleSave}>Save</Button>
-            <Button size="sm" variant="outline" onClick={() => setIsEditing(false)}>Cancel</Button>
+            <Button size="sm" onClick={handleSave}>
+              Save
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setIsEditing(false)}>
+              Cancel
+            </Button>
           </div>
         ) : (
           <>
@@ -885,189 +963,168 @@ const downloadScheduleImage = async () => {
     )
   }
 
-const renderScheduleView = () => {
-  // Constants for precise alignment
-  const HEADER_HEIGHT = 44; // Height of header row in pixels
-  const HOUR_HEIGHT = 80; // Each hour = 80px tall
-  const FIRST_HOUR = 7; // Schedule starts at 7AM
+  const renderScheduleView = () => {
+    // Constants for precise alignment
+    const HEADER_HEIGHT = 44 // Height of header row in pixels
+    const HOUR_HEIGHT = 80 // Each hour = 80px tall
+    const FIRST_HOUR = 7 // Schedule starts at 7AM
 
-  return (
-    <div>
-      {/* Header controls */}
-      <div className="mb-4 flex justify-between items-center">
-        <div className="flex items-center space-x-4">
-          <Label htmlFor="start-date">Start Date:</Label>
-          <Input
-            type="date"
-            id="start-date"
-            value={startDate.toISOString().split('T')[0]}
-            onChange={(e) => setStartDate(new Date(e.target.value))}
-          />
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={downloadICSFile}
-            className="flex items-center gap-2"
-          >
-            <Calendar className="h-4 w-4" />
-            Export as ICS
-          </Button>
-          <Button
-            variant="default"
-            size="sm"
-            onClick={downloadScheduleImage}
-            className="flex items-center gap-2"
-          >
-            <Download className="h-4 w-4" />
-            Download as Image
-          </Button>
-        </div>
-      </div>
-
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4" ref={scheduleRef}>
-        <EditableTitle />
-
-        <div className="overflow-x-auto relative">
-          {/* Header row - fixed at top */}
-          <div className="grid grid-cols-7 gap-1 min-w-[800px] sticky top-0 z-20">
-            <div className="font-medium p-2 bg-gray-100 dark:bg-gray-700 text-center">Time</div>
-            {DAYS.map(day => (
-              <div key={day} className="font-medium p-2 bg-gray-100 dark:bg-gray-700 text-center">
-                {getFullDayName(day)}
-              </div>
-            ))}
+    return (
+      <div>
+        {/* Header controls */}
+        <div className="mb-4 flex justify-between items-center">
+          <div className="flex items-center space-x-4">
+            <Label htmlFor="start-date">Start Date:</Label>
+            <Input
+              type="date"
+              id="start-date"
+              value={startDate.toISOString().split("T")[0]}
+              onChange={(e) => setStartDate(new Date(e.target.value))}
+            />
           </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={downloadICSFile}
+              className="flex items-center gap-2 bg-transparent"
+            >
+              <Calendar className="h-4 w-4" />
+              Export as ICS
+            </Button>
+            <Button variant="default" size="sm" onClick={downloadScheduleImage} className="flex items-center gap-2">
+              <Download className="h-4 w-4" />
+              Download as Image
+            </Button>
+          </div>
+        </div>
 
-          {/* Time slots - absolutely positioned */}
-          <div className="relative min-w-[800px]" style={{ height: `${HOUR_HEIGHT * 15}px` }}>
-            {/* Hour markers */}
-            {Array.from({ length: 15 }).map((_, i) => {
-              const hour = FIRST_HOUR + i;
-              const timeString = `${hour % 12 || 12}:00 ${hour < 12 ? 'AM' : 'PM'}`;
-              return (
-                <div 
-                  key={hour}
-                  className="absolute left-0 right-0 border-t border-gray-200 dark:border-gray-700"
-                  style={{ top: `${i * HOUR_HEIGHT}px` }}
-                >
-                  <div className="absolute left-0 p-1 text-xs font-medium">
-                    {timeString}
-                  </div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4" ref={scheduleRef}>
+          <EditableTitle />
+
+          <div className="overflow-x-auto relative">
+            {/* Header row - fixed at top */}
+            <div className="grid grid-cols-7 gap-1 min-w-[800px] sticky top-0 z-20">
+              <div className="font-medium p-2 bg-gray-100 dark:bg-gray-700 text-center">Time</div>
+              {DAYS.map((day) => (
+                <div key={day} className="font-medium p-2 bg-gray-100 dark:bg-gray-700 text-center">
+                  {getFullDayName(day)}
                 </div>
-              );
-            })}
+              ))}
+            </div>
 
-            {/* Half-hour markers */}
-            {Array.from({ length: 14 }).map((_, i) => (
-              <div 
-                key={`half-${i}`}
-                className="absolute left-0 right-0 border-t border-gray-100 dark:border-gray-700"
-                style={{ top: `${(i + 0.5) * HOUR_HEIGHT}px` }}
-              />
-            ))}
-
-            {/* Course blocks - adjusted 30 minutes up */}
-            {selectedCourses.map(course => {
-              const key = `${course.courseCode}-${course.section}`;
-              const customization = customizations[key] || {};
-              const bgColor = customization.color || "#3b82f6";
-              const textColor = getContrastColor(bgColor);
-              
-              // Calculate exact positions with 30-minute adjustment
-              const [startHour, startMinute] = course.timeStart.split(':').map(Number);
-              const [endHour, endMinute] = course.timeEnd.split(':').map(Number);
-              
-              // Subtract 30 minutes from both start and end times
-              let adjustedStartHour = startHour;
-              let adjustedStartMinute = startMinute - 30;
-              let adjustedEndHour = endHour;
-              let adjustedEndMinute = endMinute - 30;
-              
-              // Handle minute underflow
-              if (adjustedStartMinute < 0) {
-                adjustedStartHour -= 1;
-                adjustedStartMinute += 60;
-              }
-              if (adjustedEndMinute < 0) {
-                adjustedEndHour -= 1;
-                adjustedEndMinute += 60;
-              }
-              
-              const startTop = HEADER_HEIGHT + 
-                ((adjustedStartHour - FIRST_HOUR) * HOUR_HEIGHT) + 
-                (adjustedStartMinute / 60 * HOUR_HEIGHT);
-              
-              const endTop = HEADER_HEIGHT + 
-                ((adjustedEndHour - FIRST_HOUR) * HOUR_HEIGHT) + 
-                (adjustedEndMinute / 60 * HOUR_HEIGHT);
-              
-              const height = endTop - startTop;
-
-              return course.parsedDays.map(day => {
-                const dayIndex = DAYS.indexOf(day);
-                if (dayIndex === -1) return null;
-
+            {/* Time slots - absolutely positioned */}
+            <div className="relative min-w-[800px]" style={{ height: `${HOUR_HEIGHT * 15}px` }}>
+              {/* Hour markers */}
+              {Array.from({ length: 15 }).map((_, i) => {
+                const hour = FIRST_HOUR + i
+                const timeString = `${hour % 12 || 12}:00 ${hour < 12 ? "AM" : "PM"}`
                 return (
                   <div
-                    key={`${key}-${day}`}
-                    className="absolute rounded p-1"
-                    style={{
-                      left: `${(dayIndex + 1) * (100 / 7)}%`,
-                      top: `${startTop}px`,
-                      height: `${height}px`,
-                      backgroundColor: bgColor,
-                      color: textColor,
-                      width: `calc(${100 / 7}% - 4px)`,
-                      zIndex: 10,
-                      margin: '0 2px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      justifyContent: 'space-between',
-                      padding: '5px 10px 15px',
-                      boxSizing: 'border-box',
-                      overflow: 'visible'
-                    }}
+                    key={hour}
+                    className="absolute left-0 right-0 border-t border-gray-200 dark:border-gray-700"
+                    style={{ top: `${i * HOUR_HEIGHT}px` }}
                   >
-                    <div className="font-bold text-sm leading-tight break-words">
-                      {customization.customTitle || course.courseCode}
-                    </div>
-                    <div className="text-xs leading-tight break-words">
-                      {course.displayTime}
-                    </div>
-                    <div className="text-xs leading-tight break-words">
-                      {course.displayRoom}
-                    </div>
+                    <div className="absolute left-0 p-1 text-xs font-medium">{timeString}</div>
                   </div>
-                );
-              });
-            })}
+                )
+              })}
+
+              {/* Half-hour markers */}
+              {Array.from({ length: 14 }).map((_, i) => (
+                <div
+                  key={`half-${i}`}
+                  className="absolute left-0 right-0 border-t border-gray-100 dark:border-gray-700"
+                  style={{ top: `${(i + 0.5) * HOUR_HEIGHT}px` }}
+                />
+              ))}
+
+              {/* Course blocks - adjusted 30 minutes up */}
+              {selectedCourses.map((course) => {
+                const key = `${course.courseCode}-${course.section}`
+                const customization = customizations[key] || {}
+                const bgColor = customization.color || "#3b82f6"
+                const textColor = getContrastColor(bgColor)
+
+                // Calculate exact positions with 30-minute adjustment
+                const [startHour, startMinute] = course.timeStart.split(":").map(Number)
+                const [endHour, endMinute] = course.timeEnd.split(":").map(Number)
+
+                // Subtract 30 minutes from both start and end times
+                let adjustedStartHour = startHour
+                let adjustedStartMinute = startMinute - 30
+                let adjustedEndHour = endHour
+                let adjustedEndMinute = endMinute - 30
+
+                // Handle minute underflow
+                if (adjustedStartMinute < 0) {
+                  adjustedStartHour -= 1
+                  adjustedStartMinute += 60
+                }
+                if (adjustedEndMinute < 0) {
+                  adjustedEndHour -= 1
+                  adjustedEndMinute += 60
+                }
+
+                const startTop =
+                  HEADER_HEIGHT +
+                  (adjustedStartHour - FIRST_HOUR) * HOUR_HEIGHT +
+                  (adjustedStartMinute / 60) * HOUR_HEIGHT
+
+                const endTop =
+                  HEADER_HEIGHT + (adjustedEndHour - FIRST_HOUR) * HOUR_HEIGHT + (adjustedEndMinute / 60) * HOUR_HEIGHT
+
+                const height = endTop - startTop
+
+                return course.parsedDays.map((day) => {
+                  const dayIndex = DAYS.indexOf(day)
+                  if (dayIndex === -1) return null
+
+                  return (
+                    <div
+                      key={`${key}-${day}`}
+                      className="absolute rounded p-1"
+                      style={{
+                        left: `${(dayIndex + 1) * (100 / 7)}%`,
+                        top: `${startTop}px`,
+                        height: `${height}px`,
+                        backgroundColor: bgColor,
+                        color: textColor,
+                        width: `calc(${100 / 7}% - 4px)`,
+                        zIndex: 10,
+                        margin: "0 2px",
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "space-between",
+                        padding: "5px 10px 15px",
+                        boxSizing: "border-box",
+                        overflow: "visible",
+                      }}
+                    >
+                      <div className="font-bold text-sm leading-tight break-words">
+                        {customization.customTitle || course.courseCode}
+                      </div>
+                      <div className="text-xs leading-tight break-words">{course.displayTime}</div>
+                      <div className="text-xs leading-tight break-words">{course.displayRoom}</div>
+                    </div>
+                  )
+                })
+              })}
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  );
-};
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
       <div className="container mx-auto px-4 py-8">
         <div className="mb-6">
-          <div className="flex flex-col sm:flex-row gap-3 mb-4">
-            <Link href="/course-tracker">
-              <Button variant="outline" size="sm" className="flex items-center gap-2">
-                <BookOpen className="h-4 w-4" />
-                Back to Course Tracker
-              </Button>
-            </Link>
-            <Link href="/">
-              <Button variant="outline" size="sm" className="flex items-center gap-2">
-                <ArrowLeft className="h-4 w-4" />
-                Back to Home
-              </Button>
-            </Link>
-          </div>
+          <QuickNavigation />
+        </div>
+
+        <div className="mb-6">
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-3xl font-bold">Schedule Maker</h1>
@@ -1089,7 +1146,7 @@ const renderScheduleView = () => {
                 size="sm"
                 onClick={fetchData}
                 disabled={loading}
-                className="flex items-center gap-2"
+                className="flex items-center gap-2 bg-transparent"
               >
                 <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                 Refresh Data
@@ -1449,7 +1506,7 @@ const renderScheduleView = () => {
                                         <Popover>
                                           <PopoverTrigger asChild>
                                             <Button
-                                              className="w-full"
+                                              className="w-full bg-transparent"
                                               variant="outline"
                                               className="bg-yellow-50 border-yellow-200 text-yellow-700 hover:bg-yellow-100 w-full"
                                             >
@@ -1522,238 +1579,104 @@ const renderScheduleView = () => {
             {/* Selected Courses Tab */}
             <TabsContent value="selected">
               {selectedCourses.length === 0 ? (
-                <div className="bg-blue-100 dark:bg-blue-900/30 border border-blue-400 dark:border-blue-700 text-blue-700 dark:text-blue-400 px-4 py-3 rounded mb-4">
+                <div className="bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-400 dark:border-yellow-700 text-yellow-700 dark:text-yellow-400 px-4 py-3 rounded mb-4">
                   <p>No courses selected yet. Add courses from the Available Courses tab to build your schedule.</p>
                 </div>
               ) : (
-                <>
-                  <div className="mb-4 flex justify-between">
-                    <div className="flex items-center space-x-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => setSelectedViewMode(selectedViewMode === "card" ? "table" : "card")}
-                        className="flex items-center gap-2"
-                      >
-                        {selectedViewMode === "card" ? "Table View" : "Card View"}
-                      </Button>
-                    </div>
-                  </div>
+                <div className="space-y-4">
+                  {selectedCourses.map((course) => {
+                    const key = `${course.courseCode}-${course.section}`
+                    const customization = customizations[key] || {}
+                    const bgColor = customization.color || "#3b82f6"
+                    const textColor = getContrastColor(bgColor)
 
-                  {selectedViewMode === "table" ? (
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Course Code</TableHead>
-                            <TableHead>Custom Title</TableHead>
-                            <TableHead>Section</TableHead>
-                            <TableHead>Schedule</TableHead>
-                            <TableHead>Room</TableHead>
-                            <TableHead>Slots</TableHead>
-                            <TableHead>Actions</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {selectedCourses.map((course) => {
-                            const key = `${course.courseCode}-${course.section}`
-                            const customization = customizations[key] || {}
-                            
-                            return (
-                              <TableRow key={key}>
-                                <TableCell>{course.courseCode}</TableCell>
-                                <TableCell>
-                                  <Popover>
-                                    <PopoverTrigger asChild>
-                                      <Button variant="ghost" size="sm" className="flex items-center gap-1">
-                                        {customization.customTitle || course.courseCode}
-                                        <Edit className="h-3 w-3" />
-                                      </Button>
-                                    </PopoverTrigger>
-                                    <PopoverContent className="w-80">
-                                      <div className="space-y-4">
-                                        <h4 className="font-medium">Customize Course</h4>
-                                        <div>
-                                          <Label>Display Name</Label>
-                                          <Input
-                                            value={customization.customTitle || course.courseCode}
-                                            onChange={(e) => {
-                                              setCustomizations(prev => ({
-                                                ...prev,
-                                                [key]: {
-                                                  ...prev[key],
-                                                  customTitle: e.target.value
-                                                }
-                                              }))
-                                            }}
-                                          />
-                                        </div>
-                                        <div>
-                                          <Label>Color</Label>
-                                          <div className="flex items-center gap-2">
-                                            <HexColorPicker
-                                              color={customization.color || "#3b82f6"}
-                                              onChange={(color) => {
-                                                setCustomizations(prev => ({
-                                                  ...prev,
-                                                  [key]: {
-                                                    ...prev[key],
-                                                    color
-                                                  }
-                                                }))
-                                              }}
-                                              className="w-full"
-                                            />
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </PopoverContent>
-                                  </Popover>
-                                </TableCell>
-                                <TableCell>{course.section}</TableCell>
-                                <TableCell>
-                                  {course.displayTime} ({course.meetingDays})
-                                </TableCell>
-                                <TableCell>{course.displayRoom}</TableCell>
-                                <TableCell>
-                                  <Badge variant={course.hasSlots ? "success" : "destructive"}>
-                                    {course.hasSlots ? `${course.remainingSlots}/${course.classSize}` : "Full"}
-                                  </Badge>
-                                </TableCell>
-                                <TableCell>
-                                  <Button
-                                    variant="destructive"
-                                    size="sm"
-                                    onClick={() => removeCourse(course.courseCode, course.section)}
-                                  >
-                                    <Trash className="h-4 w-4 mr-1" />
-                                    Remove
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            )
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {selectedCourses.map((course, index) => {
-                        const key = `${course.courseCode}-${course.section}`
-                        const customization = customizations[key] || {}
-                        const courseColor = customization.color || "#3b82f6"
-
-                        return (
-                          <Card key={index} className="relative overflow-hidden" style={{
-                            borderLeft: `4px solid ${courseColor}`
-                          }}>
-                            <CardHeader className="pb-2">
-                              <div className="flex justify-between items-start">
-                                <div>
-                                  <CardTitle className="text-lg font-bold">
-                                    {customization.customTitle || course.courseCode}
-                                  </CardTitle>
-                                  <p className="text-sm font-medium">{course.name}</p>
-                                </div>
-                                <Badge variant={course.hasSlots ? "success" : "destructive"}>
-                                  {course.hasSlots ? `${course.remainingSlots} slots` : "Full"}
-                                </Badge>
-                              </div>
-                              <p className="text-sm text-gray-600 dark:text-gray-400">Section: {course.section}</p>
-                            </CardHeader>
-
-                            <CardContent>
-                              <div className="space-y-2 text-sm">
-                                <div className="flex justify-between">
-                                  <span className="font-medium">Days:</span>
-                                  <span>{course.meetingDays}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span className="font-medium">Time:</span>
-                                  <span>{course.displayTime}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span className="font-medium">Room:</span>
-                                  <span>{course.displayRoom}</span>
-                                </div>
-                              </div>
-                            </CardContent>
-
-                            <CardFooter className="flex gap-2">
-                              <Popover>
-                                <PopoverTrigger asChild>
-                                  <Button variant="outline" size="sm" className="flex-1">
-                                    <Palette className="h-4 w-4 mr-1" />
-                                    Customize
-                                  </Button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-80">
-                                  <div className="space-y-4">
-                                    <h4 className="font-medium">Customize Course</h4>
-                                    <div>
-                                      <Label>Display Name</Label>
-                                      <Input
-                                        defaultValue={customization.customTitle || course.courseCode}
-                                        onChange={(e) => {
-                                          setCustomizations(prev => ({
-                                            ...prev,
-                                            [key]: {
-                                              ...prev[key],
-                                              customTitle: e.target.value
-                                            }
-                                          }))
-                                        }}
-                                      />
-                                    </div>
-                                    <div>
-                                      <Label>Color</Label>
-                                      <div className="flex items-center gap-2">
-                                        <HexColorPicker
-                                          color={courseColor}
-                                          onChange={(color) => {
-                                            setCustomizations(prev => ({
-                                              ...prev,
-                                              [key]: {
-                                                ...prev[key],
-                                                color
-                                              }
-                                            }))
-                                          }}
-                                          className="w-full"
-                                        />
-                                      </div>
-                                    </div>
+                    return (
+                      <Card key={key} className="bg-white dark:bg-gray-800 shadow-md">
+                        <CardHeader className="flex items-center justify-between">
+                          <div>
+                            <CardTitle className="text-lg font-semibold">
+                              {customization.customTitle || course.courseCode}
+                            </CardTitle>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">
+                              {course.name} - Section {course.section}
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Popover>
+                              <PopoverTrigger asChild>
+                                <Button variant="outline" size="icon" className="edit-button bg-transparent">
+                                  <Palette className="h-4 w-4" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-80">
+                                <div className="space-y-4">
+                                  <h4 className="font-medium">Customize Course Appearance</h4>
+                                  <div>
+                                    <Label htmlFor="custom-title">Custom Title</Label>
+                                    <Input
+                                      id="custom-title"
+                                      placeholder="Enter custom title"
+                                      value={tempCustomTitle}
+                                      onChange={(e) => setTempCustomTitle(e.target.value)}
+                                    />
                                   </div>
-                                </PopoverContent>
-                              </Popover>
-                              <Button
-                                variant="destructive"
-                                size="sm"
-                                onClick={() => removeCourse(course.courseCode, course.section)}
-                                className="flex-1"
-                              >
-                                <Trash className="h-4 w-4 mr-1" />
-                                Remove
-                              </Button>
-                            </CardFooter>
-                          </Card>
-                        )
-                      })}
-                    </div>
-                  )}
-                </>
+                                  <div>
+                                    <Label>Course Color</Label>
+                                    <HexColorPicker color={tempCustomColor} onChange={setTempCustomColor} />
+                                  </div>
+                                  <div className="flex justify-end gap-2">
+                                    <Button
+                                      variant="outline"
+                                      onClick={() => {
+                                        setTempCustomTitle(customization.customTitle || "")
+                                        setTempCustomColor(customization.color || "#3b82f6")
+                                      }}
+                                    >
+                                      Reset
+                                    </Button>
+                                    <Button onClick={saveCustomization}>Save</Button>
+                                  </div>
+                                </div>
+                              </PopoverContent>
+                            </Popover>
+                            <Button
+                              variant="destructive"
+                              size="icon"
+                              onClick={() => removeCourse(course.courseCode, course.section)}
+                            >
+                              <Trash className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="space-y-2 text-sm">
+                            <div className="flex justify-between">
+                              <span className="font-medium">Days:</span>
+                              <span>{course.meetingDays}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="font-medium">Time:</span>
+                              <span>{course.displayTime}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="font-medium">Room:</span>
+                              <span>{course.displayRoom}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="font-medium">Credits:</span>
+                              <span>{course.credits}</span>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )
+                  })}
+                </div>
               )}
             </TabsContent>
 
             {/* Schedule View Tab */}
-            <TabsContent value="schedule">
-              {selectedCourses.length === 0 ? (
-                <div className="bg-blue-100 dark:bg-blue-900/30 border border-blue-400 dark:border-blue-700 text-blue-700 dark:text-blue-400 px-4 py-3 rounded mb-4">
-                  <p>No courses selected yet. Add courses from the Available Courses tab to build your schedule.</p>
-                </div>
-              ) : (
-                renderScheduleView()
-              )}
-            </TabsContent>
+            <TabsContent value="schedule">{renderScheduleView()}</TabsContent>
           </Tabs>
         )}
       </div>

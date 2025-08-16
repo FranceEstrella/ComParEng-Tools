@@ -88,18 +88,24 @@ interface AcademicYear {
   term3: string
 }
 
-// Navigation Buttons Component
-const NavigationButtons = () => {
+// Quick Navigation Component
+const QuickNavigation = () => {
   return (
     <div className="flex flex-col sm:flex-row gap-3 justify-center">
       <Link href="/schedule-maker">
-        <Button className="w-full sm:w-auto bg-purple-600 hover:bg-purple-700 flex items-center gap-2">
+        <Button className="w-full sm:w-auto bg-gradient-to-r from-purple-600 to-purple-800 hover:from-purple-700 hover:to-purple-900 text-white flex items-center gap-2">
           <Calendar className="h-4 w-4" />
-          Go to Schedule Maker
+          Schedule Maker
+        </Button>
+      </Link>
+      <Link href="/academic-planner">
+        <Button className="w-full sm:w-auto bg-gradient-to-r from-green-600 to-green-800 hover:from-green-700 hover:to-green-900 text-white flex items-center gap-2">
+          <GraduationCap className="h-4 w-4" />
+          Academic Planner
         </Button>
       </Link>
       <Link href="/">
-        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2">
+        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
           <ArrowLeft className="h-4 w-4" />
           Back to Home
         </Button>
@@ -745,7 +751,7 @@ const AcademicTimeline = ({ startYear, handleStartYearChange, academicYears }) =
       {/* Academic Planner Link */}
       <div className="mt-4">
         <Link href="/academic-planner">
-          <Button variant="outline" className="flex items-center gap-2">
+          <Button variant="outline" className="flex items-center gap-2 bg-transparent">
             <Calendar className="h-4 w-4" />
             Open Academic Planner
           </Button>
@@ -1015,7 +1021,7 @@ export default function CourseTracker() {
       </div>
 
       <div className="mb-6 mt-4">
-        <NavigationButtons />
+        <QuickNavigation />
       </div>
 
       <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto font-sans">
@@ -1100,7 +1106,7 @@ export default function CourseTracker() {
                                 asChild={true}
                                 variant="outline"
                                 size="sm"
-                                className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors"
+                                className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors bg-transparent"
                                 onClick={(e) => markYearAsPassed(yearNum, e)}
                               >
                                 <span>
@@ -1165,7 +1171,7 @@ export default function CourseTracker() {
                                     <Button
                                       variant="outline"
                                       size="sm"
-                                      className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors"
+                                      className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors bg-transparent"
                                       onClick={() => markTermAsPassed(yearNum, term)}
                                     >
                                       {areAllTermCoursesPassed(yearNum, term)
@@ -1708,7 +1714,7 @@ export default function CourseTracker() {
 
         {/* Navigation Buttons (Bottom) */}
         <div className="mt-10 mb-6">
-          <NavigationButtons />
+          <QuickNavigation />
         </div>
 
         {/* Footer */}

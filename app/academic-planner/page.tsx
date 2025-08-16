@@ -103,7 +103,7 @@ interface MoveHistoryEntry {
 
 // Conflict detection interface
 interface ConflictInfo {
-  type: "prerequisite" | "credit_limit" | "schedule"
+  type: "prerequisite" | "credit_limit" | "schedule" | "internship"
   severity: "error" | "warning"
   message: string
   affectedCourses: string[]
@@ -121,6 +121,32 @@ interface ImportedPlanData {
     schedule?: string
     room?: string
   }[]
+}
+
+// Quick Navigation Component
+const QuickNavigation = () => {
+  return (
+    <div className="flex flex-col sm:flex-row gap-3 justify-center">
+      <Link href="/course-tracker">
+        <Button className="w-full sm:w-auto bg-gradient-to-r from-blue-600 to-blue-800 hover:from-blue-700 hover:to-blue-900 text-white flex items-center gap-2">
+          <BookOpen className="h-4 w-4" />
+          Course Tracker
+        </Button>
+      </Link>
+      <Link href="/schedule-maker">
+        <Button className="w-full sm:w-auto bg-gradient-to-r from-purple-600 to-purple-800 hover:from-purple-700 hover:to-purple-900 text-white flex items-center gap-2">
+          <Calendar className="h-4 w-4" />
+          Schedule Maker
+        </Button>
+      </Link>
+      <Link href="/">
+        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
+          <ArrowLeft className="h-4 w-4" />
+          Back to Home
+        </Button>
+      </Link>
+    </div>
+  )
 }
 
 export default function AcademicPlanner() {
@@ -231,6 +257,19 @@ export default function AcademicPlanner() {
   useEffect(() => {
     detectConflicts()
   }, [graduationPlan])
+
+  // Check if a course is an internship course
+  const isInternshipCourse = (course: Course): boolean => {
+    return course.name.toUpperCase().includes("INTERNSHIP") && course.name.toUpperCase().includes("CPE")
+  }
+
+  // Get internship course priority (1 for Internship 1, 2 for Internship 2)
+  const getInternshipPriority = (course: Course): number => {
+    if (!isInternshipCourse(course)) return 0
+    if (course.name.toUpperCase().includes("INTERNSHIP 1")) return 1
+    if (course.name.toUpperCase().includes("INTERNSHIP 2")) return 2
+    return 3 // Other internship courses come last
+  }
 
   // Find a course by its ID
   const findCourseById = (id: string): Course | undefined => {
@@ -407,6 +446,28 @@ export default function AcademicPlanner() {
           severity: "warning",
           message: `${semester.year} ${semester.term} has ${totalCredits} credits (exceeds recommended 21 credit limit)`,
           affectedCourses: semester.courses.map((c) => c.id),
+        })
+      }
+
+      // Check internship conflicts
+      const internshipCourses = semester.courses.filter((course) => isInternshipCourse(course))
+      const nonInternshipCourses = semester.courses.filter((course) => !isInternshipCourse(course))
+
+      if (internshipCourses.length > 0 && nonInternshipCourses.length > 0) {
+        newConflicts.push({
+          type: "internship",
+          severity: "warning",
+          message: `${semester.year} ${semester.term} has internship courses mixed with regular courses. Internship courses are typically taken alone.`,
+          affectedCourses: semester.courses.map((c) => c.id),
+        })
+      }
+
+      if (internshipCourses.length > 1) {
+        newConflicts.push({
+          type: "internship",
+          severity: "warning",
+          message: `${semester.year} ${semester.term} has multiple internship courses. Consider taking them in separate terms.`,
+          affectedCourses: internshipCourses.map((c) => c.id),
         })
       }
 
@@ -1269,23 +1330,32 @@ export default function AcademicPlanner() {
       return
     }
 
-    // Create a dependency graph
+    // Separate internship and regular courses
+    const allCoursesToSchedule = [...pendingCourses, ...activeCourses]
+    const internshipCourses = allCoursesToSchedule.filter((course) => isInternshipCourse(course))
+    const regularCourses = allCoursesToSchedule.filter((course) => !isInternshipCourse(course))
+
+    // Sort internship courses by priority (Internship 1 first, then Internship 2)
+    internshipCourses.sort((a, b) => getInternshipPriority(a) - getInternshipPriority(b))
+
+    console.log("Course separation:", {
+      regular: regularCourses.length,
+      internship: internshipCourses.length,
+    })
+
+    // Create a dependency graph for regular courses only
     const dependencyGraph = new Map<string, string[]>()
-    pendingCourses.concat(activeCourses).forEach((course) => {
+    regularCourses.forEach((course) => {
       dependencyGraph.set(course.id, course.prerequisites)
     })
 
-    // Perform topological sort to respect prerequisites
-    const sortedPendingCourses = topologicalSort(pendingCourses, dependencyGraph)
-    const sortedActiveCourses = topologicalSort(activeCourses, dependencyGraph)
+    // Perform topological sort to respect prerequisites for regular courses
+    const sortedRegularCourses = topologicalSort(regularCourses, dependencyGraph)
 
-    console.log("Sorted courses:", {
-      sortedPending: sortedPendingCourses.length,
-      sortedActive: sortedActiveCourses.length,
-    })
+    console.log("Sorted regular courses:", sortedRegularCourses.length)
 
-    // Enhance courses with section availability info
-    const enhancedActiveCourses: PlanCourse[] = sortedActiveCourses.map((course) => {
+    // Enhance regular courses with section availability info
+    const enhancedRegularCourses: PlanCourse[] = sortedRegularCourses.map((course) => {
       const availableSections = getAvailableSections(course.code)
       const needsPetition = !hasAvailableSections(course.code)
       const recommendedSection = findBestSection(course.code)
@@ -1298,7 +1368,8 @@ export default function AcademicPlanner() {
       }
     })
 
-    const enhancedPendingCourses: PlanCourse[] = sortedPendingCourses.map((course) => {
+    // Enhance internship courses with section availability info
+    const enhancedInternshipCourses: PlanCourse[] = internshipCourses.map((course) => {
       const availableSections = getAvailableSections(course.code)
       const needsPetition = !hasAvailableSections(course.code)
       const recommendedSection = findBestSection(course.code)
@@ -1311,7 +1382,7 @@ export default function AcademicPlanner() {
       }
     })
 
-    // Group courses into semesters with prerequisite gap enforcement
+    // Group regular courses into semesters with prerequisite gap enforcement
     const plan: SemesterPlan[] = []
     let currentPlanYear = currentYear
     let currentPlanTerm = currentTerm
@@ -1344,13 +1415,8 @@ export default function AcademicPlanner() {
       })
     }
 
-    // Prioritize active courses first, then pending courses that can be taken
-    const allCoursesToSchedule = [...enhancedActiveCourses, ...enhancedPendingCourses]
-
-    console.log("All courses to schedule:", allCoursesToSchedule.length)
-
-    // Sort courses by priority
-    allCoursesToSchedule.sort((a, b) => {
+    // Sort regular courses by priority
+    enhancedRegularCourses.sort((a, b) => {
       // First priority: active courses
       if (a.status === "active" && b.status !== "active") return -1
       if (a.status !== "active" && b.status === "active") return 1
@@ -1371,20 +1437,20 @@ export default function AcademicPlanner() {
       return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
     })
 
-    // Distribute courses into semesters
-    const remainingCourses = [...allCoursesToSchedule]
+    // Schedule regular courses first
+    const remainingRegularCourses = [...enhancedRegularCourses]
     const maxIterations = 100 // Prevent infinite loops
     let iteration = 0
 
-    while (remainingCourses.length > 0 && iteration < maxIterations) {
+    while (remainingRegularCourses.length > 0 && iteration < maxIterations) {
       iteration++
       let coursesScheduledThisIteration = 0
 
-      console.log(`Iteration ${iteration}: ${remainingCourses.length} courses remaining`)
+      console.log(`Regular courses iteration ${iteration}: ${remainingRegularCourses.length} courses remaining`)
 
       // Try to schedule courses in the current term
-      for (let i = remainingCourses.length - 1; i >= 0; i--) {
-        const course = remainingCourses[i]
+      for (let i = remainingRegularCourses.length - 1; i >= 0; i--) {
+        const course = remainingRegularCourses[i]
 
         // Check if this course can be scheduled in the current term
         if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) {
@@ -1419,14 +1485,14 @@ export default function AcademicPlanner() {
         courseScheduleMap.set(course.id, { year: currentPlanYear, term: currentPlanTerm })
 
         // Remove from remaining courses
-        remainingCourses.splice(i, 1)
+        remainingRegularCourses.splice(i, 1)
         coursesScheduledThisIteration++
 
-        console.log(`Scheduled ${course.code} in ${currentPlanYear} ${currentPlanTerm}`)
+        console.log(`Scheduled regular ${course.code} in ${currentPlanYear} ${currentPlanTerm}`)
       }
 
       // If no courses were scheduled in this iteration, move to next term
-      if (coursesScheduledThisIteration === 0 && remainingCourses.length > 0) {
+      if (coursesScheduledThisIteration === 0 && remainingRegularCourses.length > 0) {
         // Save current semester if it has courses
         if (currentSemesterCourses.length > 0) {
           plan.push({
@@ -1443,22 +1509,45 @@ export default function AcademicPlanner() {
         currentPlanYear = next.year
         currentPlanTerm = next.term
 
-        console.log(`Moving to next term: ${currentPlanYear} ${currentPlanTerm}`)
+        console.log(`Moving to next term for regular courses: ${currentPlanYear} ${currentPlanTerm}`)
       }
     }
 
-    // Add the last semester if it has courses
+    // Add the last semester if it has regular courses
     if (currentSemesterCourses.length > 0) {
       plan.push({
         year: currentPlanYear,
         term: currentPlanTerm,
         courses: currentSemesterCourses,
       })
+
+      // Move to next term for internships
+      const next = getNextTerm(currentPlanYear, currentPlanTerm)
+      currentPlanYear = next.year
+      currentPlanTerm = next.term
     }
+
+    // Now schedule internship courses at the end, each in their own term
+    enhancedInternshipCourses.forEach((internshipCourse) => {
+      // Each internship gets its own semester
+      plan.push({
+        year: currentPlanYear,
+        term: currentPlanTerm,
+        courses: [internshipCourse],
+      })
+
+      courseScheduleMap.set(internshipCourse.id, { year: currentPlanYear, term: currentPlanTerm })
+      console.log(`Scheduled internship ${internshipCourse.code} in ${currentPlanYear} ${currentPlanTerm}`)
+
+      // Move to next term for the next internship
+      const next = getNextTerm(currentPlanYear, currentPlanTerm)
+      currentPlanYear = next.year
+      currentPlanTerm = next.term
+    })
 
     console.log(
       "Final plan:",
-      plan.map((s) => `${s.year} ${s.term}: ${s.courses.length} courses`),
+      plan.map((s) => `${s.year} ${s.term}: ${s.courses.length} courses (${s.courses.map((c) => c.code).join(", ")})`),
     )
 
     // Initialize all semesters as closed except the first one
@@ -1576,20 +1665,10 @@ export default function AcademicPlanner() {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
       <div className="container mx-auto px-4 py-8">
         <div className="mb-6">
-          <div className="flex flex-col sm:flex-row gap-3 mb-4">
-            <Link href="/course-tracker">
-              <Button variant="outline" size="sm" className="flex items-center gap-2 bg-transparent">
-                <BookOpen className="h-4 w-4" />
-                Back to Course Tracker
-              </Button>
-            </Link>
-            <Link href="/">
-              <Button variant="outline" size="sm" className="flex items-center gap-2 bg-transparent">
-                <ArrowLeft className="h-4 w-4" />
-                Back to Home
-              </Button>
-            </Link>
-          </div>
+          <QuickNavigation />
+        </div>
+
+        <div className="mb-6">
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-3xl font-bold">Academic Planner</h1>
@@ -1691,8 +1770,10 @@ export default function AcademicPlanner() {
                     <AlertDescription>
                       This planner analyzes your completed courses and remaining requirements to create an optimized
                       path to graduation. It respects course prerequisites, prioritizes courses with available sections,
-                      and distributes courses to balance your workload each semester. You can personalize your plan by
-                      moving courses to different terms or removing them entirely.
+                      and distributes courses to balance your workload each semester. Internship courses are
+                      automatically scheduled at the end of your plan, with Internship 1 followed by Internship 2 in
+                      successive terms. You can personalize your plan by moving courses to different terms or removing
+                      them entirely.
                     </AlertDescription>
                   </Alert>
                 </div>
@@ -2129,6 +2210,7 @@ export default function AcademicPlanner() {
                         semester.courses.some((course) => course.id === courseId),
                       ),
                     )
+                    const hasInternship = semester.courses.some((course) => isInternshipCourse(course))
 
                     return (
                       <Collapsible
@@ -2154,6 +2236,11 @@ export default function AcademicPlanner() {
                             >
                               {semesterCredits} credits
                             </Badge>
+                            {hasInternship && (
+                              <Badge className="bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
+                                Internship Term
+                              </Badge>
+                            )}
                             {coursesNeedingPetition.length > 0 && (
                               <Badge className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">
                                 {coursesNeedingPetition.length} need petition
@@ -2218,13 +2305,14 @@ export default function AcademicPlanner() {
                                   const hasConflict = conflicts.some((conflict) =>
                                     conflict.affectedCourses.includes(course.id),
                                   )
+                                  const courseIsInternship = isInternshipCourse(course)
 
                                   return (
                                     <TableRow
                                       key={course.id}
                                       className={`${isSelected ? "bg-blue-50 dark:bg-blue-900/20" : ""} ${
                                         hasConflict ? "border-l-4 border-red-500" : ""
-                                      }`}
+                                      } ${courseIsInternship ? "bg-purple-50 dark:bg-purple-900/10" : ""}`}
                                     >
                                       <TableCell>
                                         <Checkbox
@@ -2235,6 +2323,11 @@ export default function AcademicPlanner() {
                                       <TableCell className="font-medium">
                                         <div className="flex items-center gap-2">
                                           {course.code}
+                                          {courseIsInternship && (
+                                            <Badge variant="outline" className="text-xs">
+                                              Internship
+                                            </Badge>
+                                          )}
                                           {hasConflict && <AlertTriangle className="h-3 w-3 text-red-500" />}
                                           <Button
                                             variant="ghost"
@@ -2386,6 +2479,18 @@ export default function AcademicPlanner() {
                                 </AlertDescription>
                               </Alert>
                             )}
+
+                            {hasInternship && semester.courses.length > 1 && (
+                              <Alert className="mt-4 bg-purple-50 dark:bg-purple-900/20 border-purple-200 dark:border-purple-800">
+                                <Info className="h-4 w-4" />
+                                <AlertTitle>Internship Term Notice</AlertTitle>
+                                <AlertDescription>
+                                  This semester contains internship courses. Typically, internship courses should be
+                                  taken alone in a term. You can manually move other courses to different terms if
+                                  needed.
+                                </AlertDescription>
+                              </Alert>
+                            )}
                           </div>
                         </CollapsibleContent>
                       </Collapsible>
@@ -2396,6 +2501,11 @@ export default function AcademicPlanner() {
             </div>
           </>
         )}
+
+        {/* Bottom Navigation */}
+        <div className="mt-10 mb-6">
+          <QuickNavigation />
+        </div>
       </div>
     </div>
   )
