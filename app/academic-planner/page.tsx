@@ -1,6 +1,8 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import type React from "react"
+
+import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -20,6 +22,8 @@ import {
   History,
   AlertTriangle,
   ArrowUpDown,
+  Undo,
+  Upload,
 } from "lucide-react"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -38,6 +42,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 
 // Course status types
 type CourseStatus = "passed" | "active" | "pending"
@@ -104,6 +109,20 @@ interface ConflictInfo {
   affectedCourses: string[]
 }
 
+// Import data interface
+interface ImportedPlanData {
+  year: number
+  term: string
+  courses: {
+    code: string
+    name: string
+    credits: number
+    section?: string
+    schedule?: string
+    room?: string
+  }[]
+}
+
 export default function AcademicPlanner() {
   const [courses, setCourses] = useState<Course[]>(initialCourses)
   const [availableSections, setAvailableSections] = useState<CourseSection[]>([])
@@ -123,7 +142,10 @@ export default function AcademicPlanner() {
   const [moveHistory, setMoveHistory] = useState<MoveHistoryEntry[]>([])
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([])
+  const [importError, setImportError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Load saved course statuses and available sections on component mount
   useEffect(() => {
@@ -213,6 +235,11 @@ export default function AcademicPlanner() {
   // Find a course by its ID
   const findCourseById = (id: string): Course | undefined => {
     return courses.find((course) => course.id === id)
+  }
+
+  // Find a course by its code
+  const findCourseByCode = (code: string): Course | undefined => {
+    return courses.find((course) => course.code === code)
   }
 
   // Check if all prerequisites for a course are passed
@@ -519,20 +546,42 @@ export default function AcademicPlanner() {
     setMoveHistory((prev) => [newEntry, ...prev.slice(0, 9)]) // Keep last 10 entries
   }
 
-  // Move a course to a different term
-  const moveCourseToTerm = (courseId: string, targetYear: number, targetTerm: string) => {
-    let fromYear = 0
-    let fromTerm = ""
+  // Undo the last move
+  const undoLastMove = () => {
+    if (moveHistory.length === 0) return
 
-    // Find current location
-    for (const semester of graduationPlan) {
-      if (semester.courses.some((c) => c.id === courseId)) {
-        fromYear = semester.year
-        fromTerm = semester.term
+    const lastMove = moveHistory[0]
+
+    // Remove the last move from history
+    setMoveHistory((prev) => prev.slice(1))
+
+    // Reverse the changes based on move type
+    switch (lastMove.type) {
+      case "single":
+        // For single moves, swap the from and to positions
+        const change = lastMove.changes[0]
+        moveCourseToTermSilent(change.courseId, change.fromYear, change.fromTerm)
         break
-      }
-    }
 
+      case "bulk":
+        // For bulk moves, move all courses back to their original positions
+        lastMove.changes.forEach((change) => {
+          moveCourseToTermSilent(change.courseId, change.fromYear, change.fromTerm)
+        })
+        break
+
+      case "swap":
+        // For swaps, swap the courses back
+        if (lastMove.changes.length === 2) {
+          const [change1, change2] = lastMove.changes
+          swapCoursesSilent(change1.courseId, change2.courseId)
+        }
+        break
+    }
+  }
+
+  // Move a course to a different term without adding to history (for undo)
+  const moveCourseToTermSilent = (courseId: string, targetYear: number, targetTerm: string) => {
     setGraduationPlan((prevPlan) => {
       // Find and remove the course from its current semester
       let courseToMove: PlanCourse | null = null
@@ -594,6 +643,81 @@ export default function AcademicPlanner() {
 
       return updatedPlan
     })
+  }
+
+  // Swap two courses between terms without adding to history (for undo)
+  const swapCoursesSilent = (courseId1: string, courseId2: string) => {
+    let course1Location: { year: number; term: string } | null = null
+    let course2Location: { year: number; term: string } | null = null
+
+    // Find current locations
+    for (const semester of graduationPlan) {
+      for (const course of semester.courses) {
+        if (course.id === courseId1) {
+          course1Location = { year: semester.year, term: semester.term }
+        }
+        if (course.id === courseId2) {
+          course2Location = { year: semester.year, term: semester.term }
+        }
+      }
+    }
+
+    if (!course1Location || !course2Location) return
+
+    setGraduationPlan((prevPlan) => {
+      let course1: PlanCourse | null = null
+      let course2: PlanCourse | null = null
+
+      // Remove both courses from their current locations
+      const updatedPlan = prevPlan.map((semester) => {
+        const remainingCourses = semester.courses.filter((course) => {
+          if (course.id === courseId1) {
+            course1 = course
+            return false
+          }
+          if (course.id === courseId2) {
+            course2 = course
+            return false
+          }
+          return true
+        })
+        return {
+          ...semester,
+          courses: remainingCourses,
+        }
+      })
+
+      if (!course1 || !course2) return prevPlan
+
+      // Add courses to their new locations
+      updatedPlan.forEach((semester) => {
+        if (semester.year === course1Location!.year && semester.term === course1Location!.term) {
+          semester.courses.push(course2!)
+        }
+        if (semester.year === course2Location!.year && semester.term === course2Location!.term) {
+          semester.courses.push(course1!)
+        }
+      })
+
+      return updatedPlan
+    })
+  }
+
+  // Move a course to a different term
+  const moveCourseToTerm = (courseId: string, targetYear: number, targetTerm: string) => {
+    let fromYear = 0
+    let fromTerm = ""
+
+    // Find current location
+    for (const semester of graduationPlan) {
+      if (semester.courses.some((c) => c.id === courseId)) {
+        fromYear = semester.year
+        fromTerm = semester.term
+        break
+      }
+    }
+
+    moveCourseToTermSilent(courseId, targetYear, targetTerm)
 
     // Add to history
     const course = findCourseById(courseId)
@@ -730,43 +854,7 @@ export default function AcademicPlanner() {
 
     if (!course1Location || !course2Location) return
 
-    setGraduationPlan((prevPlan) => {
-      let course1: PlanCourse | null = null
-      let course2: PlanCourse | null = null
-
-      // Remove both courses from their current locations
-      const updatedPlan = prevPlan.map((semester) => {
-        const remainingCourses = semester.courses.filter((course) => {
-          if (course.id === courseId1) {
-            course1 = course
-            return false
-          }
-          if (course.id === courseId2) {
-            course2 = course
-            return false
-          }
-          return true
-        })
-        return {
-          ...semester,
-          courses: remainingCourses,
-        }
-      })
-
-      if (!course1 || !course2) return prevPlan
-
-      // Add courses to their new locations
-      updatedPlan.forEach((semester) => {
-        if (semester.year === course1Location!.year && semester.term === course1Location!.term) {
-          semester.courses.push(course2!)
-        }
-        if (semester.year === course2Location!.year && semester.term === course2Location!.term) {
-          semester.courses.push(course1!)
-        }
-      })
-
-      return updatedPlan
-    })
+    swapCoursesSilent(courseId1, courseId2)
 
     // Add to history
     const c1 = findCourseById(courseId1)
@@ -895,6 +983,241 @@ export default function AcademicPlanner() {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  }
+
+  // Parse imported plan data
+  const parseImportedData = (content: string, format: "json" | "csv" | "txt"): ImportedPlanData[] => {
+    switch (format) {
+      case "json":
+        try {
+          const data = JSON.parse(content)
+          if (!Array.isArray(data)) {
+            throw new Error("JSON must be an array of semesters")
+          }
+          return data.map((semester: any) => ({
+            year: Number(semester.year),
+            term: semester.term,
+            courses: semester.courses.map((course: any) => ({
+              code: course.code,
+              name: course.name,
+              credits: Number(course.credits),
+              section: course.section,
+              schedule: course.schedule,
+              room: course.room,
+            })),
+          }))
+        } catch (error) {
+          throw new Error("Invalid JSON format")
+        }
+
+      case "csv":
+        try {
+          const lines = content.trim().split("\n")
+          const header = lines[0]
+          if (!header.includes("Year,Term,Course Code")) {
+            throw new Error("Invalid CSV format - missing required headers")
+          }
+
+          const semesterMap = new Map<string, ImportedPlanData>()
+
+          for (let i = 1; i < lines.length; i++) {
+            const line = lines[i].trim()
+            if (!line) continue
+
+            // Parse CSV line (handle quoted values)
+            const values = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || []
+            const cleanValues = values.map((v) => v.replace(/^"|"$/g, ""))
+
+            if (cleanValues.length < 4) continue
+
+            const [year, term, code, name, credits, section, schedule, room] = cleanValues
+            const semesterKey = `${year}-${term}`
+
+            if (!semesterMap.has(semesterKey)) {
+              semesterMap.set(semesterKey, {
+                year: Number(year),
+                term,
+                courses: [],
+              })
+            }
+
+            semesterMap.get(semesterKey)!.courses.push({
+              code,
+              name,
+              credits: Number(credits) || 3,
+              section,
+              schedule,
+              room,
+            })
+          }
+
+          return Array.from(semesterMap.values())
+        } catch (error) {
+          throw new Error("Invalid CSV format")
+        }
+
+      case "txt":
+        try {
+          const sections = content.split(/\n\s*\n/)
+          const planData: ImportedPlanData[] = []
+
+          for (const section of sections) {
+            const lines = section.trim().split("\n")
+            if (lines.length < 2) continue
+
+            // Look for semester header (e.g., "2025 - Term 1")
+            const semesterMatch = lines[0].match(/(\d{4})\s*-\s*(Term\s*\d+)/)
+            if (!semesterMatch) continue
+
+            const year = Number(semesterMatch[1])
+            const term = semesterMatch[2]
+            const courses: ImportedPlanData["courses"] = []
+
+            for (let i = 2; i < lines.length; i++) {
+              const line = lines[i].trim()
+              if (!line || line.startsWith("=")) continue
+
+              // Look for course line (e.g., "GED0047 - FOREIGN LANGUAGE (3 credits)")
+              const courseMatch = line.match(/^([A-Z]{2,4}\d{4})\s*-\s*(.+?)\s*$$(\d+)\s*credits?$$/)
+              if (courseMatch) {
+                const [, code, name, credits] = courseMatch
+                courses.push({
+                  code,
+                  name,
+                  credits: Number(credits),
+                })
+              }
+            }
+
+            if (courses.length > 0) {
+              planData.push({ year, term, courses })
+            }
+          }
+
+          return planData
+        } catch (error) {
+          throw new Error("Invalid TXT format")
+        }
+
+      default:
+        throw new Error("Unsupported format")
+    }
+  }
+
+  // Import graduation plan
+  const importPlan = async (file: File) => {
+    try {
+      setImportError(null)
+      const content = await file.text()
+      const extension = file.name.split(".").pop()?.toLowerCase()
+
+      let format: "json" | "csv" | "txt"
+      switch (extension) {
+        case "json":
+          format = "json"
+          break
+        case "csv":
+          format = "csv"
+          break
+        case "txt":
+          format = "txt"
+          break
+        default:
+          throw new Error("Unsupported file format. Please use JSON, CSV, or TXT files.")
+      }
+
+      const importedData = parseImportedData(content, format)
+
+      if (importedData.length === 0) {
+        throw new Error("No valid semester data found in the file")
+      }
+
+      // Convert imported data to graduation plan format
+      const newPlan: SemesterPlan[] = []
+
+      for (const semesterData of importedData) {
+        const semesterCourses: PlanCourse[] = []
+
+        for (const courseData of semesterData.courses) {
+          // Find the course in our course list
+          const course = findCourseByCode(courseData.code)
+          if (!course) {
+            console.warn(`Course ${courseData.code} not found in course database`)
+            continue
+          }
+
+          // Create plan course
+          const availableSections = getAvailableSections(course.code)
+          const needsPetition = !hasAvailableSections(course.code)
+          let recommendedSection: CourseSection | undefined
+
+          // Try to find the section if specified
+          if (courseData.section && courseData.section !== "TBD") {
+            recommendedSection = availableSections.find((s) => s.section === courseData.section)
+          }
+
+          if (!recommendedSection) {
+            recommendedSection = findBestSection(course.code)
+          }
+
+          const planCourse: PlanCourse = {
+            ...course,
+            availableSections,
+            needsPetition,
+            recommendedSection,
+          }
+
+          semesterCourses.push(planCourse)
+        }
+
+        if (semesterCourses.length > 0) {
+          newPlan.push({
+            year: semesterData.year,
+            term: semesterData.term,
+            courses: semesterCourses,
+          })
+        }
+      }
+
+      // Sort semesters chronologically
+      newPlan.sort((a, b) => {
+        if (a.year !== b.year) return a.year - b.year
+        const termOrder = ["Term 1", "Term 2", "Term 3"]
+        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+      })
+
+      // Update graduation plan
+      setGraduationPlan(newPlan)
+
+      // Initialize all semesters as closed except the first one
+      const newOpenSemesters: { [key: string]: boolean } = {}
+      newPlan.forEach((semester, index) => {
+        const key = `${semester.year}-${semester.term}`
+        newOpenSemesters[key] = index === 0
+      })
+      setOpenSemesters(newOpenSemesters)
+
+      // Clear move history since we're starting fresh
+      setMoveHistory([])
+
+      // Close import dialog
+      setImportDialogOpen(false)
+
+      // Show success message
+      alert(
+        `Successfully imported graduation plan with ${newPlan.length} semesters and ${newPlan.reduce((sum, s) => sum + s.courses.length, 0)} courses.`,
+      )
+    } catch (error: any) {
+      setImportError(error.message)
+    }
+  }
+
+  // Handle file selection for import
+  const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file) {
+      importPlan(file)
+    }
   }
 
   // Toggle course selection
@@ -1494,6 +1817,67 @@ export default function AcademicPlanner() {
                     </DialogContent>
                   </Dialog>
 
+                  {/* Import Plan */}
+                  <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
+                    <DialogTrigger asChild>
+                      <Button variant="outline" className="flex items-center gap-2 bg-transparent">
+                        <Upload className="h-4 w-4" />
+                        Import Plan
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Import Graduation Plan</DialogTitle>
+                        <DialogDescription>
+                          Upload a previously exported graduation plan file (JSON, CSV, or TXT format).
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="py-4">
+                        <Input
+                          ref={fileInputRef}
+                          type="file"
+                          accept=".json,.csv,.txt"
+                          onChange={handleFileImport}
+                          className="mb-4"
+                        />
+                        {importError && (
+                          <Alert className="bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800">
+                            <AlertTriangle className="h-4 w-4" />
+                            <AlertDescription>{importError}</AlertDescription>
+                          </Alert>
+                        )}
+                        <div className="text-sm text-gray-600 dark:text-gray-400">
+                          <p className="mb-2">Supported formats:</p>
+                          <ul className="list-disc list-inside space-y-1">
+                            <li>
+                              <strong>JSON:</strong> Complete plan data with all course information
+                            </li>
+                            <li>
+                              <strong>CSV:</strong> Tabular format with course details per row
+                            </li>
+                            <li>
+                              <strong>TXT:</strong> Human-readable text format
+                            </li>
+                          </ul>
+                        </div>
+                      </div>
+                      <DialogFooter>
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            setImportDialogOpen(false)
+                            setImportError(null)
+                            if (fileInputRef.current) {
+                              fileInputRef.current.value = ""
+                            }
+                          }}
+                        >
+                          Close
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+
                   {/* Course Swap */}
                   <Dialog open={swapDialogOpen} onOpenChange={setSwapDialogOpen}>
                     <DialogTrigger asChild>
@@ -1556,6 +1940,17 @@ export default function AcademicPlanner() {
                       </DialogFooter>
                     </DialogContent>
                   </Dialog>
+
+                  {/* Undo Action */}
+                  <Button
+                    variant="outline"
+                    onClick={undoLastMove}
+                    disabled={moveHistory.length === 0}
+                    className="flex items-center gap-2 bg-transparent"
+                  >
+                    <Undo className="h-4 w-4" />
+                    Undo Last Move
+                  </Button>
 
                   {/* Move History */}
                   <Dialog open={historyDialogOpen} onOpenChange={setHistoryDialogOpen}>
