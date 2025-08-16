@@ -684,7 +684,13 @@ const SaveLoadControls = ({
 // --- Academic Timeline (Simplified) ---
 const AcademicTimeline = ({ startYear, handleStartYearChange, academicYears }) => {
   const [isExpanded, setIsExpanded] = useState(false)
+  const [inputValue, setInputValue] = useState<string>(String(startYear))
   const expectedGraduation = startYear + 4
+
+  // Keep local input in sync with prop changes
+  useEffect(() => {
+    setInputValue(String(startYear))
+  }, [startYear])
 
   return (
     <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
@@ -700,14 +706,14 @@ const AcademicTimeline = ({ startYear, handleStartYearChange, academicYears }) =
             </Label>
             <Input
               id="start-year"
-              type="number"
-              min="2000"
-              max="2100"
-              value={startYear}
-              onChange={handleStartYearChange}
+              type="text" /* use text + inputMode to show numeric keyboard on mobile without spinner */
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onBlur={() => handleStartYearChange(inputValue)}
               className="w-24"
-              inputMode="numeric" // Better for touch devices
-              pattern="[0-9]*" // Ensures only numbers can be entered
+              inputMode="numeric" /* prefer numeric keypad on mobile */
+              pattern="\\d*" /* allow digits only on some mobile browsers */
+              placeholder="2025"
             />
           </div>
         </div>
@@ -1004,11 +1010,14 @@ export default function CourseTracker() {
   }
 
   // Handle start year change
-  const handleStartYearChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const year = Number.parseInt(e.target.value)
+  const handleStartYearChange = (eOrValue: React.ChangeEvent<HTMLInputElement> | string) => {
+    // Accept either an event or a raw string value so the child component can call with a string
+    const valueStr = typeof eOrValue === "string" ? eOrValue : eOrValue.target.value
+    const year = Number.parseInt(valueStr)
     if (!isNaN(year) && year >= 2000 && year <= 2100) {
       setStartYear(year)
     }
+    // If the value is empty or invalid, do not update startYear to allow the user to edit freely on mobile
   }
 
   // --- JSX ---
