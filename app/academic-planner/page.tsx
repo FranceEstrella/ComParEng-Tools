@@ -1124,7 +1124,10 @@ export default function AcademicPlanner() {
             semesterMap.get(semesterKey)!.courses.push({
               code,
               name,
-              credits: Number(credits) || 3,
+              credits: (() => {
+                const n = Number(credits)
+                return Number.isFinite(n) ? n : 3
+              })(),
               section,
               schedule,
               room,
@@ -1161,10 +1164,11 @@ export default function AcademicPlanner() {
               const courseMatch = line.match(/^([A-Z]{2,4}\d{4})\s*-\s*(.+?)\s*$$(\d+)\s*credits?$$/)
               if (courseMatch) {
                 const [, code, name, credits] = courseMatch
+                const parsed = Number(credits)
                 courses.push({
                   code,
                   name,
-                  credits: Number(credits),
+                  credits: Number.isFinite(parsed) ? parsed : 0,
                 })
               }
             }
@@ -2205,8 +2209,8 @@ export default function AcademicPlanner() {
                             <SelectContent>
                               {getAllCoursesInPlan()
                                 .filter((course) => course.id !== swapCourse1)
-                                .map((course) => (
-                                  <SelectItem key={course.id} value={course.id}>
+                                .map((course, idx) => (
+                                  <SelectItem key={`${course.id}-swap-${idx}`} value={course.id}>
                                     {course.code} ({course.location})
                                   </SelectItem>
                                 ))}
@@ -2320,12 +2324,12 @@ export default function AcademicPlanner() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {getUnscheduledCourses().map((course) => {
+                        {getUnscheduledCourses().map((course, _idx) => {
                           const allPrereqsMet = arePrerequisitesMet(course)
                           const availableTerms = getAvailableTermsForMove(course)
 
                           return (
-                            <TableRow key={course.id}>
+                            <TableRow key={`${course.id}-unscheduled`}>
                               <TableCell className="font-medium">{course.code}</TableCell>
                               <TableCell>{course.name}</TableCell>
                               <TableCell>{course.credits}</TableCell>
@@ -2517,7 +2521,7 @@ export default function AcademicPlanner() {
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
-                                {semester.courses.map((course) => {
+                                {semester.courses.map((course, _idx) => {
                                   const prereqCourses = course.prerequisites
                                     .map((id) => findCourseById(id))
                                     .filter((c): c is Course => c !== undefined)
@@ -2534,7 +2538,7 @@ export default function AcademicPlanner() {
 
                                   return (
                                     <TableRow
-                                      key={course.id}
+                                      key={`${semesterKey}-${course.id}`}
                                       className={`${isSelected ? "bg-blue-50 dark:bg-blue-900/20" : ""} ${
                                         hasConflict ? "border-l-4 border-red-500" : ""
                                       } ${courseIsInternship ? "bg-purple-50 dark:bg-purple-900/10" : ""}`}
