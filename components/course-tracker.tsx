@@ -88,6 +88,42 @@ interface AcademicYear {
   term3: string
 }
 
+// --- Subcomponent Prop Types ---
+interface FilterAndSearchControlsProps {
+  searchTerm: string
+  setSearchTerm: (v: string) => void
+  filterStatus: CourseStatus | "all" | "future"
+  setFilterStatus: (s: CourseStatus | "all" | "future") => void
+  viewMode: "card" | "table"
+  setViewMode: (v: "card" | "table") => void
+  courses: Course[]
+}
+
+interface OverallProgressProps {
+  overallProgress: ProgressStats
+  showDetailedProgress: boolean
+  setShowDetailedProgress: (b: boolean) => void
+  progressByYear: { [key: number]: ProgressStats }
+  progressByTerm: { [key: number]: { [term: string]: ProgressStats } }
+  courses: Course[]
+}
+
+interface SaveLoadControlsProps {
+  saveProgress: () => void
+  downloadProgress: () => void
+  uploadProgress: (e: React.ChangeEvent<HTMLInputElement>) => void
+  saveMessage: string | null
+  fileInputRef: React.RefObject<HTMLInputElement | null>
+  setCourses: React.Dispatch<React.SetStateAction<Course[]>>
+  setSaveMessage: (m: string | null) => void
+}
+
+interface AcademicTimelineProps {
+  startYear: number
+  handleStartYearChange: (v: string | React.ChangeEvent<HTMLInputElement>) => void
+  academicYears: AcademicYear[]
+}
+
 // Quick Navigation Component
 const QuickNavigation = () => {
   return (
@@ -258,7 +294,7 @@ const FilterAndSearchControls = ({
   viewMode,
   setViewMode,
   courses,
-}) => {
+}: FilterAndSearchControlsProps) => {
   const [open, setOpen] = useState(false)
   const [suggestions, setSuggestions] = useState<Course[]>([])
 
@@ -419,7 +455,7 @@ const OverallProgress = ({
   progressByYear,
   progressByTerm,
   courses,
-}) => {
+}: OverallProgressProps) => {
   const [expandedYears, setExpandedYears] = useState<{ [key: number]: boolean }>({})
 
   const toggleYearExpansion = (year: number) => {
@@ -604,7 +640,148 @@ const SaveLoadControls = ({
   fileInputRef,
   setCourses,
   setSaveMessage,
-}) => {
+}: SaveLoadControlsProps) => {
+  // Ref for curriculum HTML import
+  const htmlFileInputRef = useRef<HTMLInputElement>(null)
+
+  /**
+   * Parse a Program Curriculum HTML file (from SOLAR) and extract courses.
+   * The function is intentionally permissive: it supports tables where
+   * course rows are regular <tr> with multiple <td>s and also handles
+   * section header rows (single-cell rows) that indicate Year/Term.
+   */
+  const parseCurriculumHtml = (html: string): Course[] => {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(html, "text/html")
+
+  const tbody = doc.querySelector("tbody")
+    if (!tbody) return []
+
+    const courses: Course[] = []
+    let currentYear = 1
+    let currentTerm: string = "Term 1"
+
+    // Try to detect header -> column index for units/credits to reliably extract credits
+    const headerCells = Array.from(doc.querySelectorAll("thead th, thead td"))
+    let unitsColIndex: number | null = null
+    if (headerCells.length > 0) {
+      headerCells.forEach((th, idx) => {
+        const txt = (th.textContent || "").trim()
+        if (/unit|credit|units|credits/i.test(txt) && unitsColIndex === null) {
+          unitsColIndex = idx
+        }
+      })
+    }
+
+    const rows = Array.from(tbody.querySelectorAll("tr"))
+  rows.forEach((tr) => {
+      const tds = Array.from(tr.querySelectorAll("td"))
+      const rowText = tr.textContent?.trim() || ""
+
+      // Heuristic: a single-cell row is likely a section header (e.g. "First Year" or "Term 1")
+      if (tds.length === 1) {
+        // Normalize whitespace and collapse newlines so header like:
+        // "FIRST YEAR ( 2ND TERM )" becomes "FIRST YEAR (2ND TERM)"
+        const header = rowText.replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim()
+
+        // Detect year (FIRST, SECOND, THIRD, FOURTH)
+        if (/first year|year 1|1st year/i.test(header)) currentYear = 1
+        else if (/second year|year 2|2nd year/i.test(header)) currentYear = 2
+        else if (/third year|year 3|3rd year/i.test(header)) currentYear = 3
+        else if (/fourth year|year 4|4th year/i.test(header)) currentYear = 4
+
+        // Prefer detecting a parenthesized term like "(2ND TERM)" first
+        const parenMatch = header.match(/\(([^)]+)\)/)
+        let termText = parenMatch ? parenMatch[1] : header
+
+        // Now extract a term number from the termText
+        const termOrdinalMatch = termText.match(/(1ST|2ND|3RD|4TH)\s*TERM/i)
+        const termDigitMatch = termText.match(/(\d)(?:ST|ND|RD|TH)?\s*TERM/i)
+        const termAfterWordMatch = termText.match(/TERM\s*[:\(\s]*\s*(\d)/i)
+
+        if (termOrdinalMatch) {
+          const digit = termOrdinalMatch[1].charAt(0)
+          currentTerm = `Term ${digit}`
+        } else if (termDigitMatch) {
+          currentTerm = `Term ${termDigitMatch[1]}`
+        } else if (termAfterWordMatch) {
+          currentTerm = `Term ${termAfterWordMatch[1]}`
+        } else {
+          // No explicit term detected -> default to Term 1 for that year
+          currentTerm = 'Term 1'
+        }
+
+        return
+      }
+
+      // If it looks like a course row (code in first cell)
+      if (tds.length >= 2) {
+        const code = tds[0].textContent?.trim() || ""
+        const name = tds[1].textContent?.trim() || ""
+
+        // Attempt to find credits using the detected units column first
+        let credits: number | undefined = undefined
+
+        // Helper: parse a candidate cell text for an isolated/sensible numeric units value
+        const parseCandidateNumber = (txt: string | null | undefined): number | undefined => {
+          if (!txt) return undefined
+          const s = txt.trim()
+          if (s.length === 0) return undefined
+
+          // Accept whole-cell integers like "3" or "0" (optionally decimals like "3.0")
+          const whole = s.match(/^(\d+)(?:\.\d+)?$/)
+          if (whole) {
+            const n = Number(whole[1])
+            if (Number.isFinite(n) && n >= 0 && n <= 9) return n
+          }
+
+          // Accept isolated tokens like "(3)" or "units: 3" but avoid digits embedded in alphanumerics (e.g. COE123)
+          const token = s.match(/\b(\d+)\b/)
+          if (token) {
+            const n = Number(token[1])
+            if (Number.isFinite(n) && n >= 0 && n <= 9) return n
+          }
+
+          return undefined
+        }
+
+        if (unitsColIndex !== null && unitsColIndex < tds.length) {
+          const unitsTxt = tds[unitsColIndex].textContent || ""
+          credits = parseCandidateNumber(unitsTxt)
+        }
+
+        // If the detected units column didn't help, scan non-code cells (skip code cell at tds[0])
+        if (credits === undefined) {
+          for (let i = 1; i < tds.length; i++) {
+            const candidate = parseCandidateNumber(tds[i].textContent)
+            if (candidate !== undefined) {
+              credits = candidate
+              break
+            }
+          }
+        }
+
+        // Only add rows that look like courses (must have a code or name)
+        if (code || name) {
+          const id = code || name.slice(0, 8).replace(/\s+/g, "_")
+          courses.push({
+            id,
+            code: code || id,
+            name: name || "",
+            credits: credits ?? 0,
+            status: "pending" as CourseStatus,
+            prerequisites: [],
+            description: null,
+            year: currentYear,
+            term: currentTerm,
+          })
+        }
+      }
+    })
+
+    return courses
+  }
+
   const [isExpanded, setIsExpanded] = useState(false)
 
   return (
@@ -641,6 +818,48 @@ const SaveLoadControls = ({
                 Upload Progress
               </Button>
             </div>
+            {/* Import Curriculum (HTML) */}
+            <div className="relative">
+              <input
+                type="file"
+                ref={htmlFileInputRef}
+                onChange={(e) => {
+                  const file = (e.target as HTMLInputElement).files?.[0]
+                  if (!file) return
+                  const reader = new FileReader()
+                  reader.onload = (ev) => {
+                    try {
+                      const html = ev.target?.result as string
+                      const parsed = parseCurriculumHtml(html) as Course[]
+                      if (!parsed || parsed.length === 0) {
+                        setSaveMessage("No courses found in the provided HTML file")
+                        setTimeout(() => setSaveMessage(null), 3000)
+                        return
+                      }
+                      setCourses(parsed)
+                      saveCourseStatuses(parsed)
+                      setSaveMessage("Curriculum imported successfully")
+                      setTimeout(() => setSaveMessage(null), 3000)
+                    } catch (err) {
+                      console.error(err)
+                      setSaveMessage("Failed to parse curriculum HTML file")
+                      setTimeout(() => setSaveMessage(null), 3000)
+                    }
+                  }
+                  reader.readAsText(file)
+
+                  // reset input so same file can be re-selected
+                  ;(e.target as HTMLInputElement).value = ""
+                }}
+                accept=".html,.htm"
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                aria-label="Import curriculum HTML file"
+              />
+              <Button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700">
+                <Upload className="h-4 w-4" />
+                Import Curriculum (HTML)
+              </Button>
+            </div>
             <Button
               onClick={() => {
                 if (
@@ -648,10 +867,10 @@ const SaveLoadControls = ({
                     "Are you sure you want to reset all course progress? This will set all courses to 'pending'.",
                   )
                 ) {
-                  setCourses((prevCourses) => {
-                    const resetCourses = prevCourses.map((course) => ({
+                  setCourses((prevCourses: Course[]) => {
+                    const resetCourses = prevCourses.map((course: Course) => ({
                       ...course,
-                      status: "pending",
+                      status: "pending" as CourseStatus,
                     }))
                     saveCourseStatuses(resetCourses)
                     setSaveMessage("All course progress has been reset")
@@ -682,7 +901,7 @@ const SaveLoadControls = ({
 }
 
 // --- Academic Timeline (Simplified) ---
-const AcademicTimeline = ({ startYear, handleStartYearChange, academicYears }) => {
+const AcademicTimeline = ({ startYear, handleStartYearChange, academicYears }: AcademicTimelineProps) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const [inputValue, setInputValue] = useState<string>(String(startYear))
   const expectedGraduation = startYear + 4
@@ -770,7 +989,7 @@ const AcademicTimeline = ({ startYear, handleStartYearChange, academicYears }) =
 // --- Main Component ---
 
 export default function CourseTracker() {
-  const [courses, setCourses] = useState<Course[]>(initialCourses)
+  const [courses, setCourses] = useState<Course[]>(initialCourses as unknown as Course[])
   const [searchTerm, setSearchTerm] = useState("")
   const [filterStatus, setFilterStatus] = useState<CourseStatus | "all" | "future">("all")
   const [openYears, setOpenYears] = useState<{ [key: number]: boolean }>({ 1: true }) // Start with Year 1 open
@@ -818,13 +1037,13 @@ export default function CourseTracker() {
   // Calculate progress stats by term within each year
   const progressByTerm = useMemo(() => {
     const termStats: { [key: number]: { [key: string]: ProgressStats } } = {}
-    const groupedCourses = groupCourses(courses)
+    const groupedCourses: CoursesByYearAndTerm = groupCourses(courses)
 
     Object.entries(groupedCourses).forEach(([year, terms]) => {
       const yearNum = Number.parseInt(year, 10)
       termStats[yearNum] = {}
 
-      Object.entries(terms).forEach(([term, termCourses]) => {
+      ;(Object.entries(terms) as [string, Course[]][]).forEach(([term, termCourses]) => {
         termStats[yearNum][term] = calculateProgress(termCourses)
       })
     })
@@ -872,7 +1091,7 @@ export default function CourseTracker() {
   }, [courses, searchTerm, filterStatus])
 
   // Group the filtered courses for display
-  const groupedFilteredCourses = useMemo(() => groupCourses(filteredCourses), [filteredCourses])
+  const groupedFilteredCourses = useMemo<CoursesByYearAndTerm>(() => groupCourses(filteredCourses), [filteredCourses])
 
   // Handle status change for a course
   const handleStatusChange = (courseId: string, newStatus: CourseStatus) => {
@@ -917,8 +1136,8 @@ export default function CourseTracker() {
       const passedCourses = yearCourses.filter((course) => course.status === "passed")
       const allPassed = yearCourses.length === passedCourses.length
 
-      const updatedCourses = prevCourses.map((course) =>
-        course.year === year ? { ...course, status: allPassed ? "pending" : "passed" } : course,
+      const updatedCourses: Course[] = prevCourses.map((course: Course) =>
+        course.year === year ? { ...course, status: (allPassed ? "pending" : "passed") as CourseStatus } : course,
       )
 
       // Save to localStorage
@@ -935,8 +1154,8 @@ export default function CourseTracker() {
       const passedCourses = termCourses.filter((course) => course.status === "passed")
       const allPassed = termCourses.length === passedCourses.length
 
-      const updatedCourses = prevCourses.map((course) =>
-        course.year === year && course.term === term ? { ...course, status: allPassed ? "pending" : "passed" } : course,
+      const updatedCourses: Course[] = prevCourses.map((course: Course) =>
+        course.year === year && course.term === term ? { ...course, status: (allPassed ? "pending" : "passed") as CourseStatus } : course,
       )
 
       // Save to localStorage
@@ -1091,7 +1310,7 @@ export default function CourseTracker() {
                 {Object.keys(groupedFilteredCourses).length > 0 ? (
                   Object.entries(groupedFilteredCourses)
                     .sort(([yearA], [yearB]) => Number.parseInt(yearA) - Number.parseInt(yearB)) // Sort years numerically
-                    .map(([year, terms]) => {
+                    .map(([year, terms]: [string, { [term: string]: Course[] }]) => {
                       const yearNum = Number.parseInt(year, 10)
                       const yearProgress = progressByYear[yearNum]
                       const allPassed = areAllCoursesPassed(yearNum)
@@ -1151,7 +1370,7 @@ export default function CourseTracker() {
                               </Progress>
                             </div>
 
-                            {Object.entries(terms).map(([term, termCourses]) => {
+                            {Object.entries(terms).map(([term, termCourses]: [string, Course[]]) => {
                               const termProgress = progressByTerm[yearNum]?.[term] || {
                                 total: 0,
                                 passed: 0,
@@ -1209,11 +1428,11 @@ export default function CourseTracker() {
                                   </div>
 
                                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {termCourses.map((course) => {
+                                    {termCourses.map((course: Course) => {
                                       // Find prerequisites and dependents for this course
                                       const prereqCourses = course.prerequisites
-                                        .map((id) => findCourseById(id))
-                                        .filter((c): c is Course => c !== undefined) // Type guard
+                                        .map((id: string) => findCourseById(id))
+                                        .filter((c: Course | undefined): c is Course => c !== undefined) // Type guard
 
                                       const dependentCourses = dependentCoursesMap.get(course.id) || []
                                       const MAX_DEPENDENTS_SHOWN = 2 // Max dependent codes to show initially
@@ -1607,7 +1826,7 @@ export default function CourseTracker() {
                   <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                     {Object.entries(groupCourses(courses))
                       .sort(([yearA], [yearB]) => Number.parseInt(yearA) - Number.parseInt(yearB))
-                      .map(([year, terms]) => {
+                      .map(([year, terms]: [string, { [term: string]: Course[] }]) => {
                         const yearNum = Number.parseInt(year, 10)
                         const academicYear = academicYears[yearNum - 1]
 
@@ -1640,10 +1859,10 @@ export default function CourseTracker() {
                                   {termStr} S.Y : {academicYearStr}
                                 </td>
                               </tr>
-                              {termCourses.map((course) => {
+                              {termCourses.map((course: Course) => {
                                 const prereqCourses = course.prerequisites
-                                  .map((id) => findCourseById(id))
-                                  .filter((c): c is Course => c !== undefined)
+                                  .map((id: string) => findCourseById(id))
+                                  .filter((c: Course | undefined): c is Course => c !== undefined)
 
                                 // Check if this is a lab course
                                 const isLabCourse = course.code.endsWith("L")

@@ -151,7 +151,7 @@ const QuickNavigation = () => {
 }
 
 export default function AcademicPlanner() {
-  const [courses, setCourses] = useState<Course[]>(initialCourses)
+  const [courses, setCourses] = useState<Course[]>(initialCourses as unknown as Course[])
   const [availableSections, setAvailableSections] = useState<CourseSection[]>([])
   const [graduationPlan, setGraduationPlan] = useState<SemesterPlan[]>([])
   const [startYear, setStartYear] = useState<number>(new Date().getFullYear())

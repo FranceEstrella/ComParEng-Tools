@@ -60,10 +60,13 @@ const getDurationSlots = (start: string, end: string) => {
 }
 
 // Course details map for quick lookup
-const courseDetailsMap = initialCourses.reduce((map, course) => {
-  map[course.code] = course
-  return map
-}, {})
+const courseDetailsMap: Record<string, (typeof initialCourses)[number]> = initialCourses.reduce(
+  (map, course) => {
+    map[course.code] = course
+    return map
+  },
+  {} as Record<string, (typeof initialCourses)[number]>,
+)
 
 // Interface for course data
 interface CourseSection {
@@ -478,8 +481,12 @@ export default function ScheduleMaker() {
         valueA = a.meetingDays
         valueB = b.meetingDays
       } else {
-        valueA = a[sortBy]
-        valueB = b[sortBy]
+        // sortBy is a dynamic key — narrow to keyof CourseSection when possible
+        const key = sortBy as keyof CourseSection
+        // @ts-ignore access via dynamic key
+        valueA = (a as any)[key]
+        // @ts-ignore
+        valueB = (b as any)[key]
       }
 
       if (sortOrder === "asc") {
@@ -571,7 +578,8 @@ export default function ScheduleMaker() {
     return event;
   });
 
-  createEvents(events, (error, value) => {
+  // cast to any to satisfy library typings in this project context
+  createEvents(events as any, (error: any, value: string) => {
     if (error) {
       console.error('Error generating ICS file:', error);
       return;
@@ -1313,13 +1321,13 @@ const renderScheduleView = () => {
                                       <TableCell>{cleanRoomString(course.room)}</TableCell>
                                       <TableCell>
                                         <Badge
-                                          variant={course.hasSlots ? "success" : "destructive"}
-                                          className={`px-2 py-1 text-xs font-semibold ${
-                                            course.hasSlots
-                                              ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                                              : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                                          }`}
-                                        >
+                                                variant={course.hasSlots ? "secondary" : "destructive"}
+                                                className={`px-2 py-1 text-xs font-semibold ${
+                                                  course.hasSlots
+                                                    ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                                                    : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
+                                                }`}
+                                              >
                                           {course.hasSlots ? `${course.remainingSlots}/${course.classSize}` : "Full"}
                                         </Badge>
                                       </TableCell>
@@ -1418,7 +1426,7 @@ const renderScheduleView = () => {
                                           </p>
                                         </div>
                                         <Badge
-                                          variant={course.hasSlots ? "success" : "destructive"}
+                                          variant={course.hasSlots ? "secondary" : "destructive"}
                                           className={`px-2 py-1 text-xs font-semibold ${
                                             course.hasSlots
                                               ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
@@ -1450,10 +1458,9 @@ const renderScheduleView = () => {
                                         <Popover>
                                           <PopoverTrigger asChild>
                                             <Button
-                                              className="w-full"
-                                              variant="outline"
-                                              className="bg-yellow-50 border-yellow-200 text-yellow-700 hover:bg-yellow-100 w-full"
-                                            >
+                                                variant="outline"
+                                                className="bg-yellow-50 border-yellow-200 text-yellow-700 hover:bg-yellow-100 w-full"
+                                              >
                                               Replace Section
                                             </Button>
                                           </PopoverTrigger>
@@ -1616,7 +1623,7 @@ const renderScheduleView = () => {
                                 </TableCell>
                                 <TableCell>{course.displayRoom}</TableCell>
                                 <TableCell>
-                                  <Badge variant={course.hasSlots ? "success" : "destructive"}>
+                                  <Badge variant={course.hasSlots ? "secondary" : "destructive"}>
                                     {course.hasSlots ? `${course.remainingSlots}/${course.classSize}` : "Full"}
                                   </Badge>
                                 </TableCell>
@@ -1655,7 +1662,7 @@ const renderScheduleView = () => {
                                   </CardTitle>
                                   <p className="text-sm font-medium">{course.name}</p>
                                 </div>
-                                <Badge variant={course.hasSlots ? "success" : "destructive"}>
+                                <Badge variant={course.hasSlots ? "secondary" : "destructive"}>
                                   {course.hasSlots ? `${course.remainingSlots} slots` : "Full"}
                                 </Badge>
                               </div>
