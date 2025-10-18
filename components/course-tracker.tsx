@@ -735,11 +735,21 @@ const SaveLoadControls = ({
             if (Number.isFinite(n) && n >= 0 && n <= 9) return n
           }
 
-          // Accept isolated tokens like "(3)" or "units: 3" but avoid digits embedded in alphanumerics (e.g. COE123)
-          const token = s.match(/\b(\d+)\b/)
-          if (token) {
-            const n = Number(token[1])
-            if (Number.isFinite(n) && n >= 0 && n <= 9) return n
+          // Accept isolated numeric tokens but avoid digits embedded in alphanumeric course codes (e.g. COE123)
+          // Scan digit runs and ensure surrounding characters are not letters
+          const digitRe = /\d+/g
+          let m: RegExpExecArray | null
+          while ((m = digitRe.exec(s)) !== null) {
+            const match = m[0]
+            const idx = m.index
+            const before = idx > 0 ? s[idx - 1] : undefined
+            const after = idx + match.length < s.length ? s[idx + match.length] : undefined
+            const beforeIsLetter = before ? /[A-Za-z]/.test(before) : false
+            const afterIsLetter = after ? /[A-Za-z]/.test(after) : false
+            if (!beforeIsLetter && !afterIsLetter) {
+              const n = Number(match)
+              if (Number.isFinite(n) && n >= 0 && n <= 9) return n
+            }
           }
 
           return undefined

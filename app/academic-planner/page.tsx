@@ -170,6 +170,10 @@ export default function AcademicPlanner() {
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [overloadDialogOpen, setOverloadDialogOpen] = useState(false)
+  const [pendingAdd, setPendingAdd] = useState<{ courseId: string; targetYear: number; targetTerm: string } | null>(
+    null,
+  )
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([])
   const [importError, setImportError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -279,7 +283,15 @@ export default function AcademicPlanner() {
 
   // Check if a course is an internship course
   const isInternshipCourse = (course: Course): boolean => {
-    return course.name.toUpperCase().includes("INTERNSHIP") && course.name.toUpperCase().includes("CPE")
+    // Consider a course an internship if its name or description contains the word "internship" (case-insensitive)
+    const nameContains: boolean = course.name.toLowerCase().includes("internship")
+    const descContains: boolean = course.description ? course.description.toLowerCase().includes("internship") : false
+
+    // Prefer CPE internships when explicitly labeled (not required)
+    const cpeMention: boolean = course.name.toUpperCase().includes("CPE") || (course.description || "").toUpperCase().includes("CPE")
+
+    // Accept any internship mention in name or description
+    return nameContains || descContains
   }
 
   // Get internship course priority (1 for Internship 1, 2 for Internship 2)
@@ -407,6 +419,24 @@ export default function AcademicPlanner() {
     return { year: year + 1, term: "Term 1" }
   }
 
+  // Format a year into academic year string: accepts either a calendar year (e.g. 2025)
+  // or a curriculum-relative year (1..n). If the value looks like a small curriculum year
+  // we convert it to a calendar year using `startYear`.
+  const formatAcademicYear = (yearOrCurr: number): string => {
+    if (!yearOrCurr && yearOrCurr !== 0) return String(yearOrCurr)
+    if (isNaN(yearOrCurr)) return String(yearOrCurr)
+
+    // If the value is a plausible calendar year (>= 1900), use it directly
+    if (yearOrCurr >= 1900) {
+      return `S.Y ${yearOrCurr}-${yearOrCurr + 1}`
+    }
+
+    // Otherwise treat it as a curriculum year (1-based) and convert relative to startYear
+    const curriculumYear = Math.max(1, Math.floor(yearOrCurr))
+    const start = startYear + (curriculumYear - 1)
+    return `S.Y ${start}-${start + 1}`
+  }
+
   // Helper to get the previous term
   const getPreviousTerm = (year: number, term: string): { year: number; term: string } => {
     if (term === "Term 3") return { year, term: "Term 2" }
@@ -463,7 +493,7 @@ export default function AcademicPlanner() {
         newConflicts.push({
           type: "credit_limit",
           severity: "warning",
-          message: `${semester.year} ${semester.term} has ${totalCredits} credits (exceeds recommended 21 credit limit)`,
+          message: `${formatAcademicYear(semester.year)} ${semester.term} has ${totalCredits} credits (exceeds recommended 21 credit limit)`,
           affectedCourses: semester.courses.map((c) => c.id),
         })
       }
@@ -476,7 +506,7 @@ export default function AcademicPlanner() {
         newConflicts.push({
           type: "internship",
           severity: "warning",
-          message: `${semester.year} ${semester.term} has internship courses mixed with regular courses. Internship courses are typically taken alone.`,
+          message: `${formatAcademicYear(semester.year)} ${semester.term} has internship courses mixed with regular courses. Internship courses are typically taken alone.`,
           affectedCourses: semester.courses.map((c) => c.id),
         })
       }
@@ -485,7 +515,7 @@ export default function AcademicPlanner() {
         newConflicts.push({
           type: "internship",
           severity: "warning",
-          message: `${semester.year} ${semester.term} has multiple internship courses. Consider taking them in separate terms.`,
+          message: `${formatAcademicYear(semester.year)} ${semester.term} has multiple internship courses. Consider taking them in separate terms.`,
           affectedCourses: internshipCourses.map((c) => c.id),
         })
       }
@@ -543,7 +573,9 @@ export default function AcademicPlanner() {
           newConflicts.push({
             type: "schedule",
             severity: "error",
-            message: `Schedule conflict in ${semester.year} ${semester.term}: ${coursesAtTime.map((c) => c.code).join(", ")} have overlapping time slots`,
+            message: `Schedule conflict in ${formatAcademicYear(semester.year)} ${semester.term}: ${coursesAtTime
+              .map((c) => c.code)
+              .join(", ")} have overlapping time slots`,
             affectedCourses: coursesAtTime.map((c) => c.id),
           })
         }
@@ -577,7 +609,7 @@ export default function AcademicPlanner() {
           terms.push({
             year,
             term,
-            label: `${year} - ${term}`,
+            label: `${formatAcademicYear(year)} - ${term}`,
           })
         }
       }
@@ -992,7 +1024,7 @@ export default function AcademicPlanner() {
         courses.push({
           id: course.id,
           code: course.code,
-          location: `${semester.year} ${semester.term}`,
+          location: `${formatAcademicYear(semester.year)} ${semester.term}`,
         })
       })
     })
@@ -1027,10 +1059,11 @@ export default function AcademicPlanner() {
         mimeType = "application/json"
         break
       case "csv":
-        content = "Year,Term,Course Code,Course Name,Credits,Section,Schedule,Room\n"
+        content = "AcademicYear,Term,Course Code,Course Name,Credits,Section,Schedule,Room\n"
         planData.forEach((semester) => {
+          const academic = formatAcademicYear(semester.year)
           semester.courses.forEach((course) => {
-            content += `${semester.year},${semester.term},"${course.code}","${course.name}",${course.credits},"${course.section}","${course.schedule}","${course.room}"\n`
+            content += `${academic},${semester.term},"${course.code}","${course.name}",${course.credits},"${course.section}","${course.schedule}","${course.room}"\n`
           })
         })
         filename = "graduation-plan.csv"
@@ -1039,7 +1072,7 @@ export default function AcademicPlanner() {
       case "txt":
         content = "GRADUATION PLAN\n\n"
         planData.forEach((semester) => {
-          content += `${semester.year} - ${semester.term}\n`
+          content += `${formatAcademicYear(semester.year)} - ${semester.term}\n`
           content += "=" + "=".repeat(20) + "\n"
           semester.courses.forEach((course) => {
             content += `${course.code} - ${course.name} (${course.credits} credits)\n`
@@ -1121,13 +1154,24 @@ export default function AcademicPlanner() {
               })
             }
 
+            // Robust credit parsing: prefer explicit credits column, preserve 0,
+            // otherwise look for a parenthesized "(N credits)" in the course name.
+            const parsedCredits = (() => {
+              const n = Number(credits)
+              if (Number.isFinite(n)) return n
+
+              // Try to extract from the name like "Course Name (3 credits)"
+              const parenMatch = name ? name.match(/\((\d+)\s*credits?\)/i) : null
+              if (parenMatch) return Number(parenMatch[1])
+
+              // If nothing found, default to 0 (safer than assuming 3)
+              return 0
+            })()
+
             semesterMap.get(semesterKey)!.courses.push({
               code,
               name,
-              credits: (() => {
-                const n = Number(credits)
-                return Number.isFinite(n) ? n : 3
-              })(),
+              credits: parsedCredits,
               section,
               schedule,
               room,
@@ -1161,7 +1205,7 @@ export default function AcademicPlanner() {
               if (!line || line.startsWith("=")) continue
 
               // Look for course line (e.g., "GED0047 - FOREIGN LANGUAGE (3 credits)")
-              const courseMatch = line.match(/^([A-Z]{2,4}\d{4})\s*-\s*(.+?)\s*$$(\d+)\s*credits?$$/)
+              const courseMatch = line.match(/^([A-Z]{2,4}\d{4})\s*-\s*(.+?)\s*\((\d+)\s*credits?\)/i)
               if (courseMatch) {
                 const [, code, name, credits] = courseMatch
                 const parsed = Number(credits)
@@ -1170,6 +1214,23 @@ export default function AcademicPlanner() {
                   name,
                   credits: Number.isFinite(parsed) ? parsed : 0,
                 })
+              } else {
+                // Try to parse lines without parentheses by splitting on '-' and extracting trailing number safely
+                const parts = line.split("-")
+                if (parts.length >= 2) {
+                  const code = parts[0].trim()
+                  const rest = parts.slice(1).join("-").trim()
+                  // Attempt to find a parenthesized credit anywhere in rest
+                  const parenMatch = rest.match(/\((\d+)\s*credits?\)/i)
+                  if (parenMatch) {
+                    const parsed = Number(parenMatch[1])
+                    courses.push({ code, name: rest.replace(/\s*\(.*$/i, "").trim(), credits: Number.isFinite(parsed) ? parsed : 0 })
+                  } else {
+                    // No credit info; default to 0
+                    const inferredName = rest.replace(/\s*\(.*$/i, "").trim()
+                    courses.push({ code, name: inferredName, credits: 0 })
+                  }
+                }
               }
             }
 
@@ -1353,6 +1414,38 @@ export default function AcademicPlanner() {
       return
     }
 
+    // If no courses are marked as active or passed, recommend the curriculum order (group by original year/term)
+    const anyProgress = courses.some((c) => c.status === "active" || c.status === "passed")
+    if (!anyProgress) {
+      // Group by year and term using the course.year/course.term from initial data
+      const grouped = new Map<string, SemesterPlan>()
+      const termOrder = ["Term 1", "Term 2", "Term 3"]
+
+      // sort courses by year then term to preserve curriculum order
+      const sorted = [...courses].sort((a, b) => {
+        if (a.year !== b.year) return a.year - b.year
+        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+      })
+
+      for (const c of sorted) {
+        if (c.status === "pending" || c.status === "active") {
+          const key = `${c.year}-${c.term}`
+          if (!grouped.has(key)) grouped.set(key, { year: c.year, term: c.term, courses: [] })
+          const planCourse: PlanCourse = {
+            ...c,
+            availableSections: getAvailableSections(c.code),
+            needsPetition: !hasAvailableSections(c.code),
+            recommendedSection: findBestSection(c.code),
+          }
+          grouped.get(key)!.courses.push(planCourse)
+        }
+      }
+
+      const planArray = Array.from(grouped.values())
+      setGraduationPlan(planArray)
+      return
+    }
+
     // Separate internship and regular courses
     const allCoursesToSchedule = [...pendingCourses, ...activeCourses]
     const internshipCourses = allCoursesToSchedule.filter((course) => isInternshipCourse(course))
@@ -1413,6 +1506,11 @@ export default function AcademicPlanner() {
     let currentSemesterCredits = 0
     const MAX_CREDITS_PER_SEMESTER = 21
 
+  // Reserved internship terms (determine from curriculum)
+  const maxCurriculumYear = Math.max(...courses.map((c) => c.year))
+  const internshipTargetYearLocal = startYear + (maxCurriculumYear - 1)
+  const reservedTermsLocal = new Set([`${internshipTargetYearLocal}-Term 2`, `${internshipTargetYearLocal}-Term 3`])
+
     // Track when each course was scheduled (for prerequisite gap enforcement)
     const courseScheduleMap = new Map<string, { year: number; term: string }>()
 
@@ -1469,6 +1567,19 @@ export default function AcademicPlanner() {
       iteration++
       let coursesScheduledThisIteration = 0
 
+      // If current term is a reserved internship term, skip to next term
+      while (reservedTermsLocal.has(`${currentPlanYear}-${currentPlanTerm}`)) {
+        const nxt = getNextTerm(currentPlanYear, currentPlanTerm)
+        currentPlanYear = nxt.year
+        currentPlanTerm = nxt.term
+        // reset current semester buffer when skipping
+        if (currentSemesterCourses.length > 0) {
+          plan.push({ year: currentPlanYear, term: currentPlanTerm, courses: [...currentSemesterCourses] })
+          currentSemesterCourses = []
+          currentSemesterCredits = 0
+        }
+      }
+
       console.log(`Regular courses iteration ${iteration}: ${remainingRegularCourses.length} courses remaining`)
 
       // Try to schedule courses in the current term
@@ -1480,8 +1591,9 @@ export default function AcademicPlanner() {
           continue // Skip this course for now
         }
 
-        // If adding this course would exceed the credit limit, start a new semester
-        if (currentSemesterCredits + course.credits > MAX_CREDITS_PER_SEMESTER && currentSemesterCourses.length > 0) {
+        // If adding this course would exceed the credit limit, start a new semester (do not add if it would exceed)
+        if (currentSemesterCredits + course.credits > MAX_CREDITS_PER_SEMESTER) {
+          if (currentSemesterCourses.length > 0) {
           // Save current semester
           plan.push({
             year: currentPlanYear,
@@ -1495,11 +1607,18 @@ export default function AcademicPlanner() {
           currentPlanTerm = next.term
           currentSemesterCourses = []
           currentSemesterCredits = 0
-
-          // Check again if the course can be scheduled in the new term
-          if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) {
-            continue
+          // skip reserved terms
+          while (reservedTermsLocal.has(`${currentPlanYear}-${currentPlanTerm}`)) {
+            const n = getNextTerm(currentPlanYear, currentPlanTerm)
+            currentPlanYear = n.year
+            currentPlanTerm = n.term
           }
+          // after moving to next term, try to schedule this course in the next iteration
+          continue
+        } else {
+          // course fits in empty semester (rare case where course.credits > MAX handled above)
+        }
+        
         }
 
         // Add course to current semester
@@ -1550,27 +1669,103 @@ export default function AcademicPlanner() {
       currentPlanTerm = next.term
     }
 
-    // Now schedule internship courses at the end, each in their own term
-    enhancedInternshipCourses.forEach((internshipCourse) => {
-      // Each internship gets its own semester
-      plan.push({
-        year: currentPlanYear,
-        term: currentPlanTerm,
-        courses: [internshipCourse],
-      })
+  // Now schedule internship courses into the program's last year fixed terms (Term 2 and Term 3)
+  // Use the internshipTargetYear computed earlier (internshipTargetYearLocal)
+  const internshipTargetYear = internshipTargetYearLocal
 
-      courseScheduleMap.set(internshipCourse.id, { year: currentPlanYear, term: currentPlanTerm })
-      console.log(`Scheduled internship ${internshipCourse.code} in ${currentPlanYear} ${currentPlanTerm}`)
+    // Ensure the reserved internship semesters contain only internships.
+    // If regular courses were scheduled into those terms, move them into Term 1 of the internship year or earlier.
+    const reservedTerms = reservedTermsLocal
 
-      // Move to next term for the next internship
-      const next = getNextTerm(currentPlanYear, currentPlanTerm)
-      currentPlanYear = next.year
-      currentPlanTerm = next.term
-    })
+    // Helper to find or create a semester in the plan and return it
+    const findOrCreateSemester = (year: number, term: string): SemesterPlan => {
+      let idx = plan.findIndex((s) => s.year === year && s.term === term)
+      if (idx !== -1) return plan[idx]
+
+      const newSemester: SemesterPlan = { year, term, courses: [] }
+      // Insert chronologically
+      let insertIndex = plan.length
+      for (let i = 0; i < plan.length; i++) {
+        const semester = plan[i]
+        if (
+          semester.year > year ||
+          (semester.year === year && ["Term 1", "Term 2", "Term 3"].indexOf(semester.term) > ["Term 1", "Term 2", "Term 3"].indexOf(term))
+        ) {
+          insertIndex = i
+          break
+        }
+      }
+      plan.splice(insertIndex, 0, newSemester)
+      return newSemester
+    }
+
+    // Collect non-internship courses that ended up in reserved terms
+    const nonInternshipsToRelocate: PlanCourse[] = []
+
+    for (const semester of [...plan]) {
+      const key = `${semester.year}-${semester.term}`
+      if (reservedTerms.has(key)) {
+        const internshipsInThis = semester.courses.filter((c) => isInternshipCourse(c))
+        const nonInternships = semester.courses.filter((c) => !isInternshipCourse(c))
+        if (nonInternships.length > 0) {
+          // Remove non-internships from this semester
+          semester.courses = internshipsInThis
+          nonInternshipsToRelocate.push(...nonInternships)
+        }
+      }
+    }
+
+    // Relocate non-internship courses preferably to Term 1 of the internship year; if not available, append earlier.
+    if (nonInternshipsToRelocate.length > 0) {
+      const targetSemester = findOrCreateSemester(internshipTargetYear, "Term 1")
+      targetSemester.courses.push(...nonInternshipsToRelocate)
+      // Update schedule map
+      nonInternshipsToRelocate.forEach((c) => courseScheduleMap.set(c.id, { year: targetSemester.year, term: targetSemester.term }))
+    }
+
+    // Determine which internship is which by inspecting course name (Internship 1 or Internship 2)
+    const internship1 = enhancedInternshipCourses.find((c) => c.name.toLowerCase().includes("internship 1"))
+    const internship2 = enhancedInternshipCourses.find((c) => c.name.toLowerCase().includes("internship 2"))
+
+    // Remaining internships that are not explicitly numbered
+    const otherInternships = enhancedInternshipCourses.filter(
+      (c) => !c.name.toLowerCase().includes("internship 1") && !c.name.toLowerCase().includes("internship 2"),
+    )
+
+    // Helper to place a single internship into a specific term
+    const placeInternship = (course: PlanCourse | undefined, year: number, term: string) => {
+      if (!course) return
+      // If the semester already exists in plan, append; otherwise create it
+      const existingIndex = plan.findIndex((s) => s.year === year && s.term === term)
+      if (existingIndex !== -1) {
+        // Ensure only internships are in this semester
+        plan[existingIndex].courses = plan[existingIndex].courses.filter((c) => isInternshipCourse(c))
+        plan[existingIndex].courses.push(course)
+      } else {
+        plan.push({ year, term, courses: [course] })
+      }
+      courseScheduleMap.set(course.id, { year, term })
+      console.log(`Scheduled internship ${course.code} in ${year} ${term}`)
+    }
+
+    // Place Internship 1 in Term 2, Internship 2 in Term 3 of the internshipTargetYear
+    placeInternship(internship1, internshipTargetYear, "Term 2")
+    placeInternship(internship2, internshipTargetYear, "Term 3")
+
+    // If there are extra internships (unnumbered), append them after Internship 2 in subsequent terms
+    let extraYear = internshipTargetYear
+    let extraTerm: string = "Term 3"
+    for (const extra of otherInternships) {
+      // Advance to next term after the current extraTerm
+      const next = getNextTerm(extraYear, extraTerm)
+      extraYear = next.year
+      extraTerm = next.term
+      placeInternship(extra, extraYear, extraTerm)
+    }
 
     console.log(
       "Final plan:",
-      plan.map((s) => `${s.year} ${s.term}: ${s.courses.length} courses (${s.courses.map((c) => c.code).join(", ")})`),
+      plan.map((s) => `${formatAcademicYear(s.year)} ${s.term}: ${s.courses.length} courses (${s.courses.map((c) => c.code).join(", ")})`),
     )
 
     // Initialize all semesters as closed except the first one
@@ -1678,7 +1873,7 @@ export default function AcademicPlanner() {
     // If it has Internship 2, graduation is the next term
     // Otherwise, graduation is also the next term after the last planned semester
     const nextTerm = getNextTerm(lastSemester.year, lastSemester.term)
-    return `${nextTerm.year} ${nextTerm.term}`
+    return `${formatAcademicYear(nextTerm.year)} ${nextTerm.term}`
   }
 
   // Calculate total remaining credits
@@ -1724,6 +1919,26 @@ export default function AcademicPlanner() {
 
   // Add course to a specific term
   const addCourseToTerm = (courseId: string, targetYear: number, targetTerm: string) => {
+    const course = findCourseById(courseId)
+    if (!course) return
+  // Prevent adding non-internship courses into reserved internship terms by default
+  const _maxCurrYear_forAdd = Math.max(...courses.map((c) => c.year))
+  const internshipTargetYear = startYear + (_maxCurrYear_forAdd - 1)
+  const isReserved = targetYear === internshipTargetYear && (targetTerm === "Term 2" || targetTerm === "Term 3")
+
+  // If it's a reserved term and the course is not an internship, open confirmation modal
+  if (isReserved && !isInternshipCourse(course)) {
+    setPendingAdd({ courseId, targetYear, targetTerm })
+    setOverloadDialogOpen(true)
+    return
+  }
+
+  // Otherwise perform the add immediately
+  performAddCourseToTerm(courseId, targetYear, targetTerm)
+  }
+
+  // Perform the actual insertion of a course into a term (shared by modal confirm)
+  const performAddCourseToTerm = (courseId: string, targetYear: number, targetTerm: string) => {
     const course = findCourseById(courseId)
     if (!course) return
 
@@ -2232,6 +2447,43 @@ export default function AcademicPlanner() {
                     </DialogContent>
                   </Dialog>
 
+                  {/* Overload Confirmation Dialog (for adding non-internships into reserved internship terms) */}
+                  <Dialog open={overloadDialogOpen} onOpenChange={(open) => {
+                    setOverloadDialogOpen(open)
+                    if (!open) setPendingAdd(null)
+                  }}>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Confirm Overload</DialogTitle>
+                        <DialogDescription>
+                          You're attempting to add a non-internship course into a term reserved for internships.
+                          This is considered an overload and may affect your graduation timeline. Do you want to
+                          continue?
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="py-2">
+                        <p className="text-sm text-gray-600">Selected:</p>
+                        <p className="font-medium">
+                          {pendingAdd ? `${findCourseById(pendingAdd.courseId)?.code} → ${formatAcademicYear(pendingAdd.targetYear)} ${pendingAdd.targetTerm}` : ""}
+                        </p>
+                      </div>
+                      <DialogFooter>
+                        <Button variant="outline" onClick={() => { setOverloadDialogOpen(false); setPendingAdd(null) }}>
+                          Cancel
+                        </Button>
+                        <Button onClick={() => {
+                          if (pendingAdd) {
+                            performAddCourseToTerm(pendingAdd.courseId, pendingAdd.targetYear, pendingAdd.targetTerm)
+                          }
+                          setOverloadDialogOpen(false)
+                          setPendingAdd(null)
+                        }}>
+                          Confirm Add
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+
                   {/* Undo Action */}
                   <Button
                     variant="outline"
@@ -2451,7 +2703,7 @@ export default function AcademicPlanner() {
                         <CollapsibleTrigger className="w-full p-4 flex justify-between items-center bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700">
                           <div className="flex items-center gap-2">
                             <h3 className="text-lg font-semibold">
-                              {semester.year} - {semester.term}
+                              {formatAcademicYear(semester.year)} - {semester.term}
                             </h3>
                             <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
                               {semester.courses.length} courses

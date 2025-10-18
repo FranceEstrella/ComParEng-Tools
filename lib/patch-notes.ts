@@ -10,6 +10,34 @@ export interface PatchNote {
 
 export const patchNotes: PatchNote[] = [
   {
+    version: "1.41",
+    date: "October 19, 2025",
+    title: "Internship Term Protection & UX Improvements",
+    changes: [
+      {
+        type: "improved",
+        description:
+          "Replaced browser confirm with a modal-based overload confirmation when adding non-internship courses into reserved internship terms",
+      },
+      {
+        type: "improved",
+        description: "Dropdown labels now show academic-year format (S.Y YYYY-YYYY) for clarity when selecting target terms",
+      },
+      {
+        type: "improved",
+        description: "Refactored course-add logic (extracted performAddCourseToTerm) to centralize term insertion and move history recording",
+      },
+      {
+        type: "fixed",
+        description: "Preserved semester label formatting and ensured modal uses formatted academic year in its preview",
+      },
+      {
+        type: "improved",
+        description: "Ran TypeScript checks and planner simulation to validate changes; no type errors and planner simulation output verified",
+      },
+    ],
+  },
+  {
     version: "1.40",
     date: "August 16, 2025",
     title: "Advanced Academic Planning & Course Management",

@@ -11,14 +11,17 @@ export async function GET() {
   }
 
   try {
+    // Normalize storage as an array and cast to any[] for TypeScript
+    const stored: any[] = (courseDataStorage as any) || []
+
     // Log the data being returned
-    console.log("Returning course data:", courseDataStorage ? courseDataStorage.length : 0, "courses")
+    console.log("Returning course data:", stored.length, "courses")
 
     // Return the stored course data
     return NextResponse.json(
       {
         success: true,
-        data: courseDataStorage || [],
+        data: stored,
       },
       { headers },
     )
