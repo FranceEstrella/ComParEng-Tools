@@ -212,7 +212,31 @@ export default function AcademicPlanner() {
       // Load course statuses
       const savedCourses = loadCourseStatuses()
       if (savedCourses) {
-        setCourses(savedCourses)
+        // Normalize saved courses by merging with initial course definitions to ensure stable fields
+        const baseById = new Map((initialCourses as any[]).map((c: any) => [c.id, c]))
+        const normalized: Course[] = savedCourses.map((c: any) => {
+          const base = baseById.get(c.id) || {}
+          return {
+            // Base first to provide defaults, then saved overrides
+            ...(base as any),
+            ...(c as any),
+            // Ensure required fields exist and are well-typed
+            prerequisites: Array.isArray(c.prerequisites)
+              ? c.prerequisites
+              : Array.isArray((base as any).prerequisites)
+              ? (base as any).prerequisites
+              : [],
+            description:
+              typeof c.description === "string" || c.description === null
+                ? c.description
+                : (base as any).description ?? null,
+            credits: Number.isFinite(c.credits) ? c.credits : (base as any).credits ?? 0,
+            year: Number.isFinite(c.year) ? c.year : (base as any).year ?? new Date().getFullYear(),
+            term: typeof c.term === "string" ? c.term : (base as any).term ?? "Term 1",
+            status: (c.status as CourseStatus) ?? (base as any).status ?? "pending",
+          } as Course
+        })
+        setCourses(normalized)
 
         // Get starting year from localStorage if available
         const startYearFromStorage = localStorage.getItem("startYear")
@@ -344,9 +368,10 @@ export default function AcademicPlanner() {
 
   // Check if all prerequisites for a course are passed
   const arePrerequisitesMet = (course: Course): boolean => {
-    if (course.prerequisites.length === 0) return true
+    const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+    if (prereqs.length === 0) return true
 
-    return course.prerequisites.every((prereqId) => {
+    return prereqs.every((prereqId) => {
       const prereqCourse = findCourseById(prereqId)
       return prereqCourse && prereqCourse.status === "passed"
     })
@@ -492,7 +517,8 @@ export default function AcademicPlanner() {
   // Helper to check if a course can be scheduled in a given term (considering prerequisites)
   const canScheduleInTerm = (course: PlanCourse, targetYear: number, targetTerm: string): boolean => {
     // Check if all prerequisites have been scheduled at least one term before OR are already passed
-    return course.prerequisites.every((prereqId) => {
+    const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+    return prereqs.every((prereqId) => {
       // First check if prerequisite is already passed
       const prereqCourse = findCourseById(prereqId)
       if (prereqCourse && prereqCourse.status === "passed") {
@@ -567,7 +593,8 @@ export default function AcademicPlanner() {
 
       // Check prerequisite conflicts
       semester.courses.forEach((course) => {
-        course.prerequisites.forEach((prereqId) => {
+        const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+        prereqs.forEach((prereqId) => {
           const prereqCourse = findCourseById(prereqId)
           if (prereqCourse && prereqCourse.status === "pending") {
             // Find if prerequisite is scheduled
@@ -1366,6 +1393,7 @@ export default function AcademicPlanner() {
 
           const planCourse: PlanCourse = {
             ...course,
+            prerequisites: Array.isArray((course as any).prerequisites) ? course.prerequisites : [],
             availableSections,
             needsPetition,
             recommendedSection,
@@ -1522,13 +1550,14 @@ export default function AcademicPlanner() {
     // Create a dependency graph for regular courses only
     const dependencyGraph = new Map<string, string[]>()
     regularCourses.forEach((course) => {
-      dependencyGraph.set(course.id, course.prerequisites)
+      dependencyGraph.set(course.id, Array.isArray((course as any).prerequisites) ? course.prerequisites : [])
     })
 
     // Compute dependents count for prioritization (how many courses depend on this)
     const dependentsCount = new Map<string, number>()
     courses.forEach((c) => {
-      c.prerequisites.forEach((p) => dependentsCount.set(p, (dependentsCount.get(p) || 0) + 1))
+      const prereqs = Array.isArray((c as any).prerequisites) ? c.prerequisites : []
+      prereqs.forEach((p) => dependentsCount.set(p, (dependentsCount.get(p) || 0) + 1))
     })
 
     // Perform topological sort to respect prerequisites for regular courses
@@ -1564,6 +1593,8 @@ export default function AcademicPlanner() {
     // Helper to construct PlanCourse
     const toEnhance = (c: Course): PlanCourse => ({
       ...c,
+      // normalize prerequisites to avoid runtime errors from legacy saved data
+      prerequisites: Array.isArray((c as any).prerequisites) ? c.prerequisites : [],
       availableSections: getAvailableSections(c.code),
       needsPetition: !hasAvailableSections(c.code),
       recommendedSection: findBestSection(c.code),
@@ -1614,7 +1645,8 @@ export default function AcademicPlanner() {
     // Helper to check if a course can be scheduled in a given term
     const canScheduleInTermLocal = (course: PlanCourse, year: number, term: string): boolean => {
       // Check if all prerequisites have been scheduled at least one term before
-      return course.prerequisites.every((prereqId) => {
+      const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+      return prereqs.every((prereqId) => {
         const prereqSchedule = courseScheduleMap.get(prereqId)
         if (!prereqSchedule) {
           // Check if prerequisite is already passed
@@ -2062,7 +2094,7 @@ export default function AcademicPlanner() {
           const containsIntern = target.courses.some((c) => isInternshipCourse(c))
           if (containsIntern) continue
           // Prereqs must be scheduled before target term
-          const prereqOk = course.prerequisites.every((p) => {
+          const prereqOk = (Array.isArray((course as any).prerequisites) ? course.prerequisites : []).every((p) => {
             // Find where prereq is scheduled (or passed)
             const pr = findCourseById(p)
             if (pr && pr.status === "passed") return true
@@ -2245,6 +2277,7 @@ export default function AcademicPlanner() {
 
         return {
           ...course,
+          prerequisites: Array.isArray((course as any).prerequisites) ? course.prerequisites : [],
           availableSections,
           needsPetition,
           recommendedSection,
@@ -2294,6 +2327,7 @@ export default function AcademicPlanner() {
 
     const planCourse: PlanCourse = {
       ...course,
+      prerequisites: Array.isArray((course as any).prerequisites) ? course.prerequisites : [],
       availableSections,
       needsPetition,
       recommendedSection,
