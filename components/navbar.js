@@ -1,16 +1,20 @@
 "use client"
 
 import Link from "next/link"
-import { useRouter } from "next/router"
+import { usePathname } from "next/navigation"
 import { useState } from "react"
 import { Menu, X, Sun, Moon } from "lucide-react"
+import dynamic from "next/dynamic"
+
+// Lazy-load to avoid server render issues with dialog on some routes
+const PatchNotesButton = dynamic(() => import("./patch-notes"), { ssr: false })
 import { useTheme } from "next-themes"
 
 export default function Navbar() {
-  const router = useRouter()
+  const pathname = usePathname()
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const { theme, setTheme } = useTheme()
-  const isHomePage = router.pathname === "/"
+  const isHomePage = pathname === "/"
 
   const toggleMenu = () => {
     setIsMenuOpen(!isMenuOpen)
@@ -48,27 +52,28 @@ export default function Navbar() {
 
           {/* Desktop menu */}
           <div className="hidden md:flex items-center space-x-6">
-            <Link href="/" className={`hover:text-blue-200 ${router.pathname === "/" ? "font-bold" : ""}`}>
+            <Link href="/" className={`hover:text-blue-200 ${pathname === "/" ? "font-bold" : ""}`}>
               Home
             </Link>
             <Link
               href="/course-tracker"
-              className={`hover:text-blue-200 ${router.pathname === "/course-tracker" ? "font-bold" : ""}`}
+              className={`hover:text-blue-200 ${pathname === "/course-tracker" ? "font-bold" : ""}`}
             >
               Course Tracker
             </Link>
             <Link
               href="/schedule-maker"
-              className={`hover:text-blue-200 ${router.pathname === "/schedule-maker" ? "font-bold" : ""}`}
+              className={`hover:text-blue-200 ${pathname === "/schedule-maker" ? "font-bold" : ""}`}
             >
               Schedule Maker
             </Link>
             <Link
               href="/academic-planner"
-              className={`hover:text-blue-200 ${router.pathname === "/academic-planner" ? "font-bold" : ""}`}
+              className={`hover:text-blue-200 ${pathname === "/academic-planner" ? "font-bold" : ""}`}
             >
               Academic Planner
             </Link>
+            <PatchNotesButton />
             {isHomePage && (
               <button
                 onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
@@ -87,32 +92,35 @@ export default function Navbar() {
             <div className="flex flex-col space-y-3">
               <Link
                 href="/"
-                className={`hover:text-blue-200 ${router.pathname === "/" ? "font-bold" : ""}`}
+                className={`hover:text-blue-200 ${pathname === "/" ? "font-bold" : ""}`}
                 onClick={() => setIsMenuOpen(false)}
               >
                 Home
               </Link>
               <Link
                 href="/course-tracker"
-                className={`hover:text-blue-200 ${router.pathname === "/course-tracker" ? "font-bold" : ""}`}
+                className={`hover:text-blue-200 ${pathname === "/course-tracker" ? "font-bold" : ""}`}
                 onClick={() => setIsMenuOpen(false)}
               >
                 Course Tracker
               </Link>
               <Link
                 href="/schedule-maker"
-                className={`hover:text-blue-200 ${router.pathname === "/schedule-maker" ? "font-bold" : ""}`}
+                className={`hover:text-blue-200 ${pathname === "/schedule-maker" ? "font-bold" : ""}`}
                 onClick={() => setIsMenuOpen(false)}
               >
                 Schedule Maker
               </Link>
               <Link
                 href="/academic-planner"
-                className={`hover:text-blue-200 ${router.pathname === "/academic-planner" ? "font-bold" : ""}`}
+                className={`hover:text-blue-200 ${pathname === "/academic-planner" ? "font-bold" : ""}`}
                 onClick={() => setIsMenuOpen(false)}
               >
                 Academic Planner
               </Link>
+              <div>
+                <PatchNotesButton />
+              </div>
             </div>
           </div>
         )}

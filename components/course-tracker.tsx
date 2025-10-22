@@ -1252,12 +1252,6 @@ export default function CourseTracker() {
   // --- JSX ---
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
-      {/* Disclaimer Banner */}
-      <div className="bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 p-2 text-center text-sm">
-        <strong>Disclaimer:</strong> This is a personal project and is NOT officially affiliated with FEU Tech or the
-        FEU Tech CpE Department.
-      </div>
-
       <div className="mb-6 mt-4">
         <QuickNavigation />
       </div>

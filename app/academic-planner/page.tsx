@@ -25,6 +25,8 @@ import {
   Undo,
   Upload,
   Plus,
+  Lock,
+  Unlock,
 } from "lucide-react"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -44,9 +46,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX, ALLOW_OVERFLOW_UNITS, PRIORITY_WEIGHTS } from "@/lib/config"
 
 // Course status types
-type CourseStatus = "passed" | "active" | "pending"
+type CourseStatus = "passed" | "active" | "pending" | "failed"
 
 // Course interface
 interface Course {
@@ -171,14 +174,35 @@ export default function AcademicPlanner() {
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [overloadDialogOpen, setOverloadDialogOpen] = useState(false)
-  const [pendingAdd, setPendingAdd] = useState<{ courseId: string; targetYear: number; targetTerm: string } | null>(
-    null,
-  )
+  const [pendingAdd, setPendingAdd] = useState<
+    { courseId: string; targetYear: number; targetTerm: string; reason?: "overload" | "petition" } | null
+  >(null)
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([])
   const [importError, setImportError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [unscheduledCoursesRef, setUnscheduledCoursesRef] = useState<HTMLDivElement | null>(null)
   const [showFloatingUnscheduled, setShowFloatingUnscheduled] = useState(false)
+  // Course priorities and locked placements (persisted)
+  const [coursePriorities, setCoursePriorities] = useState<Record<string, keyof typeof PRIORITY_WEIGHTS>>({})
+  const [lockedPlacements, setLockedPlacements] = useState<Record<string, { year: number; term: string }>>({})
+
+  // Load persisted settings
+  useEffect(() => {
+    try {
+      const p = localStorage.getItem("planner.priorities")
+      const l = localStorage.getItem("planner.locks")
+      if (p) setCoursePriorities(JSON.parse(p))
+      if (l) setLockedPlacements(JSON.parse(l))
+    } catch {}
+  }, [])
+
+  // Persist on change
+  useEffect(() => {
+    try { localStorage.setItem("planner.priorities", JSON.stringify(coursePriorities)) } catch {}
+  }, [coursePriorities])
+  useEffect(() => {
+    try { localStorage.setItem("planner.locks", JSON.stringify(lockedPlacements)) } catch {}
+  }, [lockedPlacements])
 
   // Load saved course statuses and available sections on component mount
   useEffect(() => {
@@ -259,6 +283,12 @@ export default function AcademicPlanner() {
       generateGraduationPlan()
     }
   }, [courses, availableSections, loading, currentYear, currentTerm])
+  // Regenerate when priorities/locks change
+  useEffect(() => {
+    if (!loading) {
+      generateGraduationPlan()
+    }
+  }, [coursePriorities, lockedPlacements])
 
   // Detect conflicts whenever graduation plan changes
   useEffect(() => {
@@ -485,17 +515,32 @@ export default function AcademicPlanner() {
   // Detect conflicts in the graduation plan
   const detectConflicts = () => {
     const newConflicts: ConflictInfo[] = []
+    const lowLoadSemesters: { semester: SemesterPlan; total: number }[] = []
 
     graduationPlan.forEach((semester) => {
-      // Check credit limits
+      // Check credit limits (configurable)
       const totalCredits = semester.courses.reduce((sum, course) => sum + course.credits, 0)
-      if (totalCredits > 21) {
+      const hardMax = RECOMMENDED_UNITS_MAX + ALLOW_OVERFLOW_UNITS
+      if (totalCredits > hardMax) {
+        newConflicts.push({
+          type: "credit_limit",
+          severity: "error",
+          message: `${formatAcademicYear(semester.year)} ${semester.term} exceeds the maximum permitted load: ${totalCredits} credits (limit: ${RECOMMENDED_UNITS_MAX} + ${ALLOW_OVERFLOW_UNITS} overflow).`,
+          affectedCourses: semester.courses.map((c) => c.id),
+        })
+      } else if (totalCredits > RECOMMENDED_UNITS_MAX) {
         newConflicts.push({
           type: "credit_limit",
           severity: "warning",
-          message: `${formatAcademicYear(semester.year)} ${semester.term} has ${totalCredits} credits (exceeds recommended 21 credit limit)`,
+          message: `${formatAcademicYear(semester.year)} ${semester.term} exceeds the recommended maximum load: ${totalCredits} credits (recommended max: ${RECOMMENDED_UNITS_MAX}).`,
           affectedCourses: semester.courses.map((c) => c.id),
         })
+      } else if (totalCredits < RECOMMENDED_UNITS_MIN) {
+        // Defer below-min warnings for a single aggregated message later, excluding internship-only terms
+        const isInternshipOnly = semester.courses.length > 0 && semester.courses.every((c) => isInternshipCourse(c))
+        if (!isInternshipOnly) {
+          lowLoadSemesters.push({ semester, total: totalCredits })
+        }
       }
 
       // Check internship conflicts
@@ -581,6 +626,20 @@ export default function AcademicPlanner() {
         }
       })
     })
+
+    // Aggregate below-min load semesters into one warning to avoid repetition
+    if (lowLoadSemesters.length > 0) {
+      const labels = lowLoadSemesters
+        .map(({ semester, total }) => `${formatAcademicYear(semester.year)} ${semester.term} (${total} credits)`) 
+        .join("; ")
+      const affected = lowLoadSemesters.flatMap(({ semester }) => semester.courses.map((c) => c.id))
+      newConflicts.push({
+        type: "credit_limit",
+        severity: "warning",
+        message: `Some terms are below the recommended minimum load of ${RECOMMENDED_UNITS_MIN} credits: ${labels}. Consider rebalancing your plan.`,
+        affectedCourses: affected,
+      })
+    }
 
     setConflicts(newConflicts)
   }
@@ -1398,9 +1457,10 @@ export default function AcademicPlanner() {
 
   // Generate a graduation plan for the student
   const generateGraduationPlan = () => {
-    // Get all pending and active courses
-    const pendingCourses = courses.filter((course) => course.status === "pending")
-    const activeCourses = courses.filter((course) => course.status === "active")
+  // Get all pending, active, and failed courses
+  const pendingCourses = courses.filter((course) => course.status === "pending")
+  const activeCourses = courses.filter((course) => course.status === "active")
+  const failedCourses = courses.filter((course) => course.status === "failed")
 
     console.log("Generating plan with:", {
       pendingCount: pendingCourses.length,
@@ -1409,7 +1469,7 @@ export default function AcademicPlanner() {
     })
 
     // If we have no courses to plan, return early
-    if (pendingCourses.length === 0 && activeCourses.length === 0) {
+    if (pendingCourses.length === 0 && activeCourses.length === 0 && failedCourses.length === 0) {
       setGraduationPlan([])
       return
     }
@@ -1446,12 +1506,12 @@ export default function AcademicPlanner() {
       return
     }
 
-    // Separate internship and regular courses
-    const allCoursesToSchedule = [...pendingCourses, ...activeCourses]
+  // Separate internship and regular courses
+  const allCoursesToSchedule = [...failedCourses, ...activeCourses, ...pendingCourses]
     const internshipCourses = allCoursesToSchedule.filter((course) => isInternshipCourse(course))
     const regularCourses = allCoursesToSchedule.filter((course) => !isInternshipCourse(course))
 
-    // Sort internship courses by priority (Internship 1 first, then Internship 2)
+  // Sort internship courses by priority (Internship 1 first, then Internship 2)
     internshipCourses.sort((a, b) => getInternshipPriority(a) - getInternshipPriority(b))
 
     console.log("Course separation:", {
@@ -1465,51 +1525,30 @@ export default function AcademicPlanner() {
       dependencyGraph.set(course.id, course.prerequisites)
     })
 
+    // Compute dependents count for prioritization (how many courses depend on this)
+    const dependentsCount = new Map<string, number>()
+    courses.forEach((c) => {
+      c.prerequisites.forEach((p) => dependentsCount.set(p, (dependentsCount.get(p) || 0) + 1))
+    })
+
     // Perform topological sort to respect prerequisites for regular courses
     const sortedRegularCourses = topologicalSort(regularCourses, dependencyGraph)
 
     console.log("Sorted regular courses:", sortedRegularCourses.length)
 
-    // Enhance regular courses with section availability info
-    const enhancedRegularCourses: PlanCourse[] = sortedRegularCourses.map((course) => {
-      const availableSections = getAvailableSections(course.code)
-      const needsPetition = !hasAvailableSections(course.code)
-      const recommendedSection = findBestSection(course.code)
-
-      return {
-        ...course,
-        availableSections,
-        needsPetition,
-        recommendedSection,
-      }
-    })
-
-    // Enhance internship courses with section availability info
-    const enhancedInternshipCourses: PlanCourse[] = internshipCourses.map((course) => {
-      const availableSections = getAvailableSections(course.code)
-      const needsPetition = !hasAvailableSections(course.code)
-      const recommendedSection = findBestSection(course.code)
-
-      return {
-        ...course,
-        availableSections,
-        needsPetition,
-        recommendedSection,
-      }
-    })
+    // (moved) Locked and Active pre-placement happens after plan and schedule map are initialized below
 
     // Group regular courses into semesters with prerequisite gap enforcement
     const plan: SemesterPlan[] = []
     let currentPlanYear = currentYear
     let currentPlanTerm = currentTerm
     let currentSemesterCourses: PlanCourse[] = []
-    let currentSemesterCredits = 0
-    const MAX_CREDITS_PER_SEMESTER = 21
+  let currentSemesterCredits = 0
+  const HARD_MAX_CREDITS = RECOMMENDED_UNITS_MAX + ALLOW_OVERFLOW_UNITS
 
   // Reserved internship terms (determine from curriculum)
-  const maxCurriculumYear = Math.max(...courses.map((c) => c.year))
-  const internshipTargetYearLocal = startYear + (maxCurriculumYear - 1)
-  const reservedTermsLocal = new Set([`${internshipTargetYearLocal}-Term 2`, `${internshipTargetYearLocal}-Term 3`])
+  // Reserved terms disabled; internships will be scheduled dynamically after regular courses
+  const reservedTermsLocal = new Set<string>()
 
     // Track when each course was scheduled (for prerequisite gap enforcement)
     const courseScheduleMap = new Map<string, { year: number; term: string }>()
@@ -1521,6 +1560,56 @@ export default function AcademicPlanner() {
         // Assume passed courses were completed in their original term or earlier
         courseScheduleMap.set(course.id, { year: course.year + startYear - 1, term: course.term })
       })
+
+    // Helper to construct PlanCourse
+    const toEnhance = (c: Course): PlanCourse => ({
+      ...c,
+      availableSections: getAvailableSections(c.code),
+      needsPetition: !hasAvailableSections(c.code),
+      recommendedSection: findBestSection(c.code),
+    })
+
+    // Pre-place locked courses into their specified terms
+    const lockedIds = new Set(Object.keys(lockedPlacements))
+    if (lockedIds.size > 0) {
+      const addLockedToPlan = (pc: PlanCourse, y: number, t: string) => {
+        const idx = plan.findIndex((s) => s.year === y && s.term === t)
+        if (idx === -1) {
+          plan.push({ year: y, term: t, courses: [pc] })
+        } else {
+          plan[idx].courses.push(pc)
+        }
+      }
+      allCoursesToSchedule.forEach((c) => {
+        if (lockedIds.has(c.id)) {
+          const lock = lockedPlacements[c.id]
+          if (lock) {
+            const pc = toEnhance(c)
+            addLockedToPlan(pc, lock.year, lock.term)
+            courseScheduleMap.set(c.id, { year: lock.year, term: lock.term })
+          }
+        }
+      })
+    }
+
+    // Pre-place active courses in the current term (unless locked elsewhere)
+    const prePlacedActiveIds = new Set<string>()
+    activeCourses.forEach((c) => {
+      if (lockedIds.has(c.id)) return
+      const pc = toEnhance(c)
+      currentSemesterCourses.push(pc)
+      currentSemesterCredits += pc.credits
+      courseScheduleMap.set(pc.id, { year: currentPlanYear, term: currentPlanTerm })
+      prePlacedActiveIds.add(pc.id)
+    })
+
+    // Build unlocked pools excluding locked and already pre-placed actives
+    const unlockedRegular = regularCourses.filter((c) => !lockedIds.has(c.id) && !prePlacedActiveIds.has(c.id))
+    const unlockedInternships = internshipCourses.filter((c) => !lockedIds.has(c.id) && !prePlacedActiveIds.has(c.id))
+
+    // Enhance remaining courses with section availability info
+    const enhancedRegularCourses: PlanCourse[] = topologicalSort(unlockedRegular, dependencyGraph).map(toEnhance)
+    const enhancedInternshipCourses: PlanCourse[] = unlockedInternships.map(toEnhance)
 
     // Helper to check if a course can be scheduled in a given term
     const canScheduleInTermLocal = (course: PlanCourse, year: number, term: string): boolean => {
@@ -1537,31 +1626,207 @@ export default function AcademicPlanner() {
     }
 
     // Sort regular courses by priority
+    const priorityScore = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
     enhancedRegularCourses.sort((a, b) => {
-      // First priority: active courses
+      // First: failed courses (retakes) asap
+      if (a.status === "failed" && b.status !== "failed") return -1
+      if (a.status !== "failed" && b.status === "failed") return 1
+      // Second: active courses next
       if (a.status === "active" && b.status !== "active") return -1
       if (a.status !== "active" && b.status === "active") return 1
 
-      // Second priority: courses with prerequisites met
+      // Third: courses with prerequisites met
       const aPrereqsMet = arePrerequisitesMet(a)
       const bPrereqsMet = arePrerequisitesMet(b)
       if (aPrereqsMet && !bPrereqsMet) return -1
       if (!aPrereqsMet && bPrereqsMet) return 1
 
-      // Third priority: courses with available sections
+      // Fourth: user priority weight (high > medium > low)
+      const pa = priorityScore(a.id)
+      const pb = priorityScore(b.id)
+      if (pa !== pb) return pb - pa
+
+      // Fifth: unlocks more dependents earlier
+      const da = dependentsCount.get(a.id) || 0
+      const db = dependentsCount.get(b.id) || 0
+      if (da !== db) return db - da
+
+      // Sixth: courses with available sections first
       if (!a.needsPetition && b.needsPetition) return -1
       if (a.needsPetition && !b.needsPetition) return 1
 
-      // Fourth priority: by original year and term
+      // Finally: by original year and term
       if (a.year !== b.year) return a.year - b.year
       const termOrder = ["Term 1", "Term 2", "Term 3"]
       return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
     })
 
-    // Schedule regular courses first
+  // Helper: identify lab/lec pairing
+  const isLab = (c: Course | PlanCourse) => c.id.endsWith("L") || (c.name || "").toUpperCase().includes("(LAB)")
+  const isLec = (c: Course | PlanCourse) => !c.id.endsWith("L") && ((c.name || "").toUpperCase().includes("(LEC)") || courses.some(cc => cc.id === `${c.id}L`))
+  const findPairId = (id: string) => (id.endsWith("L") ? id.slice(0, -1) : `${id}L`)
+
+  // Schedule regular courses first
     const remainingRegularCourses = [...enhancedRegularCourses]
     const maxIterations = 100 // Prevent infinite loops
     let iteration = 0
+
+    const tryFillToMin = () => {
+      let added = 0
+      if (currentSemesterCredits >= RECOMMENDED_UNITS_MIN) return added
+      // Build candidates sorted by the same comparator
+      const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
+      const termOrder = ["Term 1", "Term 2", "Term 3"]
+      const candidates = [...remainingRegularCourses].sort((a, b) => {
+        if (a.status === "failed" && b.status !== "failed") return -1
+        if (a.status !== "failed" && b.status === "failed") return 1
+        if (a.status === "active" && b.status !== "active") return -1
+        if (a.status !== "active" && b.status === "active") return 1
+        const aPrereqsMet = canScheduleInTermLocal(a, currentPlanYear, currentPlanTerm)
+        const bPrereqsMet = canScheduleInTermLocal(b, currentPlanYear, currentPlanTerm)
+        if (aPrereqsMet && !bPrereqsMet) return -1
+        if (!aPrereqsMet && bPrereqsMet) return 1
+        const pa = priorityScoreLocal(a.id)
+        const pb = priorityScoreLocal(b.id)
+        if (pa !== pb) return pb - pa
+        const da = dependentsCount.get(a.id) || 0
+        const db = dependentsCount.get(b.id) || 0
+        if (da !== db) return db - da
+        if (!a.needsPetition && b.needsPetition) return -1
+        if (a.needsPetition && !b.needsPetition) return 1
+        if (a.year !== b.year) return a.year - b.year
+        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+      })
+
+      for (const course of candidates) {
+        if (currentSemesterCredits >= RECOMMENDED_UNITS_MIN) break
+        if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) continue
+        if (currentSemesterCredits + course.credits > HARD_MAX_CREDITS) continue
+        // Add course
+        currentSemesterCourses.push(course)
+        currentSemesterCredits += course.credits
+        courseScheduleMap.set(course.id, { year: currentPlanYear, term: currentPlanTerm })
+        const idx = remainingRegularCourses.findIndex((c) => c.id === course.id)
+        if (idx !== -1) remainingRegularCourses.splice(idx, 1)
+        added++
+      }
+      return added
+    }
+
+    // Helper to add a course into current semester bookkeeping (with optional co-req pairing)
+    const addCourseNow = (course: PlanCourse) => {
+      currentSemesterCourses.push(course)
+      currentSemesterCredits += course.credits
+      courseScheduleMap.set(course.id, { year: currentPlanYear, term: currentPlanTerm })
+      const idx = remainingRegularCourses.findIndex((c) => c.id === course.id)
+      if (idx !== -1) remainingRegularCourses.splice(idx, 1)
+
+      // Try to also add its lab/lec pair if present, eligible, and within limits
+      const pairId = findPairId(course.id)
+      const pair = remainingRegularCourses.find((c) => c.id === pairId)
+      if (pair) {
+        // Only attempt to bundle if one is LEC and the other is LAB
+        if ((isLec(course) && isLab(pair)) || (isLab(course) && isLec(pair))) {
+          if (canScheduleInTermLocal(pair, currentPlanYear, currentPlanTerm)) {
+            if (currentSemesterCredits + pair.credits <= HARD_MAX_CREDITS) {
+              currentSemesterCourses.push(pair)
+              currentSemesterCredits += pair.credits
+              courseScheduleMap.set(pair.id, { year: currentPlanYear, term: currentPlanTerm })
+              const pIdx = remainingRegularCourses.findIndex((c) => c.id === pair.id)
+              if (pIdx !== -1) remainingRegularCourses.splice(pIdx, 1)
+            }
+          }
+        }
+      }
+    }
+
+    // Try to pack up to the recommended max via small search (singles and pairs)
+    const tryPackToMax = () => {
+      let packed = 0
+      const softCapacity = Math.max(0, RECOMMENDED_UNITS_MAX - currentSemesterCredits)
+      const hardCapacity = Math.max(0, HARD_MAX_CREDITS - currentSemesterCredits)
+      if (hardCapacity <= 0) return packed
+
+      const eligible = remainingRegularCourses.filter((c) => canScheduleInTermLocal(c, currentPlanYear, currentPlanTerm))
+      if (eligible.length === 0) return packed
+
+      // Sort by priority (reuse earlier logic)
+      const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
+      const termOrder = ["Term 1", "Term 2", "Term 3"]
+      const sorted = [...eligible].sort((a, b) => {
+        if (a.status === "failed" && b.status !== "failed") return -1
+        if (a.status !== "failed" && b.status === "failed") return 1
+        if (a.status === "active" && b.status !== "active") return -1
+        if (a.status !== "active" && b.status === "active") return 1
+        const pa = priorityScoreLocal(a.id)
+        const pb = priorityScoreLocal(b.id)
+        if (pa !== pb) return pb - pa
+        const da = dependentsCount.get(a.id) || 0
+        const db = dependentsCount.get(b.id) || 0
+        if (da !== db) return db - da
+        if (!a.needsPetition && b.needsPetition) return -1
+        if (a.needsPetition && !b.needsPetition) return 1
+        if (a.year !== b.year) return a.year - b.year
+        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+      })
+
+      const TOP = 8
+      const top = sorted.slice(0, TOP)
+
+      // Best single fit under soft capacity if possible, else under hard capacity
+      const chooseBestSingle = (cap: number) => {
+        let best: PlanCourse | null = null
+        let bestCredits = -1
+        for (const c of top) {
+          if (c.credits <= cap) {
+            if (c.credits > bestCredits) {
+              best = c
+              bestCredits = c.credits
+            }
+          }
+        }
+        return best
+      }
+
+      let chosen = chooseBestSingle(softCapacity)
+      if (!chosen) {
+        chosen = chooseBestSingle(hardCapacity)
+      }
+      if (chosen) {
+        addCourseNow(chosen)
+        packed++
+      }
+
+      // Try pairing if we still have room to reach soft cap
+      const remainingSoft = Math.max(0, RECOMMENDED_UNITS_MAX - currentSemesterCredits)
+      const remainingHard = Math.max(0, HARD_MAX_CREDITS - currentSemesterCredits)
+      if (remainingHard <= 0) return packed
+
+      const pool = remainingRegularCourses.filter((c) => canScheduleInTermLocal(c, currentPlanYear, currentPlanTerm))
+      const poolTop = pool.sort((a, b) => b.credits - a.credits).slice(0, TOP)
+      let pairAdded = false
+      for (let i = 0; i < poolTop.length && !pairAdded; i++) {
+        for (let j = i + 1; j < poolTop.length && !pairAdded; j++) {
+          const a = poolTop[i]
+          const b = poolTop[j]
+          const sum = a.credits + b.credits
+          if (sum <= remainingSoft || sum <= remainingHard) {
+            // Add both if possible
+            if (currentSemesterCredits + a.credits <= HARD_MAX_CREDITS) {
+              addCourseNow(a)
+              packed++
+            }
+            if (currentSemesterCredits + b.credits <= HARD_MAX_CREDITS) {
+              addCourseNow(b)
+              packed++
+            }
+            pairAdded = true
+          }
+        }
+      }
+
+      return packed
+    }
 
     while (remainingRegularCourses.length > 0 && iteration < maxIterations) {
       iteration++
@@ -1591,8 +1856,8 @@ export default function AcademicPlanner() {
           continue // Skip this course for now
         }
 
-        // If adding this course would exceed the credit limit, start a new semester (do not add if it would exceed)
-        if (currentSemesterCredits + course.credits > MAX_CREDITS_PER_SEMESTER) {
+  // If adding this course would exceed the hard limit, start a new semester (do not add if it would exceed)
+  if (currentSemesterCredits + course.credits > HARD_MAX_CREDITS) {
           if (currentSemesterCourses.length > 0) {
           // Save current semester
           plan.push({
@@ -1621,16 +1886,23 @@ export default function AcademicPlanner() {
         
         }
 
-        // Add course to current semester
-        currentSemesterCourses.push(course)
-        currentSemesterCredits += course.credits
-        courseScheduleMap.set(course.id, { year: currentPlanYear, term: currentPlanTerm })
-
-        // Remove from remaining courses
-        remainingRegularCourses.splice(i, 1)
+        // Add course to current semester (and try bundle with co-req)
+        addCourseNow(course)
         coursesScheduledThisIteration++
 
         console.log(`Scheduled regular ${course.code} in ${currentPlanYear} ${currentPlanTerm}`)
+      }
+
+      // Try to reach the recommended minimum load using eligible remaining courses
+      if (currentSemesterCredits < RECOMMENDED_UNITS_MIN) {
+        const newlyAdded = tryFillToMin()
+        coursesScheduledThisIteration += newlyAdded
+      }
+
+      // After min is satisfied, try to pack toward the recommended max with small search
+      if (currentSemesterCredits >= RECOMMENDED_UNITS_MIN && currentSemesterCredits < RECOMMENDED_UNITS_MAX) {
+        const packed = tryPackToMax()
+        coursesScheduledThisIteration += packed
       }
 
       // If no courses were scheduled in this iteration, move to next term
@@ -1669,13 +1941,22 @@ export default function AcademicPlanner() {
       currentPlanTerm = next.term
     }
 
-  // Now schedule internship courses into the program's last year fixed terms (Term 2 and Term 3)
-  // Use the internshipTargetYear computed earlier (internshipTargetYearLocal)
-  const internshipTargetYear = internshipTargetYearLocal
-
-    // Ensure the reserved internship semesters contain only internships.
-    // If regular courses were scheduled into those terms, move them into Term 1 of the internship year or earlier.
-    const reservedTerms = reservedTermsLocal
+  // Now schedule internship courses into the earliest feasible academic year:
+  // Find the latest term that contains a non-internship course. If that term is Term 1, place
+  // internships in Term 2 and Term 3 of the same year; otherwise, place them in the next year's Term 2 and Term 3.
+    const termOrderArr = ["Term 1", "Term 2", "Term 3"]
+    let latestYear = currentYear
+    let latestTermIdx = 0
+    for (const sem of plan) {
+      const hasRegular = sem.courses.some((c) => !isInternshipCourse(c))
+      if (!hasRegular) continue
+      const idx = termOrderArr.indexOf(sem.term)
+      if (sem.year > latestYear || (sem.year === latestYear && idx > latestTermIdx)) {
+        latestYear = sem.year
+        latestTermIdx = idx
+      }
+    }
+    const internshipTargetYear = latestTermIdx <= 0 ? latestYear : latestYear + 1
 
     // Helper to find or create a semester in the plan and return it
     const findOrCreateSemester = (year: number, term: string): SemesterPlan => {
@@ -1699,29 +1980,7 @@ export default function AcademicPlanner() {
       return newSemester
     }
 
-    // Collect non-internship courses that ended up in reserved terms
-    const nonInternshipsToRelocate: PlanCourse[] = []
-
-    for (const semester of [...plan]) {
-      const key = `${semester.year}-${semester.term}`
-      if (reservedTerms.has(key)) {
-        const internshipsInThis = semester.courses.filter((c) => isInternshipCourse(c))
-        const nonInternships = semester.courses.filter((c) => !isInternshipCourse(c))
-        if (nonInternships.length > 0) {
-          // Remove non-internships from this semester
-          semester.courses = internshipsInThis
-          nonInternshipsToRelocate.push(...nonInternships)
-        }
-      }
-    }
-
-    // Relocate non-internship courses preferably to Term 1 of the internship year; if not available, append earlier.
-    if (nonInternshipsToRelocate.length > 0) {
-      const targetSemester = findOrCreateSemester(internshipTargetYear, "Term 1")
-      targetSemester.courses.push(...nonInternshipsToRelocate)
-      // Update schedule map
-      nonInternshipsToRelocate.forEach((c) => courseScheduleMap.set(c.id, { year: targetSemester.year, term: targetSemester.term }))
-    }
+    // No reserved terms relocation: internships are scheduled into the computed target year
 
     // Determine which internship is which by inspecting course name (Internship 1 or Internship 2)
     const internship1 = enhancedInternshipCourses.find((c) => c.name.toLowerCase().includes("internship 1"))
@@ -1748,9 +2007,9 @@ export default function AcademicPlanner() {
       console.log(`Scheduled internship ${course.code} in ${year} ${term}`)
     }
 
-    // Place Internship 1 in Term 2, Internship 2 in Term 3 of the internshipTargetYear
-    placeInternship(internship1, internshipTargetYear, "Term 2")
-    placeInternship(internship2, internshipTargetYear, "Term 3")
+  // Place Internship 1 in Term 2, Internship 2 in Term 3 of the internshipTargetYear
+  placeInternship(internship1, internshipTargetYear, "Term 2")
+  placeInternship(internship2, internshipTargetYear, "Term 3")
 
     // If there are extra internships (unnumbered), append them after Internship 2 in subsequent terms
     let extraYear = internshipTargetYear
@@ -1776,6 +2035,69 @@ export default function AcademicPlanner() {
     })
 
     setOpenSemesters(newOpenSemesters)
+    // Backfill/Merge pass: try to move later regular courses into earlier semesters to reduce trailing tiny terms
+    const termOrderIdx = (t: string) => ["Term 1", "Term 2", "Term 3"].indexOf(t)
+    const hasInternOnly = (sem: SemesterPlan) => sem.courses.length > 0 && sem.courses.every((c) => isInternshipCourse(c))
+    const sumCredits = (sem: SemesterPlan) => sem.courses.reduce((s, c) => s + c.credits, 0)
+
+    for (let i = plan.length - 1; i >= 1; i--) {
+      const sem = plan[i]
+      // Skip pure internship terms for backfill source
+      if (hasInternOnly(sem)) continue
+      for (let k = sem.courses.length - 1; k >= 0; k--) {
+        const course = sem.courses[k]
+        if (isInternshipCourse(course)) continue
+        // Respect explicit locks
+        if (lockedPlacements[course.id]) {
+          const lock = lockedPlacements[course.id]
+          if (!(lock.year === sem.year && lock.term === sem.term)) {
+            // The course is locked elsewhere; skip moving here
+            continue
+          }
+        }
+        // Try earlier semesters from i-1 down to 0
+        for (let j = i - 1; j >= 0; j--) {
+          const target = plan[j]
+          // Don't move into internship terms
+          const containsIntern = target.courses.some((c) => isInternshipCourse(c))
+          if (containsIntern) continue
+          // Prereqs must be scheduled before target term
+          const prereqOk = course.prerequisites.every((p) => {
+            // Find where prereq is scheduled (or passed)
+            const pr = findCourseById(p)
+            if (pr && pr.status === "passed") return true
+            let found = null as { y: number; t: string } | null
+            for (const s of plan) {
+              const c = s.courses.find((x) => x.id === p)
+              if (c) {
+                found = { y: s.year, t: s.term }
+                break
+              }
+            }
+            if (!found) return false
+            if (target.year > found.y) return true
+            if (target.year < found.y) return false
+            return termOrderIdx(target.term) > termOrderIdx(found.t)
+          })
+          if (!prereqOk) continue
+          // Capacity check
+          if (sumCredits(target) + course.credits > HARD_MAX_CREDITS) continue
+          // Move
+          sem.courses.splice(k, 1)
+          target.courses.push(course)
+          // Update indices for next checks
+          break
+        }
+      }
+      // If semester became empty after moves, remove it
+      if (sem.courses.length === 0) {
+        plan.splice(i, 1)
+      }
+    }
+
+    // Ensure chronological order after backfill
+    plan.sort((a, b) => (a.year === b.year ? termOrderIdx(a.term) - termOrderIdx(b.term) : a.year - b.year))
+
     setGraduationPlan(plan)
   }
 
@@ -1802,6 +2124,21 @@ export default function AcademicPlanner() {
           course.id === courseId ? { ...course, recommendedSection: newSection } : course,
         ),
       }))
+    })
+  }
+
+  // Priority and Lock helpers
+  const setCoursePriority = (courseId: string, level: keyof typeof PRIORITY_WEIGHTS) => {
+    setCoursePriorities((prev) => ({ ...prev, [courseId]: level }))
+  }
+  const toggleCourseLock = (courseId: string, year: number, term: string) => {
+    setLockedPlacements((prev) => {
+      const existing = prev[courseId]
+      if (existing && existing.year === year && existing.term === term) {
+        const { [courseId]: _omit, ...rest } = prev
+        return rest
+      }
+      return { ...prev, [courseId]: { year, term } }
     })
   }
 
@@ -1853,11 +2190,11 @@ export default function AcademicPlanner() {
   }
 
   // Toggle semester collapsible
-  const toggleSemester = (year: number, term: string) => {
+  const toggleSemester = (year: number, term: string, open?: boolean) => {
     const key = `${year}-${term}`
     setOpenSemesters((prev) => ({
       ...prev,
-      [key]: !prev[key],
+      [key]: open ?? !prev[key],
     }))
   }
 
@@ -1900,7 +2237,7 @@ export default function AcademicPlanner() {
 
     // Find pending and active courses that are not in the plan
     const unscheduledCourses = courses
-      .filter((course) => (course.status === "pending" || course.status === "active") && !coursesInPlan.has(course.id))
+      .filter((course) => (course.status === "pending" || course.status === "active" || course.status === "failed") && !coursesInPlan.has(course.id))
       .map((course) => {
         const availableSections = getAvailableSections(course.code)
         const needsPetition = !hasAvailableSections(course.code)
@@ -1928,7 +2265,15 @@ export default function AcademicPlanner() {
 
   // If it's a reserved term and the course is not an internship, open confirmation modal
   if (isReserved && !isInternshipCourse(course)) {
-    setPendingAdd({ courseId, targetYear, targetTerm })
+    setPendingAdd({ courseId, targetYear, targetTerm, reason: "overload" })
+    setOverloadDialogOpen(true)
+    return
+  }
+
+  // If adding to current term and course may need petition, confirm
+  const needsPetition = !hasAvailableSections(course.code)
+  if (needsPetition && targetYear === currentYear && targetTerm === currentTerm) {
+    setPendingAdd({ courseId, targetYear, targetTerm, reason: "petition" })
     setOverloadDialogOpen(true)
     return
   }
@@ -2454,12 +2799,21 @@ export default function AcademicPlanner() {
                   }}>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>Confirm Overload</DialogTitle>
-                        <DialogDescription>
-                          You're attempting to add a non-internship course into a term reserved for internships.
-                          This is considered an overload and may affect your graduation timeline. Do you want to
-                          continue?
-                        </DialogDescription>
+                        <DialogTitle>
+                          {pendingAdd?.reason === "petition" ? "Confirm Petition Add" : "Confirm Overload"}
+                        </DialogTitle>
+                        {pendingAdd?.reason === "petition" ? (
+                          <DialogDescription>
+                            This course currently has no available sections and may require a petition. Do you want to
+                            add it to the current term?
+                          </DialogDescription>
+                        ) : (
+                          <DialogDescription>
+                            You're attempting to add a non-internship course into a term reserved for internships.
+                            This is considered an overload and may affect your graduation timeline. Do you want to
+                            continue?
+                          </DialogDescription>
+                        )}
                       </DialogHeader>
                       <div className="py-2">
                         <p className="text-sm text-gray-600">Selected:</p>
@@ -2572,6 +2926,7 @@ export default function AcademicPlanner() {
                           <TableHead>Status</TableHead>
                           <TableHead>Prerequisites Met</TableHead>
                           <TableHead>Available Sections</TableHead>
+                          <TableHead>Priority</TableHead>
                           <TableHead>Actions</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -2611,7 +2966,7 @@ export default function AcademicPlanner() {
                               </TableCell>
                               <TableCell>
                                 {course.needsPetition ? (
-                                  <Badge variant="destructive">Needs Petition</Badge>
+                                  <Badge variant="outline">May Need Petition</Badge>
                                 ) : (
                                   <Badge
                                     variant="outline"
@@ -2620,6 +2975,22 @@ export default function AcademicPlanner() {
                                     {course.availableSections.length} sections
                                   </Badge>
                                 )}
+                              </TableCell>
+                              {/* Priority for unscheduled courses */}
+                              <TableCell>
+                                <Select
+                                  value={(coursePriorities[course.id] || "medium") as string}
+                                  onValueChange={(value) => setCoursePriority(course.id, value as keyof typeof PRIORITY_WEIGHTS)}
+                                >
+                                  <SelectTrigger className="w-28">
+                                    <SelectValue placeholder="Priority" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="high">High</SelectItem>
+                                    <SelectItem value="medium">Medium</SelectItem>
+                                    <SelectItem value="low">Low</SelectItem>
+                                  </SelectContent>
+                                </Select>
                               </TableCell>
                               <TableCell>
                                 <Select
@@ -2697,7 +3068,7 @@ export default function AcademicPlanner() {
                       <Collapsible
                         key={semesterKey}
                         open={isOpen}
-                        onOpenChange={() => toggleSemester(semester.year, semester.term)}
+                        onOpenChange={(open) => toggleSemester(semester.year, semester.term, open)}
                         className="border rounded-lg overflow-hidden"
                       >
                         <CollapsibleTrigger className="w-full p-4 flex justify-between items-center bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700">
@@ -2710,7 +3081,7 @@ export default function AcademicPlanner() {
                             </Badge>
                             <Badge
                               className={`${
-                                semesterCredits > 21
+                                (semesterCredits > RECOMMENDED_UNITS_MAX || (semesterCredits < RECOMMENDED_UNITS_MIN && !hasInternship))
                                   ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
                                   : "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
                               }`}
@@ -2769,6 +3140,8 @@ export default function AcademicPlanner() {
                                   <TableHead>Schedule</TableHead>
                                   <TableHead>Room</TableHead>
                                   <TableHead>Status</TableHead>
+                                  <TableHead>Priority</TableHead>
+                                  <TableHead>Lock</TableHead>
                                   <TableHead>Actions</TableHead>
                                 </TableRow>
                               </TableHeader>
@@ -2877,7 +3250,11 @@ export default function AcademicPlanner() {
                                       <TableCell>{section ? section.room : "N/A"}</TableCell>
                                       <TableCell>
                                         {course.needsPetition ? (
-                                          <Badge variant="destructive">Needs Petition</Badge>
+                                          (semester.year === currentYear && semester.term === currentTerm) ? (
+                                            <Badge variant="destructive">Needs Petition</Badge>
+                                          ) : (
+                                            <Badge variant="outline">May Need Petition</Badge>
+                                          )
                                         ) : !allPrereqsMet ? (
                                           <Badge
                                             variant="outline"
@@ -2893,6 +3270,40 @@ export default function AcademicPlanner() {
                                             Available
                                           </Badge>
                                         )}
+                                      </TableCell>
+                                      {/* Priority (per-course) */}
+                                      <TableCell>
+                                        <Select
+                                          value={(coursePriorities[course.id] || "medium") as string}
+                                          onValueChange={(value) => setCoursePriority(course.id, value as keyof typeof PRIORITY_WEIGHTS)}
+                                        >
+                                          <SelectTrigger className="w-28">
+                                            <SelectValue placeholder="Priority" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            <SelectItem value="high">High</SelectItem>
+                                            <SelectItem value="medium">Medium</SelectItem>
+                                            <SelectItem value="low">Low</SelectItem>
+                                          </SelectContent>
+                                        </Select>
+                                      </TableCell>
+                                      {/* Lock to this term */}
+                                      <TableCell>
+                                        {(() => {
+                                          const locked = !!lockedPlacements[course.id] && lockedPlacements[course.id].year === semester.year && lockedPlacements[course.id].term === semester.term
+                                          return (
+                                            <Button
+                                              variant={locked ? "default" : "outline"}
+                                              size="sm"
+                                              onClick={() => toggleCourseLock(course.id, semester.year, semester.term)}
+                                              title={locked ? "Unlock from this term" : "Lock to this term"}
+                                              className="flex items-center gap-1"
+                                            >
+                                              {locked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                                              {locked ? "Locked" : "Unlock"}
+                                            </Button>
+                                          )
+                                        })()}
                                       </TableCell>
                                       <TableCell>
                                         <div className="flex items-center gap-2">
@@ -2932,16 +3343,17 @@ export default function AcademicPlanner() {
                               </TableBody>
                             </Table>
 
-                            {semester.courses.some((course) => course.needsPetition) && (
-                              <Alert className="mt-4 bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800">
-                                <FileWarning className="h-4 w-4" />
-                                <AlertTitle>Petition Required</AlertTitle>
-                                <AlertDescription>
-                                  Some courses in this semester require a petition as they don't have available
-                                  sections. You may need to check with the department for special arrangements.
-                                </AlertDescription>
-                              </Alert>
-                            )}
+                            {semester.year === currentYear && semester.term === currentTerm &&
+                              semester.courses.some((course) => course.needsPetition) && (
+                                <Alert className="mt-4 bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800">
+                                  <FileWarning className="h-4 w-4" />
+                                  <AlertTitle>Petition Required</AlertTitle>
+                                  <AlertDescription>
+                                    One or more courses in the current term do not have available sections and may require a petition.
+                                    Please coordinate with the department for possible arrangements.
+                                  </AlertDescription>
+                                </Alert>
+                              )}
 
                             {semester.courses.some(
                               (course) => !arePrerequisitesMet(course) && !course.needsPetition,

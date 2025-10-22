@@ -10,6 +10,58 @@ export interface PatchNote {
 
 export const patchNotes: PatchNote[] = [
   {
+    version: "1.42",
+    date: "October 23, 2025",
+    title: "Smarter planning: fuller loads, paired labs, fewer terms",
+    changes: [
+      {
+        type: "improved",
+        description:
+          "Your chosen priorities now help decide which subjects go first. Higher‑priority subjects are scheduled earlier when possible.",
+      },
+      {
+        type: "improved",
+        description:
+          "Each term aims to fill closer to the suggested unit limit without going over the allowed maximum.",
+      },
+      {
+        type: "improved",
+        description:
+          "Lectures and labs are placed together when possible so you can take them in the same term.",
+      },
+      {
+        type: "improved",
+        description:
+          "When it’s safe to do so, the planner moves subjects from later terms into earlier ones to reduce tiny leftover terms and help you finish sooner (prerequisites, unit limits, and your locks are respected).",
+      },
+      {
+        type: "improved",
+        description:
+          "Internship terms stay separate from regular subjects to match common school practice.",
+      },
+      {
+        type: "improved",
+        description:
+          "Fewer repeated warnings about light‑load terms and clearer, more professional messages.",
+      },
+      {
+        type: "improved",
+        description:
+          "The plan view stays open while you interact with it and updates automatically when you change priorities or lock a subject.",
+      },
+      {
+        type: "new",
+        description:
+          "You can set a subject’s priority or lock it to a term. Your choices are saved on your device and honored by the planner.",
+      },
+      {
+        type: "improved",
+        description:
+          "If you add a subject to the current term that likely needs a petition, we’ll ask you to confirm. For future terms, it’s shown as a gentle note.",
+      },
+    ],
+  },
+  {
     version: "1.41",
     date: "October 19, 2025",
     title: "Internship Term Protection & UX Improvements",
