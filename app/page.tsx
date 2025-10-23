@@ -13,25 +13,16 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import Spinner from "@/components/ui/spinner"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  DialogClose,
-} from "@/components/ui/dialog"
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { patchNotes } from "@/lib/patch-notes"
 import { MESSAGE_MIN } from "../lib/config"
+import NonCpeNotice from "@/components/non-cpe-notice"
+import FeedbackDialog from "@/components/feedback-dialog"
 
 export default function Home() {
   const { theme, setTheme } = useTheme()
   // Feedback state (popup in Patch Notes)
-  const [fbName, setFbName] = useState("")
-  const [fbSubject, setFbSubject] = useState("")
-  const [fbMessage, setFbMessage] = useState("")
   const [copied, setCopied] = useState(false)
   const [feedbackHistory, setFeedbackHistory] = useState<any[]>([])
   const [toastMessage, setToastMessage] = useState("")
@@ -39,8 +30,6 @@ export default function Home() {
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "sending" | "success" | "error">("idle")
   const [feedbackStatusMessage, setFeedbackStatusMessage] = useState("")
-  const subjectMissing = !fbSubject.trim()
-  const messageMissing = fbMessage.trim().length < MESSAGE_MIN
   
 
   useEffect(() => {
@@ -71,60 +60,7 @@ export default function Home() {
     }
   }
 
-  const copyFeedback = async () => {
-    const content = `To: dozey.help@gmail.com\nSubject: ${fbSubject}\n\nFrom: ${fbName}\n\n${fbMessage}`
-    try {
-      await navigator.clipboard.writeText(content)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 3000)
-      saveLocalFeedback({ name: fbName, subject: fbSubject, message: fbMessage, date: new Date().toISOString(), sentVia: "copied" })
-      setToastType("success")
-      setToastMessage("Copied feedback to clipboard")
-    } catch (e) {
-      setToastType("error")
-      setToastMessage("Copy failed")
-    }
-  }
-
-  const sendFeedbackMail = () => {
-    const body = encodeURIComponent(`From: ${fbName}\n\n${fbMessage}`)
-    const mailto = `mailto:dozey.help@gmail.com?subject=${encodeURIComponent(fbSubject)}&body=${body}`
-    saveLocalFeedback({ name: fbName, subject: fbSubject, message: fbMessage, date: new Date().toISOString(), sentVia: "mailto" })
-    window.location.href = mailto
-  }
-
-  const sendFeedbackToServer = async () => {
-    try {
-      setFeedbackStatus("sending")
-      setFeedbackStatusMessage("")
-      const res = await fetch("/api/send-feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: fbName, subject: fbSubject, message: fbMessage }),
-      })
-      const json = await res.json()
-      if (json?.success) {
-        saveLocalFeedback({ name: fbName, subject: fbSubject, message: fbMessage, date: new Date().toISOString(), sentVia: "server" })
-        setFeedbackStatus("success")
-        setFeedbackStatusMessage("Feedback sent to server")
-        setToastType("success")
-        setToastMessage("Feedback sent to server")
-        setFbName("")
-        setFbSubject("")
-        setFbMessage("")
-      } else {
-        setFeedbackStatus("error")
-        setFeedbackStatusMessage(json?.error || "Server send failed")
-        setToastType("error")
-        setToastMessage("Server send failed")
-      }
-    } catch (e: any) {
-      setFeedbackStatus("error")
-      setFeedbackStatusMessage(e?.message || "Server send failed")
-      setToastType("error")
-      setToastMessage("Server send failed")
-    }
-  }
+  // Feedback logic moved to FeedbackDialog component; keep toast helpers intact for other uses
 
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
@@ -273,6 +209,9 @@ export default function Home() {
               </CardContent>
             </Card>
 
+            {/* Non-CpE Student Notice */}
+            <NonCpeNotice />
+
             {/* Tools Section */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
               {/* Course Tracker Card */}
@@ -420,99 +359,20 @@ export default function Home() {
               <CardFooter className="text-sm text-gray-500 dark:text-gray-400 flex items-center justify-between">
                 <div>If you encounter any issues with the app, feel free to message them to our page.</div>
                 <div>
-                  <Dialog open={feedbackDialogOpen} onOpenChange={(open) => {
-                    // reset status when dialog opens
-                    if (open) {
-                      setFeedbackStatus("idle")
-                      setFeedbackStatusMessage("")
-                    }
-                    setFeedbackDialogOpen(open)
-                  }}>
+                  <Dialog open={feedbackDialogOpen} onOpenChange={(open) => setFeedbackDialogOpen(open)}>
                     <DialogTrigger asChild>
                       <Button variant="outline" size="sm">Send Feedback</Button>
                     </DialogTrigger>
-                    <DialogContent className="max-w-lg">
-                      <DialogHeader>
-                        <DialogTitle>Send Feedback</DialogTitle>
-                        <div className="text-sm text-gray-600 dark:text-gray-300">If you have suggestions or issues, send them to dozey.help@gmail.com</div>
-                      </DialogHeader>
-
-                      {feedbackStatus === "idle" || feedbackStatus === "sending" ? (
-                        <div className="space-y-3 py-2">
-                          <Input placeholder="Your name (optional)" value={fbName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFbName(e.target.value)} />
-                          <Input placeholder="Subject" value={fbSubject} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFbSubject(e.target.value)} />
-                          <textarea
-                            placeholder="Message"
-                            value={fbMessage}
-                            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setFbMessage(e.target.value)}
-                            className="w-full p-2 border rounded h-36 bg-white dark:bg-gray-800 dark:border-gray-700"
-                          />
-                          <div className="flex gap-2 justify-end items-center">
-                            <Button variant="outline" onClick={copyFeedback} disabled={feedbackStatus === "sending"}>{copied ? "Copied" : "Copy & Send Manually"}</Button>
-                            <Button onClick={sendFeedbackMail} disabled={feedbackStatus === "sending"}>Open Mail Client</Button>
-                            <div className="flex items-center">
-                              <Button disabled={feedbackStatus === "sending" || subjectMissing || messageMissing} onClick={async () => { await sendFeedbackToServer() }}>
-                                {feedbackStatus === "sending" ? (
-                                  <span className="flex items-center gap-2">
-                                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
-                                    Sending...
-                                  </span>
-                                ) : (
-                                  "Send to Server"
-                                )}
-                              </Button>
-                            </div>
-                          </div>
-
-                          {(subjectMissing || messageMissing) && (
-                            <div className="text-xs text-red-600 dark:text-red-400 mt-1">Subject and message are required to send feedback.</div>
-                          )}
-
-                          {feedbackHistory.length > 0 && (
-                            <div className="mt-3 text-sm text-gray-600 dark:text-gray-400">
-                              <div className="font-medium mb-1">Recent feedback</div>
-                              <ul className="space-y-1 max-h-36 overflow-y-auto">
-                                {feedbackHistory.slice(0, 5).map((h, i) => (
-                                  <li key={i} className="border rounded p-2 bg-gray-50 dark:bg-gray-800">
-                                    <div className="text-xs text-gray-500">{new Date(h.date).toLocaleString()} • {h.sentVia}</div>
-                                    <div className="font-medium">{h.subject}</div>
-                                    <div className="text-sm text-gray-600 dark:text-gray-300 truncate">{h.message}</div>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="py-6">
-                          {feedbackStatus === "success" ? (
-                            <div className="text-center">
-                              <h4 className="text-lg font-bold text-green-600">Feedback Sent</h4>
-                              <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">{feedbackStatusMessage || "Thank you for your feedback."}</p>
-                              <div className="mt-4">
-                                <Button onClick={() => setFeedbackDialogOpen(false)}>Close</Button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="text-center">
-                              <h4 className="text-lg font-bold text-red-700">Failed to Send</h4>
-                              <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">{feedbackStatusMessage || "There was an error sending your feedback."}</p>
-                              <div className="mt-4 flex gap-2 justify-center">
-                                <Button variant="outline" onClick={() => { setFeedbackStatus("idle"); setFeedbackStatusMessage("") }}>Try Again</Button>
-                                <Button onClick={() => setFeedbackDialogOpen(false)}>Close</Button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      <DialogClose />
-                    </DialogContent>
+                    {/* Controlled feedback dialog */}
+                    <FeedbackDialog open={feedbackDialogOpen} onOpenChange={setFeedbackDialogOpen} />
                   </Dialog>
                 </div>
               </CardFooter>
             </Card>
 
             {/* About Section */}
+
+            {/* Hello there! nyehehehe */}
             <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-8 text-center">
               <h2 className="text-2xl font-bold mb-4">About These Tools</h2>
               <p className="text-gray-600 dark:text-gray-300 mb-4">
@@ -537,3 +397,4 @@ export default function Home() {
     </ThemeProvider>
   )
 }
+

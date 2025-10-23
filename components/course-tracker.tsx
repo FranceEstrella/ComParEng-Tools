@@ -42,6 +42,8 @@ import { saveCourseStatuses, loadCourseStatuses } from "@/lib/course-storage"
 import { initialCourses } from "@/lib/course-data"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
+import NonCpeNotice from "@/components/non-cpe-notice"
+import FeedbackDialog from "@/components/feedback-dialog"
 
 // --- Types and Interfaces ---
 
@@ -643,6 +645,7 @@ const SaveLoadControls = ({
 }: SaveLoadControlsProps) => {
   // Ref for curriculum HTML import
   const htmlFileInputRef = useRef<HTMLInputElement>(null)
+  const [highlightImport, setHighlightImport] = useState(false)
 
   /**
    * Parse a Program Curriculum HTML file (from SOLAR) and extract courses.
@@ -794,6 +797,26 @@ const SaveLoadControls = ({
 
   const [isExpanded, setIsExpanded] = useState(false)
 
+  // Auto-expand and highlight Import when navigated with #import hash
+  useEffect(() => {
+    try {
+      const hash = typeof window !== 'undefined' ? window.location.hash : ""
+      if (hash === "#import" || hash === "#import-curriculum") {
+        // open the accordion
+        setIsExpanded(true)
+        // after expansion animation, scroll to import and highlight
+        setTimeout(() => {
+          const el = document.getElementById("import-curriculum")
+          if (el) {
+            el.scrollIntoView({ behavior: "smooth", block: "center" })
+          }
+          setHighlightImport(true)
+          setTimeout(() => setHighlightImport(false), 2200)
+        }, 350)
+      }
+    } catch {}
+  }, [])
+
   return (
     <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
       <div className="flex justify-between items-center cursor-pointer" onClick={() => setIsExpanded(!isExpanded)}>
@@ -829,7 +852,13 @@ const SaveLoadControls = ({
               </Button>
             </div>
             {/* Import Curriculum (HTML) */}
-            <div className="relative">
+            <div
+              className={cn(
+                "relative rounded-md",
+                highlightImport && "ring-4 ring-indigo-300 animate-pulse"
+              )}
+              id="import-curriculum"
+            >
               <input
                 type="file"
                 ref={htmlFileInputRef}
@@ -865,7 +894,12 @@ const SaveLoadControls = ({
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 aria-label="Import curriculum HTML file"
               />
-              <Button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700">
+              <Button
+                className={cn(
+                  "flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 transition-transform",
+                  highlightImport && "scale-105"
+                )}
+              >
                 <Upload className="h-4 w-4" />
                 Import Curriculum (HTML)
               </Button>
@@ -1010,6 +1044,7 @@ export default function CourseTracker() {
   const [startYear, setStartYear] = useState<number>(new Date().getFullYear())
   const { theme } = useTheme()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
 
   // Calculate academic years and expected graduation
   const academicYears = useMemo(() => calculateAcademicYears(startYear), [startYear])
@@ -1023,6 +1058,17 @@ export default function CourseTracker() {
       setSaveMessage("Loaded saved course statuses from local storage")
       setTimeout(() => setSaveMessage(null), 3000)
     }
+  }, [])
+
+  // Scroll to Import block when navigating with hash
+  useEffect(() => {
+    try {
+      const hash = typeof window !== 'undefined' ? window.location.hash : ""
+      if (hash === "#import" || hash === "#import-curriculum") {
+        const el = document.getElementById("import-curriculum")
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" })
+      }
+    } catch {}
   }, [])
 
   // Pre-calculate dependent courses using useMemo for efficiency
@@ -1261,6 +1307,10 @@ export default function CourseTracker() {
           <h1 className="text-2xl md:text-3xl font-bold text-center">FEU TECH Computer Engineering Course Tracker</h1>
           <ThemeToggle />
         </div>
+
+  {/* Non-CpE Student Notice */}
+  <NonCpeNotice onReportIssue={() => setFeedbackDialogOpen(true)} />
+  <FeedbackDialog open={feedbackDialogOpen} onOpenChange={setFeedbackDialogOpen} defaultSubject="Non-CpE curriculum import issue" />
 
         {/* Save/Load Progress Controls */}
         <SaveLoadControls

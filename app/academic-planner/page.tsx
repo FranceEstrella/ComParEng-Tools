@@ -47,6 +47,8 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX, ALLOW_OVERFLOW_UNITS, PRIORITY_WEIGHTS } from "@/lib/config"
+import NonCpeNotice from "@/components/non-cpe-notice"
+import FeedbackDialog from "@/components/feedback-dialog"
 
 // Course status types
 type CourseStatus = "passed" | "active" | "pending" | "failed"
@@ -182,6 +184,7 @@ export default function AcademicPlanner() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [unscheduledCoursesRef, setUnscheduledCoursesRef] = useState<HTMLDivElement | null>(null)
   const [showFloatingUnscheduled, setShowFloatingUnscheduled] = useState(false)
+  const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   // Course priorities and locked placements (persisted)
   const [coursePriorities, setCoursePriorities] = useState<Record<string, keyof typeof PRIORITY_WEIGHTS>>({})
   const [lockedPlacements, setLockedPlacements] = useState<Record<string, { year: number; term: string }>>({})
@@ -2443,6 +2446,10 @@ export default function AcademicPlanner() {
             </div>
           </div>
         </div>
+
+  {/* Non-CpE Student Notice */}
+  <NonCpeNotice onReportIssue={() => setFeedbackDialogOpen(true)} />
+  <FeedbackDialog open={feedbackDialogOpen} onOpenChange={setFeedbackDialogOpen} defaultSubject="Non-CpE curriculum import issue" />
 
         {error && (
           <Alert className="mb-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-300">
