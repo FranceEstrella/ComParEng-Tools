@@ -30,6 +30,7 @@ export default function Home() {
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "sending" | "success" | "error">("idle")
   const [feedbackStatusMessage, setFeedbackStatusMessage] = useState("")
+  const [feedbackDefaultSubject, setFeedbackDefaultSubject] = useState<string>("")
   
 
   useEffect(() => {
@@ -80,7 +81,8 @@ export default function Home() {
           <div className="max-w-5xl mx-auto">
             {/* Header with Dark Mode Toggle */}
             <div className="relative mb-8">
-              <div className="flex justify-end items-center gap-2">
+              {/* Keep actions above the title and prevent overlap on small screens */}
+              <div className="relative z-10 flex justify-end items-center gap-2">
                 <PatchNotesButton autoOpenOnce buttonLabel="What’s New" />
                 <Button
                   variant="outline"
@@ -93,7 +95,8 @@ export default function Home() {
                   <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
                 </Button>
               </div>
-              <h1 className="text-4xl md:text-5xl font-bold text-center absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full pointer-events-none">
+              {/* Title is static on mobile to avoid overlapping, centered absolutely on md+ */}
+              <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold text-center md:absolute md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2 w-full pointer-events-none mt-4 md:mt-0">
                 FEU Tech ComParEng Tools
               </h1>
             </div>
@@ -210,7 +213,12 @@ export default function Home() {
             </Card>
 
             {/* Non-CpE Student Notice */}
-            <NonCpeNotice />
+            <NonCpeNotice
+              onReportIssue={() => {
+                setFeedbackDefaultSubject("Issue: Importing Program Curriculum")
+                setFeedbackDialogOpen(true)
+              }}
+            />
 
             {/* Tools Section */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
@@ -328,13 +336,16 @@ export default function Home() {
               </CardHeader>
               <CardContent>
                 <Tabs defaultValue={patchNotes[0].version}>
-                  <TabsList className="mb-4">
-                    {patchNotes.map((note) => (
-                      <TabsTrigger key={note.version} value={note.version}>
-                        {note.version}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
+                  {/* Make the version tabs horizontally scrollable on small screens and contained within the card */}
+                  <div className="mb-4 overflow-x-auto">
+                    <TabsList className="min-w-full w-max flex-nowrap">
+                      {patchNotes.map((note) => (
+                        <TabsTrigger key={note.version} value={note.version} className="whitespace-nowrap">
+                          {note.version}
+                        </TabsTrigger>
+                      ))}
+                    </TabsList>
+                  </div>
 
                   {patchNotes.map((note) => (
                     <TabsContent key={note.version} value={note.version}>
@@ -361,10 +372,16 @@ export default function Home() {
                 <div>
                   <Dialog open={feedbackDialogOpen} onOpenChange={(open) => setFeedbackDialogOpen(open)}>
                     <DialogTrigger asChild>
-                      <Button variant="outline" size="sm">Send Feedback</Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setFeedbackDefaultSubject("")}
+                      >
+                        Send Feedback
+                      </Button>
                     </DialogTrigger>
                     {/* Controlled feedback dialog */}
-                    <FeedbackDialog open={feedbackDialogOpen} onOpenChange={setFeedbackDialogOpen} />
+                    <FeedbackDialog open={feedbackDialogOpen} onOpenChange={setFeedbackDialogOpen} defaultSubject={feedbackDefaultSubject} />
                   </Dialog>
                 </div>
               </CardFooter>
