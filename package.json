@@ -46,7 +46,7 @@
     "input-otp": "latest",
     "jsdom": "latest",
     "lucide-react": "^0.454.0",
-    "next": "15.2.4",
+    "next": "^16.0.1",
     "next-themes": "latest",
     "path": "latest",
     "react": "^19",
@@ -68,5 +68,10 @@
     "@types/react-dom": "^19",
     "postcss": "^8.5",
     "typescript": "^5"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
   }
 }

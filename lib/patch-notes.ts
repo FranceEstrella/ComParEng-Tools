@@ -10,6 +10,43 @@ export interface PatchNote {
 
 export const patchNotes: PatchNote[] = [
   {
+    version: "1.43",
+    date: "November 8, 2025",
+    title: "Responsive planner dialogs & rounded popups",
+    changes: [
+      {
+        type: "improved",
+        description:
+          "Floating plan actions now collapse into a single mobile card with smoother entry animations and only appear after the top summary.",
+      },
+      {
+        type: "improved",
+        description:
+          "Planner controls, including the View Plan Actions label and Unscheduled Courses list, adapt their copy and layout for small screens.",
+      },
+      {
+        type: "improved",
+        description:
+          "What’s New and Send Feedback dialogs detect compact layouts, trim default content, and add toggles so mobile users no longer need to scroll.",
+      },
+      {
+        type: "improved",
+        description:
+          "Browser alerts and confirmations in the planner are replaced with in-app dialogs for consistent styling and accessibility.",
+      },
+      {
+        type: "new",
+        description:
+          "The academic planner now auto-detects regular students and suggests the default curriculum.",
+      },
+      {
+        type: "new",
+        description:
+          "All popups now feature rounded corners, giving patch notes, feedback, and planner dialogs a unified look.",
+      },
+    ],
+  },
+  {
     version: "1.42",
     date: "October 23, 2025",
     title: "Smarter planning: fuller loads, paired labs, fewer terms",

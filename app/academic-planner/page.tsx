@@ -27,6 +27,8 @@ import {
   Plus,
   Lock,
   Unlock,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -49,6 +51,7 @@ import { Input } from "@/components/ui/input"
 import { RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX, ALLOW_OVERFLOW_UNITS, PRIORITY_WEIGHTS } from "@/lib/config"
 import NonCpeNotice from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
+import { cn } from "@/lib/utils"
 
 // Course status types
 type CourseStatus = "passed" | "active" | "pending" | "failed"
@@ -180,11 +183,32 @@ export default function AcademicPlanner() {
     { courseId: string; targetYear: number; targetTerm: string; reason?: "overload" | "petition" } | null
   >(null)
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([])
+  const [conflictDialogOpen, setConflictDialogOpen] = useState(false)
+  const [conflictDetail, setConflictDetail] = useState<{ title: string; conflicts: ConflictInfo[] } | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
+  const [importSuccessInfo, setImportSuccessInfo] = useState<{ semesters: number; courses: number } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [unscheduledCoursesRef, setUnscheduledCoursesRef] = useState<HTMLDivElement | null>(null)
   const [showFloatingUnscheduled, setShowFloatingUnscheduled] = useState(false)
+  const [planActionsRef, setPlanActionsRef] = useState<HTMLDivElement | null>(null)
+  const [showFloatingPlanActions, setShowFloatingPlanActions] = useState(false)
+  const [floatingControlsVisible, setFloatingControlsVisible] = useState(false)
+  const [planActionsFloatingVisible, setPlanActionsFloatingVisible] = useState(false)
+  const [unscheduledFloatingVisible, setUnscheduledFloatingVisible] = useState(false)
+  const [floatingControlsEntering, setFloatingControlsEntering] = useState(false)
+  const [planActionsFloatingEntering, setPlanActionsFloatingEntering] = useState(false)
+  const [unscheduledFloatingEntering, setUnscheduledFloatingEntering] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
+  const [planActionsCollapsed, setPlanActionsCollapsed] = useState(false)
+  const [unscheduledCollapsed, setUnscheduledCollapsed] = useState(false)
+  const topHeaderRef = useRef<HTMLDivElement | null>(null)
+  const graduationSummaryRef = useRef<HTMLDivElement | null>(null)
+  const [topContentVisible, setTopContentVisible] = useState(true)
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
+  // Track if we've already shown the regular-student curriculum notice
+  const [regularNoticeShown, setRegularNoticeShown] = useState(false)
+  const [regularNoticeTerm, setRegularNoticeTerm] = useState<{ year: number; term: string } | null>(null)
+  const [regularNoticeOpen, setRegularNoticeOpen] = useState(false)
   // Course priorities and locked placements (persisted)
   const [coursePriorities, setCoursePriorities] = useState<Record<string, keyof typeof PRIORITY_WEIGHTS>>({})
   const [lockedPlacements, setLockedPlacements] = useState<Record<string, { year: number; term: string }>>({})
@@ -322,13 +346,44 @@ export default function AcademicPlanner() {
     detectConflicts()
   }, [graduationPlan])
 
+  // Auto-detect "regular student" semesters: if a generated semester contains all
+  // curriculum courses for its curriculum year+term, show a one-time popup notice
+  // informing that the planner will prefer curriculum defaults for that term.
+  useEffect(() => {
+    if (!graduationPlan || graduationPlan.length === 0 || regularNoticeShown) return
+
+    for (const semester of graduationPlan) {
+      // Convert calendar year back to curriculum relative year
+      const curriculumYear = semester.year - startYear + 1
+
+      // Find curriculum's courses for that curriculum year and term from initialCourses
+      const curriculumCourses = (initialCourses as any[]).filter(
+        (c: any) => c.year === curriculumYear && c.term === semester.term,
+      )
+
+      if (!curriculumCourses || curriculumCourses.length === 0) continue
+
+      const curriculumIds = new Set(curriculumCourses.map((c: any) => c.id))
+      const semesterIds = new Set(semester.courses.map((c: any) => c.id))
+
+      // If semester contains all curriculum course IDs, we consider it a regular-student term
+      const allIncluded = [...curriculumIds].every((id) => semesterIds.has(id))
+      if (!allIncluded) continue
+
+      setRegularNoticeTerm({ year: semester.year, term: semester.term })
+      setRegularNoticeOpen(true)
+      setRegularNoticeShown(true)
+      break
+    }
+  }, [graduationPlan, startYear, regularNoticeShown])
+
   // Track visibility of unscheduled courses section
   useEffect(() => {
     if (!unscheduledCoursesRef) return
 
     const observer = new IntersectionObserver(
       ([entry]) => {
-        setShowFloatingUnscheduled(!entry.isIntersecting && getUnscheduledCourses().length > 0)
+        setShowFloatingUnscheduled(!entry.isIntersecting && getUnscheduledCourses().length > 0 && !topContentVisible)
       },
       { threshold: 0.1 },
     )
@@ -336,7 +391,99 @@ export default function AcademicPlanner() {
     observer.observe(unscheduledCoursesRef)
 
     return () => observer.disconnect()
-  }, [unscheduledCoursesRef, graduationPlan])
+  }, [unscheduledCoursesRef, graduationPlan, topContentVisible])
+
+  // Track visibility of plan actions section
+  useEffect(() => {
+    if (!planActionsRef) return
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setShowFloatingPlanActions(!entry.isIntersecting && !topContentVisible)
+      },
+      { threshold: 0.1 },
+    )
+
+    observer.observe(planActionsRef)
+
+    return () => observer.disconnect()
+  }, [planActionsRef, topContentVisible])
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth <= 640)
+    }
+
+    handleResize()
+    window.addEventListener("resize", handleResize)
+    return () => window.removeEventListener("resize", handleResize)
+  }, [])
+
+  useEffect(() => {
+    if (isMobile) {
+      setPlanActionsCollapsed(true)
+      setUnscheduledCollapsed(true)
+    } else {
+      setPlanActionsCollapsed(false)
+      setUnscheduledCollapsed(false)
+    }
+  }, [isMobile])
+
+  useEffect(() => {
+    const targets = [topHeaderRef.current, graduationSummaryRef.current].filter(Boolean) as Element[]
+    if (targets.length === 0) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.some((entry) => entry.isIntersecting && entry.intersectionRatio > 0.1)
+        setTopContentVisible(visible)
+      },
+      { threshold: [0, 0.1, 0.25, 0.5] },
+    )
+
+    targets.forEach((el) => observer.observe(el))
+
+    return () => observer.disconnect()
+  }, [])
+
+  const floatingControlsActive = showFloatingPlanActions || showFloatingUnscheduled
+
+  // Smooth visibility transitions for floating controls
+  useEffect(() => {
+    if (floatingControlsActive) {
+      setFloatingControlsVisible(true)
+      const raf = window.requestAnimationFrame(() => setFloatingControlsEntering(true))
+      return () => window.cancelAnimationFrame(raf)
+    }
+
+    setFloatingControlsEntering(false)
+    const timeout = window.setTimeout(() => setFloatingControlsVisible(false), 250)
+    return () => window.clearTimeout(timeout)
+  }, [floatingControlsActive])
+
+  useEffect(() => {
+    if (showFloatingPlanActions) {
+      setPlanActionsFloatingVisible(true)
+      const raf = window.requestAnimationFrame(() => setPlanActionsFloatingEntering(true))
+      return () => window.cancelAnimationFrame(raf)
+    }
+
+    setPlanActionsFloatingEntering(false)
+    const timeout = window.setTimeout(() => setPlanActionsFloatingVisible(false), 250)
+    return () => window.clearTimeout(timeout)
+  }, [showFloatingPlanActions])
+
+  useEffect(() => {
+    if (showFloatingUnscheduled) {
+      setUnscheduledFloatingVisible(true)
+      const raf = window.requestAnimationFrame(() => setUnscheduledFloatingEntering(true))
+      return () => window.cancelAnimationFrame(raf)
+    }
+
+    setUnscheduledFloatingEntering(false)
+    const timeout = window.setTimeout(() => setUnscheduledFloatingVisible(false), 250)
+    return () => window.clearTimeout(timeout)
+  }, [showFloatingUnscheduled])
 
   // Check if a course is an internship course
   const isInternshipCourse = (course: Course): boolean => {
@@ -362,6 +509,12 @@ export default function AcademicPlanner() {
   // Find a course by its ID
   const findCourseById = (id: string): Course | undefined => {
     return courses.find((course) => course.id === id)
+  }
+
+  const openConflictDialog = (title: string, entries: ConflictInfo[]) => {
+    if (!entries || entries.length === 0) return
+    setConflictDetail({ title, conflicts: entries })
+    setConflictDialogOpen(true)
   }
 
   // Find a course by its code
@@ -1437,11 +1590,8 @@ export default function AcademicPlanner() {
 
       // Close import dialog
       setImportDialogOpen(false)
-
-      // Show success message
-      alert(
-        `Successfully imported graduation plan with ${newPlan.length} semesters and ${newPlan.reduce((sum, s) => sum + s.courses.length, 0)} courses.`,
-      )
+      const totalCourses = newPlan.reduce((sum, s) => sum + s.courses.length, 0)
+      setImportSuccessInfo({ semesters: newPlan.length, courses: totalCourses })
     } catch (error: any) {
       setImportError(error.message)
     }
@@ -1488,10 +1638,10 @@ export default function AcademicPlanner() {
 
   // Generate a graduation plan for the student
   const generateGraduationPlan = () => {
-  // Get all pending, active, and failed courses
-  const pendingCourses = courses.filter((course) => course.status === "pending")
-  const activeCourses = courses.filter((course) => course.status === "active")
-  const failedCourses = courses.filter((course) => course.status === "failed")
+    // Get all pending, active, and failed courses
+    const pendingCourses = courses.filter((course) => course.status === "pending")
+    const activeCourses = courses.filter((course) => course.status === "active")
+    const failedCourses = courses.filter((course) => course.status === "failed")
 
     console.log("Generating plan with:", {
       pendingCount: pendingCourses.length,
@@ -1499,9 +1649,26 @@ export default function AcademicPlanner() {
       totalCourses: courses.length,
     })
 
+    const finalizePlan = (semesters: SemesterPlan[]) => {
+      const order = ["Term 1", "Term 2", "Term 3"]
+      const ordered = [...semesters].sort((a, b) =>
+        a.year === b.year ? order.indexOf(a.term) - order.indexOf(b.term) : a.year - b.year,
+      )
+
+      const newOpenSemesters: { [key: string]: boolean } = {}
+      ordered.forEach((semester, index) => {
+        const key = `${semester.year}-${semester.term}`
+        newOpenSemesters[key] = index === 0
+      })
+
+      setOpenSemesters(newOpenSemesters)
+      setGraduationPlan(ordered)
+      setMoveHistory([])
+    }
+
     // If we have no courses to plan, return early
     if (pendingCourses.length === 0 && activeCourses.length === 0 && failedCourses.length === 0) {
-      setGraduationPlan([])
+      finalizePlan([])
       return
     }
 
@@ -1533,16 +1700,16 @@ export default function AcademicPlanner() {
       }
 
       const planArray = Array.from(grouped.values())
-      setGraduationPlan(planArray)
+      finalizePlan(planArray)
       return
     }
 
-  // Separate internship and regular courses
-  const allCoursesToSchedule = [...failedCourses, ...activeCourses, ...pendingCourses]
+    // Separate internship and regular courses
+    const allCoursesToSchedule = [...failedCourses, ...activeCourses, ...pendingCourses]
     const internshipCourses = allCoursesToSchedule.filter((course) => isInternshipCourse(course))
     const regularCourses = allCoursesToSchedule.filter((course) => !isInternshipCourse(course))
 
-  // Sort internship courses by priority (Internship 1 first, then Internship 2)
+    // Sort internship courses by priority (Internship 1 first, then Internship 2)
     internshipCourses.sort((a, b) => getInternshipPriority(a) - getInternshipPriority(b))
 
     console.log("Course separation:", {
@@ -1575,12 +1742,12 @@ export default function AcademicPlanner() {
     let currentPlanYear = currentYear
     let currentPlanTerm = currentTerm
     let currentSemesterCourses: PlanCourse[] = []
-  let currentSemesterCredits = 0
-  const HARD_MAX_CREDITS = RECOMMENDED_UNITS_MAX + ALLOW_OVERFLOW_UNITS
+    let currentSemesterCredits = 0
+    const HARD_MAX_CREDITS = RECOMMENDED_UNITS_MAX + ALLOW_OVERFLOW_UNITS
 
-  // Reserved internship terms (determine from curriculum)
-  // Reserved terms disabled; internships will be scheduled dynamically after regular courses
-  const reservedTermsLocal = new Set<string>()
+    // Reserved internship terms (determine from curriculum)
+    // Reserved terms disabled; internships will be scheduled dynamically after regular courses
+    const reservedTermsLocal = new Set<string>()
 
     // Track when each course was scheduled (for prerequisite gap enforcement)
     const courseScheduleMap = new Map<string, { year: number; term: string }>()
@@ -1602,6 +1769,138 @@ export default function AcademicPlanner() {
       needsPetition: !hasAvailableSections(c.code),
       recommendedSection: findBestSection(c.code),
     })
+
+    const detectRegularStudent = () => {
+      const termOrder = ["Term 1", "Term 2", "Term 3"]
+      const passedList = courses.filter((c) => c.status === "passed")
+      if (passedList.length === 0) {
+        return {
+          isRegular: false,
+          latestCalendarYear: 0,
+          latestTermIndex: 0,
+          latestTerm: "Term 1",
+          latestCurriculumYear: 0,
+          nextYear: 0,
+          nextTerm: "Term 1",
+          nextCurriculumYear: 0,
+        }
+      }
+
+      let latestYear = -Infinity
+      let latestTermIndex = -1
+
+      passedList.forEach((pc) => {
+        const calendarYear = pc.year + startYear - 1
+        const termIndex = termOrder.indexOf(pc.term)
+        if (calendarYear > latestYear || (calendarYear === latestYear && termIndex > latestTermIndex)) {
+          latestYear = calendarYear
+          latestTermIndex = termIndex
+        }
+      })
+
+      if (latestYear === -Infinity || latestTermIndex === -1) {
+        return {
+          isRegular: false,
+          latestCalendarYear: 0,
+          latestTermIndex: 0,
+          latestTerm: "Term 1",
+          latestCurriculumYear: 0,
+          nextYear: 0,
+          nextTerm: "Term 1",
+          nextCurriculumYear: 0,
+        }
+      }
+
+      const latestTerm = termOrder[latestTermIndex]
+      const latestCurriculumYear = latestYear - startYear + 1
+      const curriculumCoursesForLatest = (initialCourses as any[]).filter(
+        (c: any) => c.year === latestCurriculumYear && c.term === latestTerm,
+      )
+
+      if (curriculumCoursesForLatest.length === 0) {
+        return {
+          isRegular: false,
+          latestCalendarYear: latestYear,
+          latestTermIndex,
+          latestTerm,
+          latestCurriculumYear,
+          nextYear: 0,
+          nextTerm: "Term 1",
+          nextCurriculumYear: 0,
+        }
+      }
+
+      const passedIds = new Set(passedList.map((p) => p.id))
+      const allPassed = curriculumCoursesForLatest.every((c: any) => passedIds.has(c.id))
+
+      if (!allPassed) {
+        return {
+          isRegular: false,
+          latestCalendarYear: latestYear,
+          latestTermIndex,
+          latestTerm,
+          latestCurriculumYear,
+          nextYear: 0,
+          nextTerm: "Term 1",
+          nextCurriculumYear: 0,
+        }
+      }
+
+      const next = getNextTerm(latestYear, latestTerm)
+      const nextCurriculumYear = latestCurriculumYear + (latestTerm === "Term 3" ? 1 : 0)
+
+      return {
+        isRegular: true,
+        latestCalendarYear: latestYear,
+        latestTermIndex,
+        latestTerm,
+        latestCurriculumYear,
+        nextYear: next.year,
+        nextTerm: next.term,
+        nextCurriculumYear,
+      }
+    }
+
+    const buildRegularCurriculumPlan = (info: ReturnType<typeof detectRegularStudent>): SemesterPlan[] => {
+      const termOrder = ["Term 1", "Term 2", "Term 3"]
+      const sortedCurriculum = [...(initialCourses as any[])].sort((a: any, b: any) => {
+        if (a.year !== b.year) return a.year - b.year
+        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+      })
+
+      const planByKey = new Map<string, SemesterPlan>()
+
+      sortedCurriculum.forEach((curriculumCourse: any) => {
+        const actualCourse = courses.find((c) => c.id === curriculumCourse.id)
+        if (!actualCourse) return
+        if (actualCourse.status === "passed") return
+
+        const calendarYear = startYear + (curriculumCourse.year - 1)
+        if (calendarYear < info.nextYear) return
+        if (calendarYear === info.nextYear) {
+          const currTermIndex = termOrder.indexOf(curriculumCourse.term)
+          if (currTermIndex < termOrder.indexOf(info.nextTerm)) return
+        }
+
+        const key = `${calendarYear}-${curriculumCourse.term}`
+        let semester = planByKey.get(key)
+        if (!semester) {
+          semester = { year: calendarYear, term: curriculumCourse.term, courses: [] }
+          planByKey.set(key, semester)
+        }
+
+        semester.courses.push(toEnhance(actualCourse))
+      })
+
+      return Array.from(planByKey.values())
+    }
+
+    const regularInfo = detectRegularStudent()
+    if (regularInfo.isRegular) {
+      const regularPlan = buildRegularCurriculumPlan(regularInfo)
+      finalizePlan(regularPlan)
+      return
+    }
 
     // Pre-place locked courses into their specified terms
     const lockedIds = new Set(Object.keys(lockedPlacements))
@@ -1646,16 +1945,25 @@ export default function AcademicPlanner() {
     const enhancedInternshipCourses: PlanCourse[] = unlockedInternships.map(toEnhance)
 
     // Helper to check if a course can be scheduled in a given term
-    const canScheduleInTermLocal = (course: PlanCourse, year: number, term: string): boolean => {
-      // Check if all prerequisites have been scheduled at least one term before
+    const canScheduleInTermLocal = (course: PlanCourse | null | undefined, year: number, term: string): boolean => {
+      // Defensive: if course is falsy, not schedulable
+      if (!course) return false
+
+      // Normalize prerequisites to avoid runtime errors from undefined
       const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+
+      // If no prerequisites, it's schedulable
+      if (prereqs.length === 0) return true
+
       return prereqs.every((prereqId) => {
+        // If prereq is already passed, it's satisfied
+        const prereqCourse = findCourseById(prereqId)
+        if (prereqCourse && prereqCourse.status === "passed") return true
+
+        // Otherwise, check schedule map
         const prereqSchedule = courseScheduleMap.get(prereqId)
-        if (!prereqSchedule) {
-          // Check if prerequisite is already passed
-          const prereqCourse = findCourseById(prereqId)
-          return prereqCourse && prereqCourse.status === "passed"
-        }
+        if (!prereqSchedule) return false
+
         return isAtLeastOneTermAfter(year, term, prereqSchedule.year, prereqSchedule.term)
       })
     }
@@ -1709,7 +2017,6 @@ export default function AcademicPlanner() {
     const tryFillToMin = () => {
       let added = 0
       if (currentSemesterCredits >= RECOMMENDED_UNITS_MIN) return added
-      // Build candidates sorted by the same comparator
       const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
       const termOrder = ["Term 1", "Term 2", "Term 3"]
       const candidates = [...remainingRegularCourses].sort((a, b) => {
@@ -1737,7 +2044,6 @@ export default function AcademicPlanner() {
         if (currentSemesterCredits >= RECOMMENDED_UNITS_MIN) break
         if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) continue
         if (currentSemesterCredits + course.credits > HARD_MAX_CREDITS) continue
-        // Add course
         currentSemesterCourses.push(course)
         currentSemesterCredits += course.credits
         courseScheduleMap.set(course.id, { year: currentPlanYear, term: currentPlanTerm })
@@ -1756,11 +2062,9 @@ export default function AcademicPlanner() {
       const idx = remainingRegularCourses.findIndex((c) => c.id === course.id)
       if (idx !== -1) remainingRegularCourses.splice(idx, 1)
 
-      // Try to also add its lab/lec pair if present, eligible, and within limits
       const pairId = findPairId(course.id)
       const pair = remainingRegularCourses.find((c) => c.id === pairId)
       if (pair) {
-        // Only attempt to bundle if one is LEC and the other is LAB
         if ((isLec(course) && isLab(pair)) || (isLab(course) && isLec(pair))) {
           if (canScheduleInTermLocal(pair, currentPlanYear, currentPlanTerm)) {
             if (currentSemesterCredits + pair.credits <= HARD_MAX_CREDITS) {
@@ -1785,7 +2089,6 @@ export default function AcademicPlanner() {
       const eligible = remainingRegularCourses.filter((c) => canScheduleInTermLocal(c, currentPlanYear, currentPlanTerm))
       if (eligible.length === 0) return packed
 
-      // Sort by priority (reuse earlier logic)
       const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
       const termOrder = ["Term 1", "Term 2", "Term 3"]
       const sorted = [...eligible].sort((a, b) => {
@@ -1808,7 +2111,6 @@ export default function AcademicPlanner() {
       const TOP = 8
       const top = sorted.slice(0, TOP)
 
-      // Best single fit under soft capacity if possible, else under hard capacity
       const chooseBestSingle = (cap: number) => {
         let best: PlanCourse | null = null
         let bestCredits = -1
@@ -1832,7 +2134,6 @@ export default function AcademicPlanner() {
         packed++
       }
 
-      // Try pairing if we still have room to reach soft cap
       const remainingSoft = Math.max(0, RECOMMENDED_UNITS_MAX - currentSemesterCredits)
       const remainingHard = Math.max(0, HARD_MAX_CREDITS - currentSemesterCredits)
       if (remainingHard <= 0) return packed
@@ -1846,7 +2147,6 @@ export default function AcademicPlanner() {
           const b = poolTop[j]
           const sum = a.credits + b.credits
           if (sum <= remainingSoft || sum <= remainingHard) {
-            // Add both if possible
             if (currentSemesterCredits + a.credits <= HARD_MAX_CREDITS) {
               addCourseNow(a)
               packed++
@@ -1924,7 +2224,6 @@ export default function AcademicPlanner() {
         // Add course to current semester (and try bundle with co-req)
         addCourseNow(course)
         coursesScheduledThisIteration++
-
         console.log(`Scheduled regular ${course.code} in ${currentPlanYear} ${currentPlanTerm}`)
       }
 
@@ -2061,15 +2360,6 @@ export default function AcademicPlanner() {
       "Final plan:",
       plan.map((s) => `${formatAcademicYear(s.year)} ${s.term}: ${s.courses.length} courses (${s.courses.map((c) => c.code).join(", ")})`),
     )
-
-    // Initialize all semesters as closed except the first one
-    const newOpenSemesters: { [key: string]: boolean } = {}
-    plan.forEach((semester, index) => {
-      const key = `${semester.year}-${semester.term}`
-      newOpenSemesters[key] = index === 0 // Only open the first semester
-    })
-
-    setOpenSemesters(newOpenSemesters)
     // Backfill/Merge pass: try to move later regular courses into earlier semesters to reduce trailing tiny terms
     const termOrderIdx = (t: string) => ["Term 1", "Term 2", "Term 3"].indexOf(t)
     const hasInternOnly = (sem: SemesterPlan) => sem.courses.length > 0 && sem.courses.every((c) => isInternshipCourse(c))
@@ -2130,10 +2420,10 @@ export default function AcademicPlanner() {
       }
     }
 
-    // Ensure chronological order after backfill
-    plan.sort((a, b) => (a.year === b.year ? termOrderIdx(a.term) - termOrderIdx(b.term) : a.year - b.year))
+  // Ensure chronological order after backfill
+  plan.sort((a, b) => (a.year === b.year ? termOrderIdx(a.term) - termOrderIdx(b.term) : a.year - b.year))
 
-    setGraduationPlan(plan)
+  finalizePlan(plan)
   }
 
   // Remove a course from the graduation plan
@@ -2429,14 +2719,44 @@ export default function AcademicPlanner() {
     return `${days}\n${formatTime(meetingTime)}`
   }
 
+  const renderPlanActionControls = (showJump: boolean) => (
+    <div className="flex items-center gap-1">
+      {showJump && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-6 p-0"
+          onClick={() => planActionsRef?.scrollIntoView({ behavior: "smooth" })}
+          aria-label="Jump to plan actions"
+        >
+          <ArrowUpDown className="h-3 w-3" />
+        </Button>
+      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 w-6 p-0"
+        onClick={() => setPlanActionsCollapsed((prev) => !prev)}
+        aria-label={planActionsCollapsed ? "Expand plan actions" : "Collapse plan actions"}
+      >
+        {planActionsCollapsed ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+      </Button>
+    </div>
+  )
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
-      <div className="container mx-auto px-4 py-8">
+      <div
+        className={cn(
+          "container mx-auto px-4 py-8",
+          isMobile && floatingControlsVisible ? "pb-40" : ""
+        )}
+      >
         <div className="mb-6">
           <QuickNavigation />
         </div>
 
-        <div className="mb-6">
+        <div className="mb-6" ref={topHeaderRef}>
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-3xl font-bold">Academic Planner</h1>
@@ -2447,9 +2767,102 @@ export default function AcademicPlanner() {
           </div>
         </div>
 
-  {/* Non-CpE Student Notice */}
-  <NonCpeNotice onReportIssue={() => setFeedbackDialogOpen(true)} />
-  <FeedbackDialog open={feedbackDialogOpen} onOpenChange={setFeedbackDialogOpen} defaultSubject="Non-CpE curriculum import issue" />
+        {/* Non-CpE Student Notice */}
+        <NonCpeNotice onReportIssue={() => setFeedbackDialogOpen(true)} />
+        <FeedbackDialog
+          open={feedbackDialogOpen}
+          onOpenChange={setFeedbackDialogOpen}
+          defaultSubject="Non-CpE curriculum import issue"
+        />
+        <Dialog open={regularNoticeOpen} onOpenChange={setRegularNoticeOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Regular Curriculum Detected</DialogTitle>
+              <DialogDescription>
+                {regularNoticeTerm
+                  ? `We detected a curriculum-perfect schedule for ${formatAcademicYear(regularNoticeTerm.year)} ${regularNoticeTerm.term}.`
+                  : "We detected a curriculum-perfect schedule."}
+              </DialogDescription>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              The planner will prioritize the official curriculum sequence for the next term. You can still adjust the
+              plan manually if you need to deviate.
+            </p>
+            <DialogFooter>
+              <Button onClick={() => setRegularNoticeOpen(false)}>Got it</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog open={Boolean(importSuccessInfo)} onOpenChange={(open) => !open && setImportSuccessInfo(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Plan Import Successful</DialogTitle>
+              <DialogDescription>We applied the imported graduation plan to your workspace.</DialogDescription>
+            </DialogHeader>
+            {importSuccessInfo && (
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  Added <strong>{importSuccessInfo.courses}</strong> course{importSuccessInfo.courses === 1 ? "" : "s"}
+                  {" "}across <strong>{importSuccessInfo.semesters}</strong> semester
+                  {importSuccessInfo.semesters === 1 ? "" : "s"}.
+                </p>
+                <p>You can continue refining the plan or export it for safekeeping.</p>
+              </div>
+            )}
+            <DialogFooter>
+              <Button onClick={() => setImportSuccessInfo(null)}>Continue Planning</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={conflictDialogOpen}
+          onOpenChange={(open) => {
+            setConflictDialogOpen(open)
+            if (!open) {
+              setConflictDetail(null)
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Conflict Details</DialogTitle>
+              <DialogDescription>
+                {conflictDetail?.title ?? "Review the reasons this item is flagged."}
+              </DialogDescription>
+            </DialogHeader>
+            {conflictDetail ? (
+              <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                {conflictDetail.conflicts.map((conflict, index) => (
+                  <div
+                    key={`${conflict.type}-${index}`}
+                    className="rounded-md border border-red-200 dark:border-red-800 bg-red-50/60 dark:bg-red-900/20 p-3"
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      <Badge variant={conflict.severity === "error" ? "destructive" : "secondary"}>
+                        {conflict.type}
+                      </Badge>
+                      <span
+                        className={`text-xs ${
+                          conflict.severity === "error"
+                            ? "text-red-600 dark:text-red-300"
+                            : "text-orange-600 dark:text-orange-300"
+                        }`}
+                      >
+                        {conflict.severity === "error" ? "Error" : "Warning"}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">{conflict.message}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No conflict details available.</p>
+            )}
+            <DialogFooter>
+              <Button onClick={() => setConflictDialogOpen(false)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {error && (
           <Alert className="mb-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-300">
@@ -2512,7 +2925,7 @@ export default function AcademicPlanner() {
         ) : (
           <>
             {/* Graduation Summary */}
-            <Card className="mb-6">
+            <Card className="mb-6" ref={graduationSummaryRef}>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <GraduationCap className="h-5 w-5" />
@@ -2668,7 +3081,8 @@ export default function AcademicPlanner() {
             </Card>
 
             {/* Action Buttons */}
-            <Card className="mb-6">
+            <div ref={setPlanActionsRef} className="mb-6">
+              <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Move className="h-5 w-5" />
@@ -2940,7 +3354,8 @@ export default function AcademicPlanner() {
                   </Dialog>
                 </div>
               </CardContent>
-            </Card>
+              </Card>
+            </div>
 
             {/* Unscheduled Courses - moved here for better visibility */}
             {getUnscheduledCourses().length > 0 && (
@@ -3098,11 +3513,12 @@ export default function AcademicPlanner() {
                     const semesterCoursesSelected = semester.courses.filter((course) => selectedCourses.has(course.id))
                     const allSemesterCoursesSelected = semesterCoursesSelected.length === semester.courses.length
                     const semesterCredits = semester.courses.reduce((sum, course) => sum + course.credits, 0)
-                    const hasConflicts = conflicts.some((conflict) =>
+                    const relevantConflictsForSemester = conflicts.filter((conflict) =>
                       conflict.affectedCourses.some((courseId) =>
                         semester.courses.some((course) => course.id === courseId),
                       ),
                     )
+                    const hasConflicts = relevantConflictsForSemester.length > 0
                     const hasInternship = semester.courses.some((course) => isInternshipCourse(course))
 
                     return (
@@ -3145,10 +3561,35 @@ export default function AcademicPlanner() {
                               </Badge>
                             )}
                             {hasConflicts && (
-                              <Badge variant="destructive">
-                                <AlertTriangle className="h-3 w-3 mr-1" />
-                                Conflicts
-                              </Badge>
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  openConflictDialog(
+                                    `${formatAcademicYear(semester.year)} ${semester.term}`,
+                                    relevantConflictsForSemester,
+                                  )
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" || event.key === " " || event.key === "Space") {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    openConflictDialog(
+                                      `${formatAcademicYear(semester.year)} ${semester.term}`,
+                                      relevantConflictsForSemester,
+                                    )
+                                  }
+                                }}
+                                aria-label={`View conflicts for ${formatAcademicYear(semester.year)} ${semester.term}`}
+                                className="inline-flex"
+                              >
+                                <Badge variant="destructive" className="cursor-pointer select-none">
+                                  <AlertTriangle className="h-3 w-3 mr-1" />
+                                  {`Conflicts (${relevantConflictsForSemester.length})`}
+                                </Badge>
+                              </span>
                             )}
                           </div>
                           <div className="text-gray-500">{isOpen ? "Hide" : "Show"} Courses</div>
@@ -3200,6 +3641,9 @@ export default function AcademicPlanner() {
                                   const hasConflict = conflicts.some((conflict) =>
                                     conflict.affectedCourses.includes(course.id),
                                   )
+                                  const courseConflictEntries = hasConflict
+                                    ? conflicts.filter((conflict) => conflict.affectedCourses.includes(course.id))
+                                    : []
                                   const courseIsInternship = isInternshipCourse(course)
 
                                   return (
@@ -3223,7 +3667,23 @@ export default function AcademicPlanner() {
                                               Internship
                                             </Badge>
                                           )}
-                                          {hasConflict && <AlertTriangle className="h-3 w-3 text-red-500" />}
+                                          {hasConflict && (
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              className="h-6 w-6 p-0 text-red-500 hover:text-red-700"
+                                              type="button"
+                                              onClick={() =>
+                                                openConflictDialog(
+                                                  `${course.code} • ${formatAcademicYear(semester.year)} ${semester.term}`,
+                                                  courseConflictEntries,
+                                                )
+                                              }
+                                              aria-label={`View conflicts for ${course.code}`}
+                                            >
+                                              <AlertTriangle className="h-3 w-3" />
+                                            </Button>
+                                          )}
                                           <Button
                                             variant="ghost"
                                             size="sm"
@@ -3429,63 +3889,268 @@ export default function AcademicPlanner() {
               )}
             </div>
 
-            {/* Floating Unscheduled Courses Card */}
-            {showFloatingUnscheduled && (
-              <div className="fixed bottom-6 right-6 z-50 animate-in fade-in-0 slide-in-from-bottom-2">
-                <Card className="w-80 shadow-lg border-2 border-blue-200 dark:border-blue-800">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center justify-between text-sm">
-                      <div className="flex items-center gap-2">
-                        <BookOpen className="h-4 w-4" />
-                        Unscheduled Courses ({getUnscheduledCourses().length})
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          unscheduledCoursesRef?.scrollIntoView({ behavior: "smooth" })
-                        }}
-                        className="h-6 w-6 p-0"
+            {/* Floating Controls */}
+            {floatingControlsVisible && (
+              <div
+                className={cn(
+                  "fixed z-50 transition-all duration-300 transform",
+                  isMobile
+                    ? "bottom-4 left-4 right-4 flex flex-col items-stretch gap-3"
+                    : "bottom-6 right-6 flex flex-col-reverse items-end gap-4",
+                  floatingControlsEntering
+                    ? "opacity-100 translate-y-0 scale-100 pointer-events-auto"
+                    : "opacity-0 translate-y-4 scale-95 pointer-events-none"
+                )}
+              >
+                {planActionsFloatingVisible && (
+                  <div
+                    className={cn(
+                      "overflow-hidden transition-all duration-300 transform",
+                      isMobile ? "w-full" : planActionsCollapsed ? "w-56 sm:w-64" : "w-72 sm:w-80",
+                      planActionsFloatingEntering
+                        ? "opacity-100 translate-y-0 scale-100 max-h-[480px] pointer-events-auto"
+                        : "opacity-0 translate-y-2 scale-95 max-h-0 pointer-events-none"
+                    )}
+                  >
+                    <Card className="w-full shadow-lg border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-gray-900">
+                      <CardHeader
+                        className={cn(
+                          planActionsCollapsed && isMobile
+                            ? "flex flex-col items-center gap-2 p-3"
+                            : planActionsCollapsed
+                            ? "flex-row items-center justify-between space-y-0 p-3"
+                            : "space-y-1.5 p-6 pb-3"
+                        )}
                       >
-                        <ArrowUpDown className="h-3 w-3" />
-                      </Button>
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-                    <div className="space-y-2 max-h-40 overflow-y-auto">
-                      {getUnscheduledCourses()
-                        .slice(0, 3)
-                        .map((course) => (
-                          <div key={course.id} className="flex items-center justify-between text-xs">
-                            <div className="flex-1 min-w-0">
-                              <div className="font-medium truncate">{course.code}</div>
-                              <div className="text-gray-500 truncate">{course.name}</div>
+                        <CardTitle
+                          className={cn(
+                            "flex items-center text-sm w-full",
+                            planActionsCollapsed && isMobile ? "justify-center" : "justify-between"
+                          )}
+                        >
+                          {planActionsCollapsed && isMobile ? (
+                            <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                              <Move className="h-4 w-4" />
+                              {getUnscheduledCourses().length > 0
+                                ? "View Plan Actions & Unscheduled"
+                                : "View Plan Actions"}
                             </div>
-                            <Badge
-                              variant={course.status === "active" ? "default" : "secondary"}
-                              className="ml-2 text-xs"
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <Move className="h-4 w-4" />
+                              Plan Actions
+                            </div>
+                          )}
+                          {!(planActionsCollapsed && isMobile) && renderPlanActionControls(!planActionsCollapsed)}
+                        </CardTitle>
+                        {planActionsCollapsed && isMobile && renderPlanActionControls(false)}
+                        {!planActionsCollapsed && (
+                          <CardDescription className="text-xs text-gray-500 dark:text-gray-400">
+                            Key planner shortcuts when the full toolbar is out of view.
+                          </CardDescription>
+                        )}
+                      </CardHeader>
+                      {!planActionsCollapsed && (
+                        <CardContent className="pt-0">
+                          <div className="space-y-2">
+                            <Button
+                              size="sm"
+                              className="w-full justify-start gap-2"
+                              onClick={generateGraduationPlan}
                             >
-                              {course.status}
-                            </Badge>
+                              <RefreshCw className="h-3 w-3" />
+                              Regenerate Plan
+                            </Button>
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                className="flex-1 gap-2"
+                                onClick={() => setExportDialogOpen(true)}
+                              >
+                                <Download className="h-3 w-3" />
+                                Export Plan
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="flex-1 gap-2"
+                                onClick={() => setImportDialogOpen(true)}
+                              >
+                                <Upload className="h-3 w-3" />
+                                Import Plan
+                              </Button>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full gap-2"
+                              onClick={() => setSwapDialogOpen(true)}
+                            >
+                              <ArrowUpDown className="h-3 w-3" />
+                              Swap Courses
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full gap-2"
+                              onClick={undoLastMove}
+                              disabled={moveHistory.length === 0}
+                            >
+                              <Undo className="h-3 w-3" />
+                              Undo Last Move
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full gap-2"
+                              onClick={() => setHistoryDialogOpen(true)}
+                            >
+                              <History className="h-3 w-3" />
+                              Move History ({moveHistory.length})
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="w-full text-xs"
+                              onClick={() => planActionsRef?.scrollIntoView({ behavior: "smooth" })}
+                            >
+                              Jump to full plan actions
+                            </Button>
+                            {isMobile && getUnscheduledCourses().length > 0 && (
+                              <div className="mt-4 border-t border-slate-200 pt-3 dark:border-slate-700">
+                                <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                  <span>Unscheduled Courses</span>
+                                  <span>{getUnscheduledCourses().length}</span>
+                                </div>
+                                <div className="mt-2 space-y-2 max-h-32 overflow-y-auto">
+                                  {getUnscheduledCourses()
+                                    .slice(0, 3)
+                                    .map((course) => (
+                                      <div key={course.id} className="flex items-center justify-between text-xs">
+                                        <div className="flex-1 min-w-0">
+                                          <div className="font-medium truncate">{course.code}</div>
+                                          <div className="text-gray-500 truncate">{course.name}</div>
+                                        </div>
+                                        <Badge
+                                          variant={course.status === "active" ? "default" : "secondary"}
+                                          className="ml-2 text-xs"
+                                        >
+                                          {course.status}
+                                        </Badge>
+                                      </div>
+                                    ))}
+                                  {getUnscheduledCourses().length > 3 && (
+                                    <div className="text-xs text-gray-500 text-center pt-1">
+                                      +{getUnscheduledCourses().length - 3} more courses
+                                    </div>
+                                  )}
+                                </div>
+                                <Button
+                                  size="sm"
+                                  className="w-full mt-3"
+                                  onClick={() => {
+                                    unscheduledCoursesRef?.scrollIntoView({ behavior: "smooth" })
+                                  }}
+                                >
+                                  View All Unscheduled
+                                </Button>
+                              </div>
+                            )}
                           </div>
-                        ))}
-                      {getUnscheduledCourses().length > 3 && (
-                        <div className="text-xs text-gray-500 text-center pt-1">
-                          +{getUnscheduledCourses().length - 3} more courses
-                        </div>
+                        </CardContent>
                       )}
-                    </div>
-                    <Button
-                      size="sm"
-                      className="w-full mt-3"
-                      onClick={() => {
-                        unscheduledCoursesRef?.scrollIntoView({ behavior: "smooth" })
-                      }}
-                    >
-                      View All Unscheduled
-                    </Button>
-                  </CardContent>
-                </Card>
+                    </Card>
+                  </div>
+                )}
+
+                {!isMobile && unscheduledFloatingVisible && (
+                  <div
+                    className={cn(
+                      "overflow-hidden transition-all duration-300 transform",
+                      unscheduledCollapsed ? "w-56 sm:w-64" : "w-72 sm:w-80",
+                      unscheduledFloatingEntering
+                        ? "opacity-100 translate-y-0 scale-100 max-h-[420px] pointer-events-auto"
+                        : "opacity-0 translate-y-2 scale-95 max-h-0 pointer-events-none"
+                    )}
+                  >
+                    <Card className="w-full shadow-lg border-2 border-blue-200 dark:border-blue-800 bg-white dark:bg-gray-900">
+                      <CardHeader
+                        className={cn(
+                          unscheduledCollapsed
+                            ? "flex-row items-center justify-between space-y-0 p-3"
+                            : "space-y-1.5 p-6 pb-3"
+                        )}
+                      >
+                        <CardTitle className="flex items-center justify-between text-sm">
+                          <div className="flex items-center gap-2">
+                            <BookOpen className="h-4 w-4" />
+                            Unscheduled Courses ({getUnscheduledCourses().length})
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {!unscheduledCollapsed && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  unscheduledCoursesRef?.scrollIntoView({ behavior: "smooth" })
+                                }}
+                                className="h-6 w-6 p-0"
+                                aria-label="Jump to unscheduled courses"
+                              >
+                                <ArrowUpDown className="h-3 w-3" />
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0"
+                              onClick={() => setUnscheduledCollapsed((prev) => !prev)}
+                              aria-label={unscheduledCollapsed ? "Expand unscheduled courses" : "Collapse unscheduled courses"}
+                            >
+                              {unscheduledCollapsed ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+                            </Button>
+                          </div>
+                        </CardTitle>
+                      </CardHeader>
+                      {!unscheduledCollapsed && (
+                        <CardContent className="pt-0">
+                          <div className="space-y-2 max-h-40 overflow-y-auto">
+                            {getUnscheduledCourses()
+                              .slice(0, 3)
+                              .map((course) => (
+                                <div key={course.id} className="flex items-center justify-between text-xs">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="font-medium truncate">{course.code}</div>
+                                    <div className="text-gray-500 truncate">{course.name}</div>
+                                  </div>
+                                  <Badge
+                                    variant={course.status === "active" ? "default" : "secondary"}
+                                    className="ml-2 text-xs"
+                                  >
+                                    {course.status}
+                                  </Badge>
+                                </div>
+                              ))}
+                            {getUnscheduledCourses().length > 3 && (
+                              <div className="text-xs text-gray-500 text-center pt-1">
+                                +{getUnscheduledCourses().length - 3} more courses
+                              </div>
+                            )}
+                          </div>
+                          <Button
+                            size="sm"
+                            className="w-full mt-3"
+                            onClick={() => {
+                              unscheduledCoursesRef?.scrollIntoView({ behavior: "smooth" })
+                            }}
+                          >
+                            View All Unscheduled
+                          </Button>
+                        </CardContent>
+                      )}
+                    </Card>
+                  </div>
+                )}
               </div>
             )}
 

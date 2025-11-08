@@ -44,6 +44,14 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
 import NonCpeNotice from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 // --- Types and Interfaces ---
 
@@ -646,6 +654,7 @@ const SaveLoadControls = ({
   // Ref for curriculum HTML import
   const htmlFileInputRef = useRef<HTMLInputElement>(null)
   const [highlightImport, setHighlightImport] = useState(false)
+  const [resetDialogOpen, setResetDialogOpen] = useState(false)
 
   /**
    * Parse a Program Curriculum HTML file (from SOLAR) and extract courses.
@@ -817,8 +826,27 @@ const SaveLoadControls = ({
     } catch {}
   }, [])
 
+  const resetAllToPending = () => {
+    setCourses((prevCourses: Course[]) => {
+      const resetCourses = prevCourses.map((course: Course) => ({
+        ...course,
+        status: "pending" as CourseStatus,
+      }))
+      saveCourseStatuses(resetCourses)
+      return resetCourses
+    })
+    setSaveMessage("All course progress has been reset")
+    setTimeout(() => setSaveMessage(null), 3000)
+  }
+
+  const confirmResetAll = () => {
+    resetAllToPending()
+    setResetDialogOpen(false)
+  }
+
   return (
-    <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
+    <>
+      <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
       <div className="flex justify-between items-center cursor-pointer" onClick={() => setIsExpanded(!isExpanded)}>
         <h2 className="text-lg font-semibold">Save & Load Progress</h2>
         <Button variant="ghost" size="sm">
@@ -905,24 +933,7 @@ const SaveLoadControls = ({
               </Button>
             </div>
             <Button
-              onClick={() => {
-                if (
-                  window.confirm(
-                    "Are you sure you want to reset all course progress? This will set all courses to 'pending'.",
-                  )
-                ) {
-                  setCourses((prevCourses: Course[]) => {
-                    const resetCourses = prevCourses.map((course: Course) => ({
-                      ...course,
-                      status: "pending" as CourseStatus,
-                    }))
-                    saveCourseStatuses(resetCourses)
-                    setSaveMessage("All course progress has been reset")
-                    setTimeout(() => setSaveMessage(null), 3000)
-                    return resetCourses
-                  })
-                }
-              }}
+              onClick={() => setResetDialogOpen(true)}
               variant="destructive"
               className="flex items-center gap-2"
             >
@@ -940,7 +951,27 @@ const SaveLoadControls = ({
           )}
         </div>
       )}
-    </div>
+      </div>
+      <Dialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Reset All Course Progress?</DialogTitle>
+          <DialogDescription>
+            This will set every course back to <span className="font-semibold">pending</span> and overwrite any saved
+            statuses in your browser.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setResetDialogOpen(false)}>
+            Keep Current Progress
+          </Button>
+          <Button variant="destructive" onClick={confirmResetAll}>
+            Reset Everything
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+      </Dialog>
+    </>
   )
 }
 

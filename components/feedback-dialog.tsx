@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { cn } from "@/lib/utils"
 
 interface FeedbackDialogProps {
   open: boolean
@@ -24,6 +25,8 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
   const [feedbackHistory, setFeedbackHistory] = useState<any[]>([])
   const [status, setStatus] = useState<"idle" | "sending" | "success" | "error">("idle")
   const [statusMessage, setStatusMessage] = useState("")
+  const [isCompactLayout, setIsCompactLayout] = useState(false)
+  const [historyExpanded, setHistoryExpanded] = useState(true)
   const subjectMissing = !fbSubject.trim()
   const messageMissing = fbMessage.trim().length < 10
 
@@ -42,6 +45,18 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
       setFbSubject(defaultSubject || "")
     }
   }, [open, defaultSubject])
+
+  useEffect(() => {
+    const updateLayout = () => {
+      const compact = window.innerWidth < 640
+      setIsCompactLayout(compact)
+      setHistoryExpanded(!compact)
+    }
+
+    updateLayout()
+    window.addEventListener("resize", updateLayout)
+    return () => window.removeEventListener("resize", updateLayout)
+  }, [])
 
   const saveLocalFeedback = (entry: any) => {
     const next = [entry, ...feedbackHistory].slice(0, 20)
@@ -100,27 +115,37 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className={cn("max-w-lg", isCompactLayout ? "w-[min(92vw,24rem)] p-4" : "p-6")}
+      >
         <DialogHeader>
           <DialogTitle>Send Feedback</DialogTitle>
           <DialogDescription>If you have suggestions or issues, send them to dozey.help@gmail.com</DialogDescription>
         </DialogHeader>
 
         {status === "idle" || status === "sending" ? (
-          <div className="space-y-3 py-2">
+          <div className={cn("py-2", isCompactLayout ? "space-y-2" : "space-y-3")}>
             <Input placeholder="Your name (optional)" value={fbName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFbName(e.target.value)} />
             <Input placeholder="Subject" value={fbSubject} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFbSubject(e.target.value)} />
             <textarea
               placeholder="Message"
               value={fbMessage}
               onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setFbMessage(e.target.value)}
-              className="w-full p-2 border rounded h-36 bg-white dark:bg-gray-800 dark:border-gray-700"
+              className={cn(
+                "w-full p-2 border rounded bg-white dark:bg-gray-800 dark:border-gray-700",
+                isCompactLayout ? "h-28" : "h-36"
+              )}
             />
-            <div className="flex gap-2 justify-end items-center">
+            <div className={cn(
+              "flex gap-2 items-center",
+              isCompactLayout ? "flex-wrap justify-center" : "justify-end"
+            )}>
               <Button variant="outline" onClick={copyFeedback} disabled={status === "sending"}>Copy & Send Manually</Button>
               <Button onClick={sendFeedbackMail} disabled={status === "sending"}>Open Mail Client</Button>
               <div className="flex items-center">
-                <Button disabled={status === "sending" || subjectMissing || messageMissing} onClick={async () => { await sendFeedbackToServer() }}>
+                <Button
+                  disabled={status === "sending" || subjectMissing || messageMissing}
+                  onClick={async () => { await sendFeedbackToServer() }}
+                >
                   {status === "sending" ? (
                     <span className="flex items-center gap-2">
                       <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
@@ -138,17 +163,31 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
             )}
 
             {feedbackHistory.length > 0 && (
-              <div className="mt-3 text-sm text-gray-600 dark:text-gray-400">
-                <div className="font-medium mb-1">Recent feedback</div>
-                <ul className="space-y-1 max-h-36 overflow-y-auto">
-                  {feedbackHistory.slice(0, 5).map((h, i) => (
-                    <li key={i} className="border rounded p-2 bg-gray-50 dark:bg-gray-800">
-                      <div className="text-xs text-gray-500">{new Date(h.date).toLocaleString()} • {h.sentVia}</div>
-                      <div className="font-medium">{h.subject}</div>
-                      <div className="text-sm text-gray-600 dark:text-gray-300 truncate">{h.message}</div>
-                    </li>
-                  ))}
-                </ul>
+              <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="px-0"
+                  onClick={() => setHistoryExpanded((prev) => !prev)}
+                >
+                  {historyExpanded ? "Hide recent feedback" : "Show recent feedback"}
+                </Button>
+                {historyExpanded && (
+                  <ul
+                    className={cn(
+                      "space-y-1 text-sm text-gray-600 dark:text-gray-400",
+                      isCompactLayout ? "max-h-28 overflow-y-auto" : "max-h-36 overflow-y-auto"
+                    )}
+                  >
+                    {feedbackHistory.slice(0, isCompactLayout ? 3 : 5).map((h, i) => (
+                      <li key={i} className="border rounded p-2 bg-gray-50 dark:bg-gray-800">
+                        <div className="text-xs text-gray-500">{new Date(h.date).toLocaleString()} • {h.sentVia}</div>
+                        <div className="font-medium">{h.subject}</div>
+                        <div className="text-sm text-gray-600 dark:text-gray-300 truncate">{h.message}</div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
           </div>

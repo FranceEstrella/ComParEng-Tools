@@ -13,6 +13,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
+import { cn } from "@/lib/utils"
 
 type Props = {
   autoOpenOnce?: boolean
@@ -22,6 +23,8 @@ type Props = {
 export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "What’s New" }: Props) {
   const latest = useMemo(() => patchNotes[0], [])
   const [open, setOpen] = useState(false)
+  const [isCompactLayout, setIsCompactLayout] = useState(false)
+  const [showAllChanges, setShowAllChanges] = useState(false)
 
   useEffect(() => {
     if (!autoOpenOnce || !latest) return
@@ -36,29 +39,58 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
     }
   }, [autoOpenOnce, latest])
 
+  useEffect(() => {
+    const updateLayout = () => {
+      const compact = window.innerWidth < 640
+      setIsCompactLayout(compact)
+      setShowAllChanges(!compact)
+    }
+
+    updateLayout()
+    window.addEventListener("resize", updateLayout)
+    return () => window.removeEventListener("resize", updateLayout)
+  }, [])
+
   if (!latest) return null
+
+  const changeLimit = 5
+  const visibleChanges = isCompactLayout && !showAllChanges ? latest.changes.slice(0, changeLimit) : latest.changes
 
   return (
     <Dialog open={open} onOpenChange={(o) => setOpen(o)}>
       <DialogTrigger asChild>
         <Button variant="outline" className="bg-transparent">{buttonLabel}</Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl">
+      <DialogContent
+        className={cn(
+          "max-w-2xl",
+          isCompactLayout ? "max-w-md w-[min(92vw,24rem)] p-4" : "p-6"
+        )}
+      >
         <DialogHeader>
           <DialogTitle>
             v{latest.version} — {latest.title}
           </DialogTitle>
           <DialogDescription>{latest.date}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 py-2">
-          {latest.changes.map((c, idx) => (
-            <div key={idx} className="flex items-start gap-2 text-sm">
+        <div className={cn("py-2", isCompactLayout ? "space-y-2" : "space-y-3")}
+          aria-label="Latest updates"
+        >
+          {visibleChanges.map((c, idx) => (
+            <div key={`${c.type}-${idx}`} className="flex items-start gap-2 text-sm">
               <Badge variant={c.type === "fixed" ? "secondary" : c.type === "new" ? "default" : "outline"}>
                 {c.type}
               </Badge>
-              <span>{c.description}</span>
+              <span className="leading-snug text-sm">{c.description}</span>
             </div>
           ))}
+          {isCompactLayout && latest.changes.length > changeLimit && (
+            <div className="pt-1">
+              <Button variant="link" size="sm" className="px-0" onClick={() => setShowAllChanges((prev) => !prev)}>
+                {showAllChanges ? "Show fewer updates" : `Show all ${latest.changes.length} updates`}
+              </Button>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>Close</Button>
