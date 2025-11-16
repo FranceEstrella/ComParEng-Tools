@@ -12,8 +12,16 @@ export const metadata: Metadata = {
   title: "ComParEng Course Tracker",
   description: "Track your Computer Engineering courses, prerequisites, and progress",
   icons: {
-    icon: "/favicon.ico",
-    apple: "/apple-touch-icon.png",
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", type: "image/x-icon" },
+    ],
+    apple: [
+      { url: "/apple-touch-icon.png", sizes: "180x180" },
+    ],
+    other: [
+      { rel: "mask-icon", url: "/icon-maskable.svg", color: "#0f172a" },
+    ],
   },
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#0f172a" },
