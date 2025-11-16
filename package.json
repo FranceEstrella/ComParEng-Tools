@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev",
+    "start": "next start"
+  },
   "dependencies": {
     "@emotion/is-prop-valid": "latest",
     "@radix-ui/react-accordion": "latest",
@@ -60,6 +65,7 @@
     "tailwind-merge": "^2.5.5",
     "tailwindcss": "^3.4.17",
     "tailwindcss-animate": "^1.0.7",
+    "url": "latest",
     "vaul": "latest"
   },
   "devDependencies": {
@@ -68,10 +74,5 @@
     "@types/react-dom": "^19",
     "postcss": "^8.5",
     "typescript": "^5"
-  },
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
   }
 }
