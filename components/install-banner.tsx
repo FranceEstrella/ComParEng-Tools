@@ -17,17 +17,33 @@ type BeforeInstallPromptEvent = Event & {
 }
 
 type DeferredPrompt = BeforeInstallPromptEvent | null
+type Platform = "ios" | "android" | "other"
 
 export default function InstallBanner() {
   const [visible, setVisible] = useState(false)
   const [deferredPrompt, setDeferredPrompt] = useState<DeferredPrompt>(null)
-  const [statusMessage, setStatusMessage] = useState("Preparing install options…")
+  const [platform, setPlatform] = useState<Platform>("other")
+  const [showInstructions, setShowInstructions] = useState(false)
 
   useEffect(() => {
     if (typeof window === "undefined") return
 
     const isStandalone = window.matchMedia("(display-mode: standalone)").matches || (window.navigator as any)?.standalone
     if (isStandalone) return
+
+    let detectedPlatform: Platform = "other"
+    try {
+      const ua = window.navigator.userAgent.toLowerCase()
+      if (/iphone|ipad|ipod/.test(ua)) {
+        detectedPlatform = "ios"
+      } else if (/android/.test(ua)) {
+        detectedPlatform = "android"
+      }
+    } catch {}
+    setPlatform(detectedPlatform)
+    if (detectedPlatform === "ios") {
+      setShowInstructions(true)
+    }
 
     let permanentlyHidden = false
     try {
@@ -52,7 +68,6 @@ export default function InstallBanner() {
       promptEvent.preventDefault()
       setDeferredPrompt(promptEvent)
       setVisible(true)
-      setStatusMessage("Install prompt is getting ready—hang tight.")
     }
 
     const handleAppInstalled = () => {
@@ -68,7 +83,6 @@ export default function InstallBanner() {
 
     if (shouldReveal) {
       setVisible(true)
-      setStatusMessage("Install prompt will enable once your browser is ready.")
     }
 
     return () => {
@@ -76,12 +90,6 @@ export default function InstallBanner() {
       window.removeEventListener("appinstalled", handleAppInstalled)
     }
   }, [])
-
-  useEffect(() => {
-    if (deferredPrompt) {
-      setStatusMessage("Install prompt ready! Tap Install to continue.")
-    }
-  }, [deferredPrompt])
 
   if (!visible) return null
 
@@ -93,7 +101,7 @@ export default function InstallBanner() {
       sessionStorage.setItem(SNOOZE_KEY, "true")
     } catch {}
     setDeferredPrompt(null)
-    setStatusMessage("Preparing install options…")
+    setShowInstructions(platform === "ios")
   }
 
   const dismiss = () => {
@@ -102,12 +110,12 @@ export default function InstallBanner() {
       sessionStorage.setItem(SESSION_DISMISS_KEY, "true")
     } catch {}
     setDeferredPrompt(null)
-    setStatusMessage("Preparing install options…")
+    setShowInstructions(false)
   }
 
   const handleInstall = async () => {
     if (!deferredPrompt) {
-      setStatusMessage("Your browser hasn't surfaced an install prompt yet. Use Add to Home Screen from your browser menu to install manually.")
+      setShowInstructions(true)
       return
     }
 
@@ -119,11 +127,10 @@ export default function InstallBanner() {
         try {
           localStorage.setItem(PERMANENT_HIDE_KEY, "true")
         } catch {}
-      } else {
-        setStatusMessage("Install was cancelled. You can still add this app via your browser's Add to Home Screen menu.")
+        setShowInstructions(false)
       }
     } catch {
-      setStatusMessage("Install prompt failed. Try using your browser's Add to Home Screen option.")
+      setShowInstructions(true)
     } finally {
       setDeferredPrompt(null)
     }
@@ -137,8 +144,20 @@ export default function InstallBanner() {
           <div>
             <p className="text-sm font-semibold sm:text-base">Install ComParEng Tools</p>
             <p className="text-xs text-emerald-50 sm:text-sm">Add this site to your device for faster access and an app-like experience.</p>
-            {statusMessage && (
-              <p className="mt-1 text-xs text-white/90 sm:text-xs">{statusMessage}</p>
+            {showInstructions && (
+              <div className="mt-1 text-xs text-white/90 sm:text-xs space-y-1">
+                {platform === "ios" ? (
+                  <>
+                    <p>On iOS: tap the Share icon, then choose <span className="font-semibold">Add to Home Screen</span>.</p>
+                    <p>Name the shortcut and tap <span className="font-semibold">Add</span> to finish.</p>
+                  </>
+                ) : (
+                  <>
+                    <p>Open your browser menu (⋮) and choose <span className="font-semibold">Install app</span> or <span className="font-semibold">Add to Home screen</span>.</p>
+                    <p>Confirm to pin ComParEng Tools for one-tap access.</p>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -153,7 +172,7 @@ export default function InstallBanner() {
           <Button
             className="bg-white text-emerald-600 hover:bg-emerald-100"
             onClick={handleInstall}
-            disabled={!deferredPrompt}
+            disabled={!deferredPrompt && platform !== "ios"}
           >
             Install app
           </Button>
