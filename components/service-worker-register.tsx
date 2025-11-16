@@ -14,7 +14,7 @@ export default function ServiceWorkerRegister() {
           registration.update().catch(() => {})
         }
       } catch (error) {
-        if (process.env.NODE_ENV !== "production") {
+        if (typeof window !== "undefined" && window.location.hostname === "localhost") {
           console.warn("Service worker registration failed", error)
         }
       }

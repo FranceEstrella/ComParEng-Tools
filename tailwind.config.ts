@@ -1,6 +1,7 @@
-import type { Config } from "tailwindcss";
+import type { Config } from "tailwindcss"
+import colors from "tailwindcss/colors"
 
-// all in fixtures is set to tailwind v3 as interims solutions
+const { lightBlue, warmGray, trueGray, coolGray, blueGray, ...saneColors } = colors
 
 const config: Config = {
     darkMode: ["class"],
@@ -10,7 +11,10 @@ const config: Config = {
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
     "*.{js,ts,jsx,tsx,mdx}"
   ],
-  theme: {
+	theme: {
+		colors: {
+			...saneColors,
+		},
   	extend: {
   		colors: {
   			background: 'hsl(var(--background))',
@@ -94,5 +98,5 @@ const config: Config = {
   	}
   },
   plugins: [require("tailwindcss-animate")],
-};
-export default config;
+}
+export default config
