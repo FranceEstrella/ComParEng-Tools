@@ -4,6 +4,7 @@ import { Inter } from "next/font/google"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import InstallBanner from "@/components/install-banner"
+import ServiceWorkerRegister from "@/components/service-worker-register"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -14,7 +15,12 @@ export const metadata: Metadata = {
     icon: "/favicon.ico",
     apple: "/apple-touch-icon.png",
   },
-    generator: 'v0.dev'
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#0f172a" },
+    { media: "(prefers-color-scheme: dark)", color: "#0f172a" }
+  ],
+  manifest: "/manifest.webmanifest",
+  generator: "v0.dev",
 }
 
 export default function RootLayout({
@@ -30,6 +36,7 @@ export default function RootLayout({
             <strong>Disclaimer:</strong> This is a personal project and is NOT officially affiliated with FEU Tech or the FEU Tech CpE Department.
           </div>
           <InstallBanner />
+          <ServiceWorkerRegister />
           {children}
         </ThemeProvider>
       </body>
