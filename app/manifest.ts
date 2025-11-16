@@ -14,15 +14,21 @@ export default function manifest(): MetadataRoute.Manifest {
     theme_color: "#0f172a",
     icons: [
       {
-        src: "/apple-touch-icon.png",
-        sizes: "180x180",
-        type: "image/png",
-        purpose: "any"
+        src: "/icon-maskable.svg",
+        sizes: "any",
+        type: "image/svg+xml",
+        purpose: "any maskable"
       },
       {
         src: "/icon.svg",
         sizes: "any",
         type: "image/svg+xml",
+        purpose: "any"
+      },
+      {
+        src: "/apple-touch-icon.png",
+        sizes: "180x180",
+        type: "image/png",
         purpose: "any"
       }
     ]
