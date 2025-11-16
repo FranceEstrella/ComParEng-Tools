@@ -13,12 +13,19 @@ export const metadata: Metadata = {
   description: "Track your Computer Engineering courses, prerequisites, and progress",
   icons: {
     icon: [
-      { url: "/icon.svg", type: "image/svg+xml" },
-      { url: "/apple-icon.png", sizes: "192x192", type: "image/png" },
-      { url: "/favicon.ico", type: "image/x-icon" },
+      { url: "/favicon.ico" },
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon-96x96.png", sizes: "96x96", type: "image/png" },
+      { url: "/android-icon-192x192.png", sizes: "192x192", type: "image/png" },
     ],
     apple: [
       { url: "/apple-touch-icon.png", sizes: "180x180" },
+      { url: "/apple-icon-152x152.png", sizes: "152x152" },
+      { url: "/apple-icon-120x120.png", sizes: "120x120" },
+    ],
+    other: [
+      { rel: "mask-icon", url: "/icon.svg", color: "#0f172a" },
     ],
   },
   themeColor: [
@@ -37,10 +44,6 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
-        <link rel="icon" href="/favicon.ico" />
-        <link rel="alternate icon" href="/icon.svg" type="image/svg+xml" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-        <link rel="icon" sizes="192x192" href="/apple-icon.png" type="image/png" />
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
           <div className="bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 p-2 text-center text-xs md:text-sm">
             <strong>Disclaimer:</strong> This is a personal project and is NOT officially affiliated with FEU Tech or the FEU Tech CpE Department.
