@@ -40,6 +40,15 @@ import { format } from "date-fns"
 const DAYS = ["M", "Tu", "W", "Th", "F", "S"] as const;
 type DayToken = typeof DAYS[number];
 
+const DAY_FILTER_OPTIONS: { value: DayToken; label: string; longLabel: string }[] = [
+  { value: "M", label: "Mon", longLabel: "Monday" },
+  { value: "Tu", label: "Tue", longLabel: "Tuesday" },
+  { value: "W", label: "Wed", longLabel: "Wednesday" },
+  { value: "Th", label: "Thu", longLabel: "Thursday" },
+  { value: "F", label: "Fri", longLabel: "Friday" },
+  { value: "S", label: "Sat", longLabel: "Saturday" },
+]
+
 const TIME_SLOTS = [
   "07:00", "07:30", "08:00", "08:30", "09:00", "09:30", 
   "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", 
@@ -276,6 +285,7 @@ export default function ScheduleMaker() {
   const [sortBy, setSortBy] = useState("department")
   const [sortOrder, setSortOrder] = useState("asc")
   const [selectedDepartment, setSelectedDepartment] = useState<string>("all")
+  const [dayFilters, setDayFilters] = useState<DayToken[]>([])
   const [isClient, setIsClient] = useState(false)
   const [editingCourse, setEditingCourse] = useState<SelectedCourse | null>(null)
   const [tempCustomTitle, setTempCustomTitle] = useState("")
@@ -616,6 +626,16 @@ export default function ScheduleMaker() {
       }))
   }
 
+  const dayFilterSet = React.useMemo(() => new Set(dayFilters), [dayFilters])
+
+  const toggleDayFilter = (day: DayToken) => {
+    setDayFilters((prev) =>
+      prev.includes(day) ? prev.filter((existing) => existing !== day) : [...prev, day]
+    )
+  }
+
+  const clearDayFilters = () => setDayFilters([])
+
   const getFilteredAndSortedCourses = () => {
     const filtered = filteredCourses.filter((course) => {
       const matchesSearch =
@@ -626,7 +646,11 @@ export default function ScheduleMaker() {
       const matchesDepartment =
         selectedDepartment === "all" || extractDepartmentCode(course.courseCode) === selectedDepartment
 
-      return matchesSearch && matchesDepartment
+      const matchesDay =
+        dayFilterSet.size === 0 ||
+        parseDays(course.meetingDays).some((day) => dayFilterSet.has(day))
+
+      return matchesSearch && matchesDepartment && matchesDay
     })
 
     return sortCourses(filtered)
@@ -1239,6 +1263,39 @@ const renderScheduleView = () => {
                         <SelectItem value="desc">Descending</SelectItem>
                       </SelectContent>
                     </Select>
+                  </div>
+                </div>
+
+                <div className="mb-4">
+                  <Label className="mb-2 block">Filter by Days</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {DAY_FILTER_OPTIONS.map((option) => {
+                      const isSelected = dayFilters.includes(option.value)
+                      return (
+                        <Button
+                          key={option.value}
+                          type="button"
+                          variant={isSelected ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => toggleDayFilter(option.value)}
+                          title={`Show classes meeting on ${option.longLabel}`}
+                          className={`${isSelected ? "" : "bg-transparent dark:bg-transparent text-slate-900 dark:text-slate-100"} px-3`}
+                        >
+                          {option.label}
+                        </Button>
+                      )
+                    })}
+                    {dayFilters.length > 0 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={clearDayFilters}
+                        className="px-3"
+                      >
+                        Clear
+                      </Button>
+                    )}
                   </div>
                 </div>
 

@@ -139,13 +139,13 @@ const QuickNavigation = () => {
   return (
     <div className="flex flex-col sm:flex-row gap-3 justify-center">
       <Link href="/schedule-maker">
-        <Button className="w-full sm:w-auto bg-gradient-to-r from-purple-600 to-purple-800 hover:from-purple-700 hover:to-purple-900 text-white flex items-center gap-2">
+        <Button className="w-full sm:w-auto bg-purple-700 dark:bg-purple-900 bg-gradient-to-r from-purple-600 to-purple-800 hover:bg-purple-800 dark:hover:bg-purple-950 hover:from-purple-700 hover:to-purple-900 text-white flex items-center gap-2">
           <Calendar className="h-4 w-4" />
           Schedule Maker
         </Button>
       </Link>
       <Link href="/academic-planner">
-        <Button className="w-full sm:w-auto bg-gradient-to-r from-green-600 to-green-800 hover:from-green-700 hover:to-green-900 text-white flex items-center gap-2">
+        <Button className="w-full sm:w-auto bg-green-700 dark:bg-green-900 bg-gradient-to-r from-green-600 to-green-800 hover:bg-green-800 dark:hover:bg-green-950 hover:from-green-700 hover:to-green-900 text-white flex items-center gap-2">
           <GraduationCap className="h-4 w-4" />
           Academic Planner
         </Button>

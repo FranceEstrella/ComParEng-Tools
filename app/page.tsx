@@ -80,9 +80,9 @@ export default function Home() {
         <div className="container mx-auto px-4 py-12">
           <div className="max-w-5xl mx-auto">
             {/* Header with Dark Mode Toggle */}
-            <div className="relative mb-8">
+            <div className="relative mb-8 text-center md:pt-12">
               {/* Keep actions above the title and prevent overlap on small screens */}
-              <div className="relative z-10 flex justify-end items-center gap-2">
+              <div className="flex justify-center md:justify-end items-center gap-2 mb-4 md:mb-0 md:absolute md:right-0 md:top-0">
                 <PatchNotesButton autoOpenOnce buttonLabel="What’s New" />
                 <Button
                   variant="outline"
@@ -95,8 +95,7 @@ export default function Home() {
                   <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
                 </Button>
               </div>
-              {/* Title is static on mobile to avoid overlapping, centered absolutely on md+ */}
-              <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold text-center md:absolute md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2 w-full pointer-events-none mt-4 md:mt-0">
+              <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold text-center mx-auto max-w-3xl">
                 FEU Tech ComParEng Tools
               </h1>
             </div>
@@ -224,7 +223,7 @@ export default function Home() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
               {/* Course Tracker Card */}
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105">
-                <div className="bg-gradient-to-r from-blue-600 to-blue-800 p-6">
+                <div className="bg-blue-700 dark:bg-blue-900 bg-gradient-to-r from-blue-600 to-blue-800 p-6">
                   <BookOpen className="h-12 w-12 text-white mb-4" />
                   <h2 className="text-2xl font-bold text-white">Course Tracker</h2>
                   <p className="text-blue-100 mt-2">Track your academic progress through the CpE curriculum</p>
@@ -259,7 +258,7 @@ export default function Home() {
 
               {/* Schedule Maker Card */}
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105">
-                <div className="bg-gradient-to-r from-purple-600 to-purple-800 p-6">
+                <div className="bg-purple-700 dark:bg-purple-900 bg-gradient-to-r from-purple-600 to-purple-800 p-6">
                   <Calendar className="h-12 w-12 text-white mb-4" />
                   <h2 className="text-2xl font-bold text-white">Schedule Maker</h2>
                   <p className="text-purple-100 mt-2">Create your perfect class schedule with ease</p>
@@ -294,7 +293,7 @@ export default function Home() {
 
               {/* Academic Planner Card */}
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105">
-                <div className="bg-gradient-to-r from-green-600 to-green-800 p-6">
+                <div className="bg-green-700 dark:bg-green-900 bg-gradient-to-r from-green-600 to-green-800 p-6">
                   <GraduationCap className="h-12 w-12 text-white mb-4" />
                   <h2 className="text-2xl font-bold text-white">Academic Planner</h2>
                   <p className="text-green-100 mt-2">Plan your path to graduation efficiently</p>
