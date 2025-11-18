@@ -47,7 +47,7 @@ export const patchNotes: PatchNote[] = [
       {
         type: "known-issue",
         description:
-          "Schedule Maker conflict detection still misses overlaps when a class ending at 12:50 PM is compared with another starting at 12:00 PM on the same day. A fix is in progress, but you may manually double-check overlapping times in the meantime.",
+          "Academic Planner conflict detection still misses overlaps when a class ending at 12:50 PM is compared with another starting at 12:00 PM on the same day. A fix is in progress, but you may manually double-check overlapping times in the meantime.",
       },
     ],
   },
