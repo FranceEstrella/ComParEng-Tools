@@ -3,7 +3,7 @@ export interface PatchNote {
   date: string
   title: string
   changes: {
-    type: "new" | "improved" | "fixed"
+    type: "new" | "improved" | "fixed" | "known-issue"
     description: string
   }[]
 }
@@ -43,6 +43,11 @@ export const patchNotes: PatchNote[] = [
         type: "new",
         description:
           "All popups now feature rounded corners, giving patch notes, feedback, and planner dialogs a unified look.",
+      },
+      {
+        type: "known-issue",
+        description:
+          "Schedule Maker conflict detection still misses overlaps when a class ending at 12:50 PM is compared with another starting at 12:00 PM on the same day. A fix is in progress, but you may manually double-check overlapping times in the meantime.",
       },
     ],
   },
