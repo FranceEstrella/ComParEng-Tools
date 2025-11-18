@@ -12,6 +12,7 @@ import {
   Trash,
   AlertCircle,
   BookOpen,
+  GraduationCap,
   FileWarning,
   ExternalLink,
   Check,
@@ -102,6 +103,8 @@ interface SelectedCourse extends CourseSection {
   credits: number
   timeStart: string
   timeEnd: string
+  startMinutes: number
+  endMinutes: number
   parsedDays: DayToken[]
   displayTime: string
   displayRoom: string
@@ -186,6 +189,31 @@ const sampleAvailableCourses = [
     hasSlots: true,
   },
 ]
+
+const QuickNavigation = () => {
+  return (
+    <div className="flex flex-col sm:flex-row gap-3 justify-center">
+      <Link href="/course-tracker">
+        <Button className="w-full sm:w-auto bg-blue-700 dark:bg-blue-900 bg-gradient-to-r from-blue-600 to-blue-800 hover:bg-blue-800 dark:hover:bg-blue-950 hover:from-blue-700 hover:to-blue-900 text-white flex items-center gap-2">
+          <BookOpen className="h-4 w-4" />
+          Course Tracker
+        </Button>
+      </Link>
+      <Link href="/academic-planner">
+        <Button className="w-full sm:w-auto bg-green-700 dark:bg-green-900 bg-gradient-to-r from-green-600 to-green-800 hover:bg-green-800 dark:hover:bg-green-950 hover:from-green-700 hover:to-green-900 text-white flex items-center gap-2">
+          <GraduationCap className="h-4 w-4" />
+          Academic Planner
+        </Button>
+      </Link>
+      <Link href="/">
+        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
+          <ArrowLeft className="h-4 w-4" />
+          Back to Home
+        </Button>
+      </Link>
+    </div>
+  )
+}
 
 // Extract department codes from course codes
 const extractDepartmentCode = (courseCode: string): string => {
@@ -306,7 +334,10 @@ export default function ScheduleMaker() {
         if (savedSchedule) {
           const parsed = JSON.parse(savedSchedule)
           if (parsed.selectedCourses) {
-            setSelectedCourses(parsed.selectedCourses)
+            const normalizedCourses = (parsed.selectedCourses as SelectedCourse[]).map((stored) =>
+              normalizeSelectedCourse(stored),
+            )
+            setSelectedCourses(normalizedCourses)
           }
           if (parsed.customizations) {
             setCustomizations(parsed.customizations || {})
@@ -410,13 +441,97 @@ export default function ScheduleMaker() {
       .join(" / ")
   }
 
-  // Parse time string (e.g., "10:00:00-11:30:00") into start and end times
-  const parseTimeRange = (timeString: string): { start: string; end: string } => {
-    const [start, end] = timeString.split("-")
-    return {
-      start: start.substring(0, 5),
-      end: end.substring(0, 5),
+  const timePartRegex = /(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i
+
+  const parseTimeToMinutes = (time: string): number => {
+    const match = timePartRegex.exec(time.trim())
+    if (!match) return Number.NaN
+    let hours = Number.parseInt(match[1], 10)
+    const minutes = Number.parseInt(match[2], 10)
+    const meridiem = match[4]?.toUpperCase()
+
+    if (meridiem === "PM" && hours < 12) hours += 12
+    if (meridiem === "AM" && hours === 12) hours = 0
+
+    return hours * 60 + minutes
+  }
+
+  const minutesToTimeString = (minutes: number): string => {
+    const normalized = ((minutes % (24 * 60)) + 24 * 60) % (24 * 60)
+    const hrs = Math.floor(normalized / 60)
+    const mins = normalized % 60
+    return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}`
+  }
+
+  // Parse time string (e.g., "10:00:00-11:30:00") into start/end labels and minute values
+  const parseTimeRange = (
+    timeString: string,
+  ): { start: string; end: string; startMinutes: number; endMinutes: number } => {
+    if (!timeString) {
+      return { start: "00:00", end: "00:00", startMinutes: Number.NaN, endMinutes: Number.NaN }
     }
+
+    const parts = timeString.split("-")
+    const rawStart = parts[0] ?? ""
+    const rawEnd = parts[1] ?? parts[0] ?? ""
+
+    const primaryStart = rawStart.split("/")[0]
+    const primaryEnd = rawEnd.split("/")[0]
+
+    const startMinutes = parseTimeToMinutes(primaryStart)
+    const endMinutes = parseTimeToMinutes(primaryEnd)
+
+    return {
+      start: Number.isNaN(startMinutes) ? primaryStart.trim().slice(0, 5) : minutesToTimeString(startMinutes),
+      end: Number.isNaN(endMinutes) ? primaryEnd.trim().slice(0, 5) : minutesToTimeString(endMinutes),
+      startMinutes,
+      endMinutes,
+    }
+  }
+
+  const normalizeSelectedCourse = (course: any): SelectedCourse => {
+    const rangeSource = course?.meetingTime ?? `${course?.timeStart ?? ""}-${course?.timeEnd ?? ""}`
+    const derivedRange = parseTimeRange(rangeSource)
+
+    const startLabelCandidate = course?.timeStart ?? derivedRange.start
+    const endLabelCandidate = course?.timeEnd ?? derivedRange.end
+
+    const timeStart = startLabelCandidate && startLabelCandidate.trim() !== ""
+      ? startLabelCandidate.trim()
+      : "00:00"
+    const timeEnd = endLabelCandidate && endLabelCandidate.trim() !== ""
+      ? endLabelCandidate.trim()
+      : "00:00"
+
+    const startMinutes =
+      typeof course?.startMinutes === "number" && !Number.isNaN(course.startMinutes)
+        ? course.startMinutes
+        : (!Number.isNaN(derivedRange.startMinutes)
+            ? derivedRange.startMinutes
+            : parseTimeToMinutes(timeStart))
+
+    const endMinutes =
+      typeof course?.endMinutes === "number" && !Number.isNaN(course.endMinutes)
+        ? course.endMinutes
+        : (!Number.isNaN(derivedRange.endMinutes)
+            ? derivedRange.endMinutes
+            : parseTimeToMinutes(timeEnd))
+
+    const parsedDays =
+      Array.isArray(course?.parsedDays) && course.parsedDays.length > 0
+        ? course.parsedDays
+        : parseDays(course?.meetingDays ?? "")
+
+    return {
+      ...course,
+      timeStart,
+      timeEnd,
+      startMinutes,
+      endMinutes,
+      parsedDays,
+      displayTime: course?.displayTime ?? cleanTimeString(course?.meetingTime ?? `${timeStart}-${timeEnd}`),
+      displayRoom: course?.displayRoom ?? cleanRoomString(course?.room ?? ""),
+    } as SelectedCourse
   }
 
   // Get full day name
@@ -436,8 +551,9 @@ export default function ScheduleMaker() {
   const hasScheduleConflict = (course: CourseSection): boolean => {
     if (!course.meetingTime || !course.meetingDays) return false
 
-    const { start: newStart, end: newEnd } = parseTimeRange(course.meetingTime)
+    const { start: newStart, end: newEnd, startMinutes: newStartMinutes, endMinutes: newEndMinutes } = parseTimeRange(course.meetingTime)
     const newDays = parseDays(course.meetingDays)
+    const hasNumericRange = !Number.isNaN(newStartMinutes) && !Number.isNaN(newEndMinutes)
 
     return selectedCourses.some((selected) => {
       if (selected.courseCode === course.courseCode) return false
@@ -450,7 +566,30 @@ export default function ScheduleMaker() {
       const daysOverlap = [...newDaysSet].some(day => selectedDaysSet.has(day))
       if (!daysOverlap) return false
 
-      // Only check time overlap if days overlap
+      const selectedStartMinutes =
+        typeof selected.startMinutes === "number" && !Number.isNaN(selected.startMinutes)
+          ? selected.startMinutes
+          : parseTimeToMinutes(selected.timeStart)
+
+      const selectedEndMinutes =
+        typeof selected.endMinutes === "number" && !Number.isNaN(selected.endMinutes)
+          ? selected.endMinutes
+          : parseTimeToMinutes(selected.timeEnd)
+
+      const canCompareNumeric =
+        hasNumericRange &&
+        !Number.isNaN(selectedStartMinutes) &&
+        !Number.isNaN(selectedEndMinutes)
+
+      if (canCompareNumeric) {
+        return (
+          (newStartMinutes >= selectedStartMinutes && newStartMinutes < selectedEndMinutes) ||
+          (newEndMinutes > selectedStartMinutes && newEndMinutes <= selectedEndMinutes) ||
+          (newStartMinutes <= selectedStartMinutes && newEndMinutes >= selectedEndMinutes)
+        )
+      }
+
+      // Fallback to string comparison when timing data cannot be parsed reliably
       return (
         (newStart >= selected.timeStart && newStart < selected.timeEnd) ||
         (newEnd > selected.timeStart && newEnd <= selected.timeEnd) ||
@@ -511,15 +650,17 @@ export default function ScheduleMaker() {
   const addCourse = (course: CourseSection) => {
     const existingCourse = selectedCourses.find((selected) => selected.courseCode === course.courseCode)
 
-    const { start, end } = parseTimeRange(course.meetingTime)
+    const { start, end, startMinutes, endMinutes } = parseTimeRange(course.meetingTime)
     const parsedDays = parseDays(course.meetingDays)
     
-    const newCourse = {
+    const newCourse: SelectedCourse = {
       ...course,
       name: courseDetailsMap[course.courseCode]?.name || "Unknown Course",
       credits: courseDetailsMap[course.courseCode]?.credits || 3,
       timeStart: start,
       timeEnd: end,
+      startMinutes,
+      endMinutes,
       parsedDays,
       displayTime: cleanTimeString(course.meetingTime),
       displayRoom: cleanRoomString(course.room)
@@ -1086,21 +1227,8 @@ const renderScheduleView = () => {
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
       <div className="container mx-auto px-4 py-8">
-        <div className="mb-6">
-          <div className="flex flex-col sm:flex-row gap-3 mb-4">
-            <Link href="/course-tracker">
-              <Button variant="outline" size="sm" className="flex items-center gap-2">
-                <BookOpen className="h-4 w-4" />
-                Back to Course Tracker
-              </Button>
-            </Link>
-            <Link href="/">
-              <Button variant="outline" size="sm" className="flex items-center gap-2">
-                <ArrowLeft className="h-4 w-4" />
-                Back to Home
-              </Button>
-            </Link>
-          </div>
+        <div className="mb-6 space-y-4">
+          <QuickNavigation />
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-3xl font-bold">Schedule Maker</h1>
@@ -1821,6 +1949,10 @@ const renderScheduleView = () => {
             </TabsContent>
           </Tabs>
         )}
+
+        <div className="mt-12">
+          <QuickNavigation />
+        </div>
       </div>
     </div>
   )

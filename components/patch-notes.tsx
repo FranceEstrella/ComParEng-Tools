@@ -59,7 +59,12 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
   return (
     <Dialog open={open} onOpenChange={(o) => setOpen(o)}>
       <DialogTrigger asChild>
-        <Button variant="outline" className="bg-transparent">{buttonLabel}</Button>
+        <Button
+          variant="outline"
+          className="bg-white/80 text-slate-900 border-slate-300 hover:bg-white dark:bg-white/10 dark:text-white dark:border-white/40 dark:hover:bg-white/20"
+        >
+          {buttonLabel}
+        </Button>
       </DialogTrigger>
       <DialogContent
         className={cn(
