@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { courseDataStorage } from "@/lib/course-storage"
+import { getCourseDataSnapshot } from "@/lib/course-storage"
 
 export async function GET() {
   // Set CORS headers
@@ -8,11 +8,12 @@ export async function GET() {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Accept",
     "Content-Type": "application/json",
+    "Cache-Control": "no-store",
   }
 
   try {
-    // Normalize storage as an array and cast to any[] for TypeScript
-    const stored: any[] = (courseDataStorage as any) || []
+    const snapshot = getCourseDataSnapshot()
+    const stored: any[] = Array.isArray(snapshot.data) ? snapshot.data : []
 
     // Log the data being returned
     console.log("Returning course data:", stored.length, "courses")
@@ -22,6 +23,9 @@ export async function GET() {
       {
         success: true,
         data: stored,
+        lastUpdated: snapshot.updatedAt || null,
+        expiresAt: snapshot.expiresAt || null,
+        isExpired: snapshot.isExpired,
       },
       { headers },
     )

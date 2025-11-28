@@ -8,6 +8,7 @@ export async function POST(request: Request) {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Accept",
     "Content-Type": "application/json",
+    "Cache-Control": "no-store",
   }
 
   try {
@@ -57,7 +58,7 @@ export async function POST(request: Request) {
     }
 
     // Store the data in our temporary storage
-    updateCourseData(courseData)
+    const updateResult = updateCourseData(courseData)
     console.log("Course data updated successfully:", courseData.length, "courses")
 
     // Send success response
@@ -65,6 +66,8 @@ export async function POST(request: Request) {
       {
         success: true,
         message: "Course data received successfully.",
+        lastUpdated: updateResult?.updatedAt || null,
+        hasChanged: updateResult?.hasChanged ?? true,
       },
       { headers },
     )

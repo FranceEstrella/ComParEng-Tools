@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -155,6 +155,34 @@ interface CourseCustomization {
 interface GroupedCourseSet {
   value: string
   courses: CourseSection[]
+}
+
+interface ApplyAvailableCoursesOptions {
+  lastUpdated?: number | null
+  expired?: boolean
+  preserveError?: boolean
+  skipTimestamp?: boolean
+  forceUpdate?: boolean
+}
+
+const buildCourseSignature = (course: CourseSection) => {
+  if (!course) return ""
+  return [
+    course.courseCode || "",
+    course.section || "",
+    course.meetingDays || "",
+    course.meetingTime || "",
+    course.remainingSlots || "",
+    course.hasSlots ? "1" : "0",
+    course.room || "",
+  ]
+    .map((segment) => segment.toString().trim().toUpperCase())
+    .join("|")
+}
+
+const computeCourseSetHash = (courses: CourseSection[]) => {
+  if (!Array.isArray(courses) || courses.length === 0) return ""
+  return courses.map(buildCourseSignature).join("::")
 }
 
 
@@ -349,6 +377,7 @@ export default function ScheduleMaker() {
   const [viewMode, setViewMode] = useState<"card" | "table">("card")
   const [selectedViewMode, setSelectedViewMode] = useState<"card" | "table">("card")
   const scheduleRef = useRef<HTMLDivElement>(null)
+  const lastAvailableHashRef = useRef<string>("")
   const [showOnlyActive, setShowOnlyActive] = useState(true)
   const [startDate, setStartDate] = useState<Date>(new Date())
   const [searchTerm, setSearchTerm] = useState("")
@@ -906,10 +935,11 @@ export default function ScheduleMaker() {
   }
 
   // Fetch available courses from the API
-  const fetchAvailableCourses = async () => {
+  const fetchAvailableCourses = useCallback(async () => {
     try {
       const response = await fetch("/api/get-available-courses", {
         method: "GET",
+        cache: "no-store",
         headers: {
           Accept: "application/json",
           "Cache-Control": "no-cache",
@@ -928,22 +958,34 @@ export default function ScheduleMaker() {
       }
 
       const result = await response.json()
-      if (result.success) {
-        // Validate all course day strings
-        result.data.forEach((course: CourseSection) => {
-          if (!validateDayString(course.meetingDays)) {
-            console.warn(`Invalid day format for ${course.courseCode}: ${course.meetingDays}`)
-          }
-        })
-        return result.data
-      } else {
+      if (!result.success) {
         throw new Error(result.error || "Failed to fetch available courses")
+      }
+
+      const payload: CourseSection[] = Array.isArray(result.data) ? result.data : []
+      payload.forEach((course: CourseSection) => {
+        if (!validateDayString(course.meetingDays)) {
+          console.warn(`Invalid day format for ${course.courseCode}: ${course.meetingDays}`)
+        }
+      })
+
+      const parseTimestamp = (value: any) => {
+        if (!value) return null
+        if (typeof value === "number") return value
+        const parsed = Date.parse(value)
+        return Number.isNaN(parsed) ? null : parsed
+      }
+
+      return {
+        data: payload,
+        lastUpdated: parseTimestamp(result.lastUpdated),
+        expired: Boolean(result.isExpired),
       }
     } catch (err: any) {
       console.error("Error fetching available courses:", err)
-      throw new Error(`Error fetching available courses: ${err.message}`)
+      throw new Error(err.message || "Error fetching available courses")
     }
-  }
+  }, [])
 
   // Load active courses from localStorage
   const loadActiveCourses = () => {
@@ -964,49 +1006,118 @@ export default function ScheduleMaker() {
     }
   }
 
-  // Fetch both available courses and active courses
-  const fetchData = async () => {
-    try {
-      setLoading(true)
-      setError(null)
+  const applyAvailableCourses = useCallback(
+    (courseList: CourseSection[], options: ApplyAvailableCoursesOptions = {}) => {
+      const normalized = Array.isArray(courseList) ? courseList : []
+      const newHash = computeCourseSetHash(normalized)
 
-      let availableCoursesData: CourseSection[] = []
-      try {
-        availableCoursesData = await fetchAvailableCourses()
-        if (availableCoursesData.length === 0) {
-          console.warn("No course data available, using sample data")
-          availableCoursesData = sampleAvailableCourses
-          setError("No course data available. Please use the extension to extract course data.")
-        }
-      } catch (err: any) {
-        console.error("Failed to fetch available courses:", err)
-        setError(err.message || "Failed to fetch available courses")
-        availableCoursesData = sampleAvailableCourses
+      if (!options.forceUpdate && lastAvailableHashRef.current === newHash) {
+        return
       }
 
-      registerExternalCourseCodes(
-        availableCoursesData
-          .map((course) => course.courseCode)
-          .filter((code): code is string => Boolean(code)),
-      )
+      lastAvailableHashRef.current = newHash
 
-      const activeCoursesData = loadActiveCourses()
+      const codes = normalized
+        .map((course) => course?.courseCode)
+        .filter((code): code is string => Boolean(code))
+      if (codes.length > 0) {
+        registerExternalCourseCodes(codes)
+      }
 
-      setAvailableCourses(availableCoursesData)
-      setActiveCourses(activeCoursesData)
-      setLastUpdated(new Date())
-    } catch (err: any) {
-      setError("Error fetching data: " + (err.message || "Unknown error"))
-    } finally {
-      setLoading(false)
-    }
-  }
+      setAvailableCourses(normalized)
+
+      if (!options.skipTimestamp) {
+        if (options.lastUpdated) {
+          setLastUpdated(new Date(options.lastUpdated))
+        } else if (normalized.length > 0) {
+          setLastUpdated(new Date())
+        } else {
+          setLastUpdated(null)
+        }
+      }
+
+      if (options.preserveError) {
+        return
+      }
+
+      if (options.expired) {
+        setError("Extracted course data expired after 1 hour. Please re-run the extension to fetch fresh data.")
+      } else if (normalized.length === 0) {
+        setError("No course data available. Please use the extension to extract course data.")
+      } else {
+        setError(null)
+      }
+    },
+    [setAvailableCourses, setError, setLastUpdated],
+  )
+
+  // Fetch both available courses and active courses
+  const fetchData = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      if (!silent) {
+        setLoading(true)
+        setError(null)
+      }
+
+      try {
+        const result = await fetchAvailableCourses()
+
+        if (result.expired) {
+          applyAvailableCourses([], {
+            expired: true,
+            lastUpdated: result.lastUpdated,
+            forceUpdate: true,
+          })
+        } else if (!result.data || result.data.length === 0) {
+          if (!silent) {
+            setLastUpdated(null)
+            setError("No course data available. Please use the extension to extract course data.")
+            applyAvailableCourses(sampleAvailableCourses, {
+              preserveError: true,
+              skipTimestamp: true,
+            })
+          }
+        } else {
+          applyAvailableCourses(result.data, {
+            lastUpdated: result.lastUpdated,
+          })
+        }
+
+        const activeCoursesData = loadActiveCourses()
+        setActiveCourses(activeCoursesData)
+      } catch (err: any) {
+        console.error("Failed to fetch available courses:", err)
+        if (!silent) {
+          setError(err.message || "Failed to fetch available courses")
+          setLastUpdated(null)
+          applyAvailableCourses(sampleAvailableCourses, {
+            preserveError: true,
+            skipTimestamp: true,
+          })
+        }
+      } finally {
+        if (!silent) {
+          setLoading(false)
+        }
+      }
+    },
+    [applyAvailableCourses, fetchAvailableCourses],
+  )
 
   useEffect(() => {
     if (isClient) {
       fetchData()
     }
-  }, [isClient])
+  }, [isClient, fetchData])
+
+  useEffect(() => {
+    if (!isClient) return
+    const interval = setInterval(() => {
+      fetchData({ silent: true })
+    }, 60 * 1000)
+
+    return () => clearInterval(interval)
+  }, [isClient, fetchData])
 
   // Filter courses based on active status and curriculum
   const filteredCourses = availableCourses.filter((course) => {
@@ -1365,7 +1476,7 @@ const renderScheduleView = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={fetchData}
+                onClick={() => fetchData()}
                 disabled={loading}
                 className="flex items-center gap-2"
               >
