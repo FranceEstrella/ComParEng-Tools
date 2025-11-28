@@ -38,16 +38,26 @@ self.addEventListener("fetch", (event) => {
     return
   }
 
+  const url = new URL(request.url)
+  const isApiRequest = url.pathname.startsWith("/api/") || request.headers.get("Accept")?.includes("application/json")
+
+  if (isApiRequest) {
+    event.respondWith(fetch(request).catch(() => caches.match(request)))
+    return
+  }
+
   event.respondWith(
     caches.match(request).then((cachedResponse) => {
       if (cachedResponse) {
         return cachedResponse
       }
-      return fetch(request).then((response) => {
-        const responseClone = response.clone()
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone)).catch(() => {})
-        return response
-      })
+      return fetch(request)
+        .then((response) => {
+          const responseClone = response.clone()
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone)).catch(() => {})
+          return response
+        })
+        .catch(() => cachedResponse)
     })
   )
 })
