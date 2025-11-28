@@ -809,41 +809,80 @@ export default function ScheduleMaker() {
 
   // New ICS file generator
  const downloadICSFile = () => {
-  if (selectedCourses.length === 0) return;
+  if (selectedCourses.length === 0) return
 
-  const events = selectedCourses.map(course => {
-    const startDateObj = new Date(startDate);
-    const dayNumbers = course.parsedDays.map(day => {
-      switch (day) {
-        case 'M': return 'MO';
-        case 'Tu': return 'TU';
-        case 'W': return 'WE';
-        case 'Th': return 'TH';
-        case 'F': return 'FR';
-        case 'S': return 'SA';
-        default: return 'MO';
-      }
-    });
+  const daysToWeekday = (day: DayToken) => {
+    switch (day) {
+      case "M":
+        return { weekday: 1, code: "MO" }
+      case "Tu":
+        return { weekday: 2, code: "TU" }
+      case "W":
+        return { weekday: 3, code: "WE" }
+      case "Th":
+        return { weekday: 4, code: "TH" }
+      case "F":
+        return { weekday: 5, code: "FR" }
+      case "S":
+        return { weekday: 6, code: "SA" }
+      default:
+        return { weekday: 1, code: "MO" }
+    }
+  }
 
-    const [startHour, startMinute] = course.timeStart.split(':').map(Number);
-    const [endHour, endMinute] = course.timeEnd.split(':').map(Number);
+  const getNextDateForWeekday = (baseDate: Date, targetWeekday: number) => {
+    const date = new Date(baseDate)
+    const currentWeekday = date.getDay() === 0 ? 7 : date.getDay()
+    const delta = (targetWeekday + 7 - currentWeekday) % 7
+    date.setDate(date.getDate() + delta)
+    return date
+  }
 
-    const event = {
-      title: customizations[`${course.courseCode}-${course.section}`]?.customTitle || `${course.courseCode} - ${course.name}`,
+  const timezone = "Asia/Manila"
+  const events = selectedCourses.map((course) => {
+    const startDateObj = new Date(startDate)
+    const dayInfo = course.parsedDays.map(daysToWeekday)
+    const firstDay = dayInfo[0] || { weekday: 1, code: "MO" }
+    const eventDate = getNextDateForWeekday(startDateObj, firstDay.weekday)
+
+    const [startHour, startMinute] = course.timeStart.split(":").map(Number)
+    const [endHour, endMinute] = course.timeEnd.split(":").map(Number)
+
+    return {
+      title:
+        customizations[`${course.courseCode}-${course.section}`]?.customTitle ||
+        `${course.courseCode} - ${course.name}`,
       description: `Section: ${course.section}\nRoom: ${course.displayRoom}`,
       location: course.displayRoom,
-      start: [startDateObj.getFullYear(), startDateObj.getMonth() + 1, startDateObj.getDate(), startHour, startMinute] as [number, number, number, number, number],
-      end: [startDateObj.getFullYear(), startDateObj.getMonth() + 1, startDateObj.getDate(), endHour, endMinute] as [number, number, number, number, number],
-      recurrenceRule: `FREQ=WEEKLY;BYDAY=${dayNumbers.join(',')};COUNT=15`, // ~15 week semester
-      alarms: [{
-        action: 'display',
-        description: 'Reminder',
-        trigger: { hours: 1, minutes: 0, before: true }
-      }]
-    };
-
-    return event;
-  });
+      start: [
+        eventDate.getFullYear(),
+        eventDate.getMonth() + 1,
+        eventDate.getDate(),
+        startHour,
+        startMinute,
+      ] as [number, number, number, number, number],
+      end: [
+        eventDate.getFullYear(),
+        eventDate.getMonth() + 1,
+        eventDate.getDate(),
+        endHour,
+        endMinute,
+      ] as [number, number, number, number, number],
+      startInputType: "local",
+      endInputType: "local",
+      startOutputType: "local",
+      endOutputType: "local",
+      timezone,
+      recurrenceRule: `FREQ=WEEKLY;BYDAY=${dayInfo.map((d) => d.code).join(",")};COUNT=15`,
+      alarms: [
+        {
+          action: "display",
+          description: "Reminder",
+          trigger: { hours: 1, minutes: 0, before: true },
+        },
+      ],
+    }
+  })
 
   // cast to any to satisfy library typings in this project context
   createEvents(events as any, (error: any, value: string) => {
