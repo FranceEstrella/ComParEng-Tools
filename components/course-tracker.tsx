@@ -39,7 +39,7 @@ import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { saveCourseStatuses, loadCourseStatuses } from "@/lib/course-storage"
-import { initialCourses } from "@/lib/course-data"
+import { initialCourses, registerExternalCourses } from "@/lib/course-data"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
 import NonCpeNotice from "@/components/non-cpe-notice"
@@ -903,6 +903,7 @@ const SaveLoadControls = ({
                         setTimeout(() => setSaveMessage(null), 3000)
                         return
                       }
+                      registerExternalCourses(parsed)
                       setCourses(parsed)
                       saveCourseStatuses(parsed)
                       setSaveMessage("Curriculum imported successfully")
@@ -1085,6 +1086,7 @@ export default function CourseTracker() {
   useEffect(() => {
     const savedCourses = loadCourseStatuses()
     if (savedCourses) {
+      registerExternalCourses(savedCourses)
       setCourses(savedCourses)
       setSaveMessage("Loaded saved course statuses from local storage")
       setTimeout(() => setSaveMessage(null), 3000)
@@ -1290,6 +1292,7 @@ export default function CourseTracker() {
           throw new Error("Invalid course data format")
         }
 
+        registerExternalCourses(parsedCourses)
         setCourses(parsedCourses)
         saveCourseStatuses(parsedCourses)
         setSaveMessage("Course progress imported successfully")

@@ -24,7 +24,14 @@ import {
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { initialCourses, curriculumCodes, resolveCanonicalCourseCode, getCourseDetailsByCode } from "@/lib/course-data"
+import {
+  initialCourses,
+  curriculumCodes,
+  resolveCanonicalCourseCode,
+  getCourseDetailsByCode,
+  registerExternalCourses,
+  registerExternalCourseCodes,
+} from "@/lib/course-data"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -945,7 +952,9 @@ export default function ScheduleMaker() {
         const savedCourses = localStorage.getItem("courseStatuses")
         if (savedCourses) {
           const parsedCourses = JSON.parse(savedCourses)
-          return parsedCourses.filter((course: any) => course.status === "active")
+          const activeCoursesOnly = parsedCourses.filter((course: any) => course.status === "active")
+          registerExternalCourses(activeCoursesOnly)
+          return activeCoursesOnly
         }
       }
       return []
@@ -974,6 +983,12 @@ export default function ScheduleMaker() {
         setError(err.message || "Failed to fetch available courses")
         availableCoursesData = sampleAvailableCourses
       }
+
+      registerExternalCourseCodes(
+        availableCoursesData
+          .map((course) => course.courseCode)
+          .filter((code): code is string => Boolean(code)),
+      )
 
       const activeCoursesData = loadActiveCourses()
 
