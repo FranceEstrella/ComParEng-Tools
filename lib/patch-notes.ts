@@ -16,6 +16,22 @@ export const patchNotes: PatchNote[] = [
     changes: [
       {
         type: "new",
+        description: "Non-CpE onboarding now lets you upload your SOLAR curriculum directly inside the tour and blocks Next until the file is parsed, so custom programs start with the right course list before reaching the tools.",
+      },
+      {
+        type: "new",
+        description: "New guided onboarding walks you through the Course Tracker, Schedule Maker, and Academic Planner with live theme previews, CpE-specific branching, and privacy tips before you dive in.",
+      },
+      {
+        type: "improved",
+        description: "Slide 9 adds a \"Show me how\" helper with the exact SOLAR save steps, and the wrap-up slide now sends everyone to Course Tracker first to mark statuses before touching the other apps.",
+      },
+      {
+        type: "fixed",
+        description: "Finishing onboarding or using the \"Open Course Tracker\" CTA now records completion without suppressing the What's New dialog—you'll still see the latest updates once you return home.",
+      },
+      {
+        type: "new",
         description: "Schedule Maker now lets you group available sections by Department, Section, Course Code, or Room so related sections stay together in both table and card layouts.",
       },
       {

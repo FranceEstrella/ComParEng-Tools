@@ -19,6 +19,7 @@ import { orderedPatchNotes } from "@/lib/patch-notes"
 import { MESSAGE_MIN } from "../lib/config"
 import NonCpeNotice from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
+import OnboardingDialog from "@/components/onboarding-dialog"
 
 export default function Home() {
   const { theme, setTheme } = useTheme()
@@ -31,6 +32,9 @@ export default function Home() {
   const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "sending" | "success" | "error">("idle")
   const [feedbackStatusMessage, setFeedbackStatusMessage] = useState("")
   const [feedbackDefaultSubject, setFeedbackDefaultSubject] = useState<string>("")
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
+  const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(false)
+  const [shouldAutoOpenWhatsNew, setShouldAutoOpenWhatsNew] = useState(false)
   
 
   useEffect(() => {
@@ -51,6 +55,55 @@ export default function Home() {
     return () => clearTimeout(t)
   }, [toastMessage])
 
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    try {
+      const completed = localStorage.getItem("compareng.onboarding.completed") === "true"
+      setHasCompletedOnboarding(completed)
+      setShouldAutoOpenWhatsNew(completed)
+      if (!completed) {
+        timeout = setTimeout(() => setOnboardingOpen(true), 400)
+      }
+    } catch {
+      // ignore storage failures
+    }
+    return () => {
+      if (timeout) clearTimeout(timeout)
+    }
+  }, [])
+
+  const completeOnboarding = (options?: { deferWhatsNew?: boolean }) => {
+    try {
+      localStorage.setItem("compareng.onboarding.completed", "true")
+    } catch {
+      // ignore storage failures
+    }
+    setHasCompletedOnboarding(true)
+    if (options?.deferWhatsNew) {
+      try {
+        sessionStorage.setItem("compareng.deferWhatsNew", "true")
+      } catch {
+        // ignore
+      }
+      setShouldAutoOpenWhatsNew(false)
+    } else {
+      setShouldAutoOpenWhatsNew(true)
+    }
+    setOnboardingOpen(false)
+  }
+
+  useEffect(() => {
+    try {
+      const shouldDefer = sessionStorage.getItem("compareng.deferWhatsNew") === "true"
+      if (shouldDefer) {
+        sessionStorage.removeItem("compareng.deferWhatsNew")
+        setShouldAutoOpenWhatsNew(true)
+      }
+    } catch {
+      // ignore storage failures
+    }
+  }, [])
+
   const saveLocalFeedback = (entry: any) => {
     const next = [entry, ...feedbackHistory].slice(0, 20)
     setFeedbackHistory(next)
@@ -65,6 +118,12 @@ export default function Home() {
 
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
+      <OnboardingDialog
+        open={onboardingOpen}
+        onOpenChange={setOnboardingOpen}
+        onComplete={completeOnboarding}
+        hasCompletedOnce={hasCompletedOnboarding}
+      />
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
         {/* Simple toast notification (uses Alert for consistent UI) */}
         {toastMessage && (
@@ -83,7 +142,14 @@ export default function Home() {
             <div className="relative mb-8 text-center md:pt-12">
               {/* Keep actions above the title and prevent overlap on small screens */}
               <div className="flex justify-center md:justify-end items-center gap-2 mb-4 md:mb-0 md:absolute md:right-0 md:top-0">
-                <PatchNotesButton autoOpenOnce buttonLabel="What’s New" />
+                <Button
+                  variant="outline"
+                  className="bg-white/80 text-slate-900 border-slate-300 hover:bg-white dark:bg-white/10 dark:text-white dark:border-white/40 dark:hover:bg-white/20"
+                  onClick={() => setOnboardingOpen(true)}
+                >
+                  Start Onboarding
+                </Button>
+                <PatchNotesButton autoOpenOnce={shouldAutoOpenWhatsNew} buttonLabel="What's New" />
                 <Button
                   variant="outline"
                   size="icon"
