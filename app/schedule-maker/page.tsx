@@ -58,6 +58,22 @@ const TIME_SLOTS = [
   "19:00", "19:30", "20:00", "20:30", "21:00"
 ]
 
+const GROUP_BY_OPTIONS = [
+  { value: "department", label: "Department" },
+  { value: "section", label: "Section" },
+  { value: "courseCode", label: "Course Code" },
+  { value: "room", label: "Room" },
+] as const
+
+type GroupByOption = typeof GROUP_BY_OPTIONS[number]["value"]
+
+const GROUP_LABELS: Record<GroupByOption, string> = {
+  department: "Department",
+  section: "Section",
+  courseCode: "Course Code",
+  room: "Room",
+}
+
 // Helper to calculate time slot position
 const getTimePosition = (time: string) => {
   const [hours, minutes] = time.split(':').map(Number)
@@ -115,12 +131,17 @@ interface CourseCustomization {
   color?: string
 }
 
+interface GroupedCourseSet {
+  value: string
+  courses: CourseSection[]
+}
+
 
 // Sample data for available courses - used as fallback
 const sampleAvailableCourses = [
   {
     courseCode: "COE0001",
-    section: "A",
+    section: "TE31",
     classSize: "40",
     remainingSlots: "15",
     meetingDays: "MW",
@@ -130,7 +151,7 @@ const sampleAvailableCourses = [
   },
   {
     courseCode: "COE0003",
-    section: "B",
+    section: "TC21",
     classSize: "35",
     remainingSlots: "5",
     meetingDays: "TuTh",
@@ -140,7 +161,7 @@ const sampleAvailableCourses = [
   },
   {
     courseCode: "GED0001",
-    section: "C",
+    section: "TE01",
     classSize: "45",
     remainingSlots: "0",
     meetingDays: "F",
@@ -150,7 +171,7 @@ const sampleAvailableCourses = [
   },
   {
     courseCode: "COE0005",
-    section: "A",
+    section: "TL21",
     classSize: "30",
     remainingSlots: "10",
     meetingDays: "MW",
@@ -160,7 +181,7 @@ const sampleAvailableCourses = [
   },
   {
     courseCode: "GED0004",
-    section: "B",
+    section: "M132",
     classSize: "35",
     remainingSlots: "8",
     meetingDays: "TuTh",
@@ -170,7 +191,7 @@ const sampleAvailableCourses = [
   },
   {
     courseCode: "ONLINE001",
-    section: "D",
+    section: "TE21A",
     classSize: "50",
     remainingSlots: "25",
     meetingDays: "MW",
@@ -180,7 +201,7 @@ const sampleAvailableCourses = [
   },
   {
     courseCode: "LAB001",
-    section: "E",
+    section: "TE31",
     classSize: "20",
     remainingSlots: "3",
     meetingDays: "TuTh",
@@ -312,6 +333,7 @@ export default function ScheduleMaker() {
   const [searchTerm, setSearchTerm] = useState("")
   const [sortBy, setSortBy] = useState("department")
   const [sortOrder, setSortOrder] = useState("asc")
+  const [groupBy, setGroupBy] = useState<GroupByOption>("department")
   const [selectedDepartment, setSelectedDepartment] = useState<string>("all")
   const [dayFilters, setDayFilters] = useState<DayToken[]>([])
   const [isClient, setIsClient] = useState(false)
@@ -747,24 +769,42 @@ export default function ScheduleMaker() {
   });
 };
 
-  // Group courses by department
-  const groupCoursesByDepartment = (courses: CourseSection[]) => {
+  // Dynamically group courses based on user preference
+  const groupCourses = (courses: CourseSection[]): GroupedCourseSet[] => {
     const grouped = courses.reduce(
       (acc, course) => {
-        const dept = extractDepartmentCode(course.courseCode)
-        if (!acc[dept]) acc[dept] = []
-        acc[dept].push(course)
+        let key = ""
+        switch (groupBy) {
+          case "section":
+            key = course.section?.trim() || "Unspecified"
+            break
+          case "courseCode":
+            key = course.courseCode?.trim() || "Unspecified"
+            break
+          case "room":
+            key = cleanRoomString(course.room || "") || "Unspecified"
+            break
+          case "department":
+          default:
+            key = extractDepartmentCode(course.courseCode) || "Unspecified"
+        }
+
+        if (!acc[key]) acc[key] = []
+        acc[key].push(course)
         return acc
       },
       {} as Record<string, CourseSection[]>,
     )
 
     return Object.entries(grouped)
-      .sort(([deptA], [deptB]) => deptA.localeCompare(deptB))
-      .map(([dept, courses]) => ({
-        department: dept,
-        courses: sortCourses(courses),
-      }))
+      .sort(([valueA], [valueB]) => valueA.localeCompare(valueB))
+      .map(([value, groupedCourses]): GroupedCourseSet => {
+        const normalizedValue = value && value.trim() ? value : "Unspecified"
+        return {
+          value: normalizedValue,
+          courses: groupedCourses,
+        }
+      })
   }
 
   const dayFilterSet = React.useMemo(() => new Set(dayFilters), [dayFilters])
@@ -778,11 +818,24 @@ export default function ScheduleMaker() {
   const clearDayFilters = () => setDayFilters([])
 
   const getFilteredAndSortedCourses = () => {
+    const normalizedSearch = searchTerm.trim().toLowerCase()
     const filtered = filteredCourses.filter((course) => {
+      const courseName = (courseDetailsMap[course.courseCode]?.name || "").toLowerCase()
+      const sectionValue = (course.section || "").toLowerCase()
+      const meetingDaysValue = (course.meetingDays || "").toLowerCase()
+      const meetingTimeRaw = (course.meetingTime || "").toLowerCase()
+      const meetingTimeDisplay = cleanTimeString(course.meetingTime).toLowerCase()
+      const roomValue = cleanRoomString(course.room).toLowerCase()
+
       const matchesSearch =
-        searchTerm === "" ||
-        course.courseCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (courseDetailsMap[course.courseCode]?.name || "").toLowerCase().includes(searchTerm.toLowerCase())
+        normalizedSearch === "" ||
+        course.courseCode.toLowerCase().includes(normalizedSearch) ||
+        courseName.includes(normalizedSearch) ||
+        sectionValue.includes(normalizedSearch) ||
+        meetingDaysValue.includes(normalizedSearch) ||
+        meetingTimeRaw.includes(normalizedSearch) ||
+        meetingTimeDisplay.includes(normalizedSearch) ||
+        roomValue.includes(normalizedSearch)
 
       const matchesDepartment =
         selectedDepartment === "all" || extractDepartmentCode(course.courseCode) === selectedDepartment
@@ -920,6 +973,18 @@ export default function ScheduleMaker() {
       return true
     }
   })
+
+  const filteredAndSortedCourses = React.useMemo(
+    () => getFilteredAndSortedCourses(),
+    [filteredCourses, searchTerm, selectedDepartment, dayFilterSet, sortBy, sortOrder],
+  )
+
+  const groupedCourses = React.useMemo(
+    () => groupCourses(filteredAndSortedCourses),
+    [filteredAndSortedCourses, groupBy],
+  )
+
+  const currentGroupLabel = GROUP_LABELS[groupBy]
 
   // Find active courses that don't have available sections
   const coursesNeedingPetition = activeCourses.filter(
@@ -1392,6 +1457,21 @@ const renderScheduleView = () => {
                       </SelectContent>
                     </Select>
                   </div>
+                  <div className="w-full md:w-1/4">
+                    <Label htmlFor="group-by">Group By</Label>
+                    <Select value={groupBy} onValueChange={(value) => setGroupBy(value as GroupByOption)}>
+                      <SelectTrigger id="group-by">
+                        <SelectValue placeholder="Group by..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {GROUP_BY_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
 
                 <div className="mb-4">
@@ -1433,12 +1513,12 @@ const renderScheduleView = () => {
                 </div>
 
                 <p className="mb-4">
-                  Found {getFilteredAndSortedCourses().length} course sections
+                  Found {filteredAndSortedCourses.length} course sections
                   {showOnlyActive ? " for your active courses" : ""} (out of {availableCourses.length} total extracted
                   courses).
                 </p>
 
-                {getFilteredAndSortedCourses().length === 0 ? (
+                {filteredAndSortedCourses.length === 0 ? (
                   <div className="bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-400 dark:border-yellow-700 text-yellow-700 dark:text-yellow-400 px-4 py-3 rounded mb-4">
                     <p>
                       No courses match your current filters. Try adjusting your search criteria or department filter.
@@ -1472,11 +1552,11 @@ const renderScheduleView = () => {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {groupCoursesByDepartment(getFilteredAndSortedCourses()).map(({ department, courses }) => (
-                              <React.Fragment key={department}>
+                            {groupedCourses.map(({ value, courses }) => (
+                              <React.Fragment key={`${groupBy}-${value}`}>
                                 <TableRow className="bg-gray-100 dark:bg-gray-700">
                                   <TableCell colSpan={8} className="font-medium">
-                                    Department: {department}
+                                    {currentGroupLabel}: {value}
                                   </TableCell>
                                 </TableRow>
                                 {courses.map((course, index) => {
@@ -1486,6 +1566,7 @@ const renderScheduleView = () => {
                                     name: courseDetailsMap[course.courseCode]?.name || "Unknown Course",
                                     credits: courseDetailsMap[course.courseCode]?.credits || 3,
                                   }
+                                  const departmentValue = extractDepartmentCode(course.courseCode)
                                   const isConflict = hasScheduleConflict(course)
                                   const isAlreadySelected = selectedCourses.some(
                                     (selected) =>
@@ -1496,7 +1577,7 @@ const renderScheduleView = () => {
 
                                   return (
                                     <TableRow key={`${course.courseCode}-${course.section}-${index}`}>
-                                      <TableCell>{department}</TableCell>
+                                      <TableCell>{departmentValue}</TableCell>
                                       <TableCell>{course.courseCode}</TableCell>
                                       <TableCell>{courseDetails.name}</TableCell>
                                       <TableCell>{course.section}</TableCell>
@@ -1506,13 +1587,13 @@ const renderScheduleView = () => {
                                       <TableCell>{cleanRoomString(course.room)}</TableCell>
                                       <TableCell>
                                         <Badge
-                                                variant={course.hasSlots ? "secondary" : "destructive"}
-                                                className={`px-2 py-1 text-xs font-semibold ${
-                                                  course.hasSlots
-                                                    ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                                                    : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                                                }`}
-                                              >
+                                          variant={course.hasSlots ? "secondary" : "destructive"}
+                                          className={`px-2 py-1 text-xs font-semibold ${
+                                            course.hasSlots
+                                              ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                                              : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
+                                          }`}
+                                        >
                                           {course.hasSlots ? `${course.remainingSlots}/${course.classSize}` : "Full"}
                                         </Badge>
                                       </TableCell>
@@ -1574,10 +1655,10 @@ const renderScheduleView = () => {
                     )}
                     {viewMode === "card" && (
                       <div className="space-y-6">
-                        {groupCoursesByDepartment(getFilteredAndSortedCourses()).map(({ department, courses }) => (
-                          <div key={department} className="border rounded-lg overflow-hidden">
+                        {groupedCourses.map(({ value, courses }) => (
+                          <div key={`${groupBy}-${value}`} className="border rounded-lg overflow-hidden">
                             <div className="bg-gray-100 dark:bg-gray-700 px-4 py-2 font-medium">
-                              Department: {department}
+                              {currentGroupLabel}: {value}
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
                               {courses.map((course, index) => {
