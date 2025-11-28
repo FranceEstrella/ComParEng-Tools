@@ -12,11 +12,15 @@ export const patchNotes: PatchNote[] = [
   {
     version: "1.44",
     date: "November 28, 2025",
-    title: "Schedule Maker grouping & richer search",
+    title: "Schedule Maker grouping & fresher data",
     changes: [
       {
         type: "new",
         description: "Schedule Maker now lets you group available sections by Department, Section, Course Code, or Room so related sections stay together in both table and card layouts.",
+      },
+      {
+        type: "improved",
+        description: "Course-code groups now display the course title (e.g., COE0007 – CALCULUS 1) so you can scan grouped cards without memorizing every code.",
       },
       {
         type: "improved",
@@ -29,6 +33,14 @@ export const patchNotes: PatchNote[] = [
       {
         type: "improved",
         description: "Sections that append extra characters to the course code (e.g., COE0007C or COE0009LC) now alias back to the original curriculum code so names, credits, and active-course filtering stay accurate.",
+      },
+      {
+        type: "fixed",
+        description: "Newly extracted course data now replaces the previous dataset automatically—API responses bypass the service-worker cache, hash changes trigger live refreshes, and extracted sections expire after an hour so you never see stale slots.",
+      },
+      {
+        type: "fixed",
+        description: "Importing a different curriculum clears incompatible schedule selections and syncs the new active-course list, so Schedule Maker always reflects the currently loaded program without manual cache clearing.",
       },
     ],
   },

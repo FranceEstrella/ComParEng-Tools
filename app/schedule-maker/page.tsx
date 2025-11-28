@@ -1190,6 +1190,19 @@ export default function ScheduleMaker() {
 
   const currentGroupLabel = GROUP_LABELS[groupBy]
 
+  const getGroupDisplayValue = useCallback(
+    (value: string, courses: CourseSection[]) => {
+      if (groupBy !== "courseCode") return value
+      if (!courses || courses.length === 0) return value
+
+      const canonical = getCanonicalCourseCode(courses[0].courseCode)
+      const details = getCourseDetails(canonical) || getCourseDetails(courses[0].courseCode)
+      const name = details?.name
+      return name ? `${value} - ${name}` : value
+    },
+    [groupBy],
+  )
+
   // Find active courses that don't have available sections
   const coursesNeedingPetition = activeCourses.filter(
     (active) => {
@@ -1514,14 +1527,6 @@ const renderScheduleView = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setViewMode(viewMode === "card" ? "table" : "card")}
-                className="flex items-center gap-2"
-              >
-                {viewMode === "card" ? "Table View" : "Card View"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
                 onClick={() => fetchData()}
                 disabled={loading}
                 className="flex items-center gap-2"
@@ -1716,9 +1721,19 @@ const renderScheduleView = () => {
                   </div>
                 </div>
 
-                <div className="flex items-center space-x-2 mb-4">
-                  <Switch id="show-active-only" checked={showOnlyActive} onCheckedChange={setShowOnlyActive} />
-                  <Label htmlFor="show-active-only">Show only active courses from Course Tracker</Label>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                  <div className="flex items-center space-x-2">
+                    <Switch id="show-active-only" checked={showOnlyActive} onCheckedChange={setShowOnlyActive} />
+                    <Label htmlFor="show-active-only">Show only active courses from Course Tracker</Label>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setViewMode(viewMode === "card" ? "table" : "card")}
+                    className="self-start sm:self-auto"
+                  >
+                    {viewMode === "card" ? "Switch to Table View" : "Switch to Card View"}
+                  </Button>
                 </div>
 
                 <p className="mb-4">
@@ -1765,7 +1780,7 @@ const renderScheduleView = () => {
                               <React.Fragment key={`${groupBy}-${value}`}>
                                 <TableRow className="bg-gray-100 dark:bg-gray-700">
                                   <TableCell colSpan={8} className="font-medium">
-                                    {currentGroupLabel}: {value}
+                                    {currentGroupLabel}: {getGroupDisplayValue(value, courses)}
                                   </TableCell>
                                 </TableRow>
                                 {courses.map((course, index) => {
@@ -1871,7 +1886,7 @@ const renderScheduleView = () => {
                         {groupedCourses.map(({ value, courses }) => (
                           <div key={`${groupBy}-${value}`} className="border rounded-lg overflow-hidden">
                             <div className="bg-gray-100 dark:bg-gray-700 px-4 py-2 font-medium">
-                              {currentGroupLabel}: {value}
+                              {currentGroupLabel}: {getGroupDisplayValue(value, courses)}
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
                               {courses.map((course, index) => {
@@ -1941,9 +1956,9 @@ const renderScheduleView = () => {
                                         <Popover>
                                           <PopoverTrigger asChild>
                                             <Button
-                                                variant="outline"
-                                                className="bg-yellow-50 border-yellow-200 text-yellow-700 hover:bg-yellow-100 w-full"
-                                              >
+                                              variant="outline"
+                                              className="bg-yellow-50 border-yellow-200 text-yellow-700 hover:bg-yellow-100 w-full"
+                                            >
                                               Replace Section
                                             </Button>
                                           </PopoverTrigger>
