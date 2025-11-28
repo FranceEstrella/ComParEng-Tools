@@ -10,6 +10,25 @@ export interface PatchNote {
 
 export const patchNotes: PatchNote[] = [
   {
+    version: "1.44",
+    date: "November 28, 2025",
+    title: "Schedule Maker grouping & richer search",
+    changes: [
+      {
+        type: "new",
+        description: "Schedule Maker now lets you group available sections by Department, Section, Course Code, or Room so related sections stay together in both table and card layouts.",
+      },
+      {
+        type: "improved",
+        description: "The search bar matches more metadata (section labels, meeting days, formatted times, and room names) which makes partial queries and nicknames far more forgiving.",
+      },
+      {
+        type: "improved",
+        description: "Filter summaries and empty-state messages now respect the refined course list, so you immediately see how many sections remain after combining search, day, and grouping filters.",
+      },
+    ],
+  },
+  {
     version: "1.43",
     date: "November 8, 2025",
     title: "Responsive planner dialogs & rounded popups",
