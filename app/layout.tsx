@@ -9,8 +9,12 @@ import ServiceWorkerRegister from "@/components/service-worker-register"
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "ComParEng Course Tracker",
-  description: "Track your Computer Engineering courses, prerequisites, and progress",
+  metadataBase: new URL("https://compareng-tools.vercel.app"),
+  title: {
+    default: "FEU Tech ComParEng Tools",
+    template: "%s | ComParEng Tools",
+  },
+  description: "Course Tracker, Schedule Maker, and Academic Planner for FEU Tech students.",
   icons: {
     icon: [
       { url: "/favicon.ico" },
@@ -30,10 +34,32 @@ export const metadata: Metadata = {
   },
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#0f172a" },
-    { media: "(prefers-color-scheme: dark)", color: "#0f172a" }
+    { media: "(prefers-color-scheme: dark)", color: "#0f172a" },
   ],
   manifest: "/manifest.webmanifest",
   generator: "v0.dev",
+  openGraph: {
+    type: "website",
+    url: "https://compareng-tools.vercel.app",
+    title: "FEU Tech ComParEng Tools",
+    description: "Plan schedules, track CpE courses, and map your path to graduation.",
+    siteName: "ComParEng Tools",
+    images: [
+      {
+        url: "/opengraph-image",
+        width: 1200,
+        height: 630,
+        alt: "ComParEng Tools preview",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@feutech",
+    title: "FEU Tech ComParEng Tools",
+    description: "Course Tracker, Schedule Maker, and Academic Planner in one place.",
+    images: ["/opengraph-image"],
+  },
 }
 
 export default function RootLayout({
