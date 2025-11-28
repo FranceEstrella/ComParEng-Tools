@@ -58,6 +58,14 @@ export const patchNotes: PatchNote[] = [
         type: "fixed",
         description: "Importing a different curriculum clears incompatible schedule selections and syncs the new active-course list, so Schedule Maker always reflects the currently loaded program without manual cache clearing.",
       },
+      {
+        type: "improved",
+        description: "The homepage extension reminder now places its dismiss button in the top-right corner and remembers your choice, so the notice stays out of the way once you install the extractor.",
+      },
+      {
+        type: "improved",
+        description: "The Non-CpE curriculum helper card can now be dismissed via a matching top-right button, keeping the homepage focused once you've saved those import steps.",
+      },
     ],
   },
   {
@@ -337,4 +345,16 @@ const compareSemver = (a: string, b: string) => {
   return 0
 }
 
-export const orderedPatchNotes: PatchNote[] = [...patchNotes].sort((a, b) => compareSemver(b.version, a.version))
+const changeTypeOrder: Record<PatchNote["changes"][number]["type"], number> = {
+  new: 0,
+  improved: 1,
+  fixed: 2,
+  "known-issue": 3,
+}
+
+export const orderedPatchNotes: PatchNote[] = [...patchNotes]
+  .map((note) => ({
+    ...note,
+    changes: [...note.changes].sort((a, b) => changeTypeOrder[a.type] - changeTypeOrder[b.type]),
+  }))
+  .sort((a, b) => compareSemver(b.version, a.version))

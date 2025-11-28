@@ -1648,10 +1648,16 @@ const renderScheduleView = () => {
           </div>
         ) : (
           <Tabs defaultValue="available" className="w-full">
-            <TabsList className="mb-4">
-              <TabsTrigger value="available">Available Courses</TabsTrigger>
-              <TabsTrigger value="selected">Selected Courses ({selectedCourses.length})</TabsTrigger>
-              <TabsTrigger value="schedule">Schedule View</TabsTrigger>
+            <TabsList className="mb-4 w-full h-auto flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-2">
+              <TabsTrigger value="available" className="flex-1 min-w-[10rem] whitespace-normal">
+                Available Courses
+              </TabsTrigger>
+              <TabsTrigger value="selected" className="flex-1 min-w-[10rem] whitespace-normal">
+                Selected Courses ({selectedCourses.length})
+              </TabsTrigger>
+              <TabsTrigger value="schedule" className="flex-1 min-w-[10rem] whitespace-normal">
+                Schedule View
+              </TabsTrigger>
             </TabsList>
 
             {/* Available Courses Tab */}

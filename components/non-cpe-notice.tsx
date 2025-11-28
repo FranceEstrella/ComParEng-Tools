@@ -1,9 +1,9 @@
 "use client"
 
-import React from "react"
+import React, { useEffect, useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { Info, ExternalLink, Upload } from "lucide-react"
+import { Info, ExternalLink, Upload, X } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 
@@ -15,6 +15,25 @@ interface NonCpeNoticeProps {
 export default function NonCpeNotice({ compact = false, onReportIssue }: NonCpeNoticeProps) {
   const pathname = usePathname()
   const router = useRouter()
+  const [showNotice, setShowNotice] = useState(true)
+
+  useEffect(() => {
+    try {
+      const dismissed = localStorage.getItem("compareng.nonCpeNotice.dismissed") === "true"
+      setShowNotice(!dismissed)
+    } catch {
+      // ignore storage failures
+    }
+  }, [])
+
+  const dismissNotice = () => {
+    setShowNotice(false)
+    try {
+      localStorage.setItem("compareng.nonCpeNotice.dismissed", "true")
+    } catch {
+      // ignore storage failures
+    }
+  }
 
   const goToImport = () => {
     try {
@@ -34,8 +53,18 @@ export default function NonCpeNotice({ compact = false, onReportIssue }: NonCpeN
       router.push("/course-tracker#import")
     }
   }
+
+  if (!showNotice) return null
   return (
-    <Alert className="mb-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200">
+    <Alert className="relative mb-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200 pr-10">
+      <button
+        type="button"
+        className="absolute right-3 top-3 rounded-full p-1 text-blue-700 hover:bg-blue-100 dark:text-blue-200 dark:hover:bg-blue-900/40"
+        aria-label="Dismiss alternative curriculum notice"
+        onClick={dismissNotice}
+      >
+        <X className="h-4 w-4" />
+      </button>
       <Info className="h-4 w-4" />
       <AlertTitle>Using a different program or curriculum?</AlertTitle>
       <AlertDescription>

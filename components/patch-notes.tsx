@@ -73,7 +73,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             ? "left-0 top-0 h-screen w-full max-w-none translate-x-0 translate-y-0 rounded-none border-0 p-6 pt-8 overflow-y-auto"
             : isCompactLayout
               ? "max-w-md w-[min(92vw,24rem)] p-4"
-              : "p-6"
+              : "p-6 max-h-[80vh] overflow-y-auto"
         )}
       >
         <DialogHeader>

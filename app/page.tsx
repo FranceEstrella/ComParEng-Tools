@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useState, useEffect } from "react"
-import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info } from "lucide-react"
+import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X } from "lucide-react"
 import PatchNotesButton from "@/components/patch-notes"
 import { ThemeProvider } from "@/components/theme-provider"
 import { useTheme } from "next-themes"
@@ -35,6 +35,7 @@ export default function Home() {
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(false)
   const [shouldAutoOpenWhatsNew, setShouldAutoOpenWhatsNew] = useState(false)
+  const [showExtensionCard, setShowExtensionCard] = useState(true)
   
 
   useEffect(() => {
@@ -103,6 +104,24 @@ export default function Home() {
       // ignore storage failures
     }
   }, [])
+
+  useEffect(() => {
+    try {
+      const dismissed = localStorage.getItem("compareng.extensionCard.dismissed") === "true"
+      setShowExtensionCard(!dismissed)
+    } catch {
+      // ignore storage failures
+    }
+  }, [])
+
+  const dismissExtensionCard = () => {
+    setShowExtensionCard(false)
+    try {
+      localStorage.setItem("compareng.extensionCard.dismissed", "true")
+    } catch {
+      // ignore storage failures
+    }
+  }
 
   const saveLocalFeedback = (entry: any) => {
     const next = [entry, ...feedbackHistory].slice(0, 20)
@@ -175,42 +194,51 @@ export default function Home() {
             </div>
 
             {/* Extension Installation Guide */}
-            <Card className="mb-8 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Info className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                  Extension Installation Required
-                </CardTitle>
-                <CardDescription>
-                  For full functionality of Schedule Maker and Academic Planner, please install the ComParEng Course
-                  Data Extractor Extension
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col sm:flex-row gap-4 items-center">
-                  <Button
-                    className="w-full flex items-center gap-2"
-                    onClick={() =>
-                      window.open(
-                        "https://chromewebstore.google.com/detail/compareng-courses-data-ex/fdfappahfelppgjnpbobconjogebpiml",
-                        "_blank",
-                      )
-                    }
-                  >
-                    <Download className="h-4 w-4" />
-                    Install Extension
-                  </Button>
-                  <Dialog>
-                    <DialogTrigger asChild>
-                      <Button variant="outline" className="w-full sm:w-auto bg-transparent">
-                        View Installation Guide
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="max-w-2xl">
-                      <DialogHeader>
-                        <DialogTitle>ComParEng Academic Tools Web App - Installation Guide</DialogTitle>
-                        <DialogDescription>Follow these steps to install and use the extension</DialogDescription>
-                      </DialogHeader>
+            {showExtensionCard && (
+              <Card className="relative mb-8 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20">
+                <button
+                  type="button"
+                  className="absolute right-3 top-3 rounded-full p-1 text-blue-700 hover:bg-blue-100 dark:text-blue-200 dark:hover:bg-blue-900/40"
+                  aria-label="Dismiss extension install reminder"
+                  onClick={dismissExtensionCard}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+                <CardHeader className="gap-2">
+                  <CardTitle className="flex items-center gap-2 pr-8">
+                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                    Extension Installation Required
+                  </CardTitle>
+                  <CardDescription>
+                    For full functionality of Schedule Maker and Academic Planner, please install the ComParEng Course
+                    Data Extractor Extension
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-col sm:flex-row gap-4 items-center">
+                    <Button
+                      className="w-full flex items-center gap-2"
+                      onClick={() =>
+                        window.open(
+                          "https://chromewebstore.google.com/detail/compareng-courses-data-ex/fdfappahfelppgjnpbobconjogebpiml",
+                          "_blank",
+                        )
+                      }
+                    >
+                      <Download className="h-4 w-4" />
+                      Install Extension
+                    </Button>
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button variant="outline" className="w-full sm:w-auto bg-transparent">
+                          View Installation Guide
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="max-w-2xl">
+                        <DialogHeader>
+                          <DialogTitle>ComParEng Academic Tools Web App - Installation Guide</DialogTitle>
+                          <DialogDescription>Follow these steps to install and use the extension</DialogDescription>
+                        </DialogHeader>
 
                       {/* Content moved outside DialogDescription */}
                       <div className="space-y-4 mt-4">
@@ -271,11 +299,12 @@ export default function Home() {
                           <p className="font-medium mt-4">You are ready to use the App!</p>
                         </div>
                       </div>
-                    </DialogContent>
-                  </Dialog>
-                </div>
-              </CardContent>
-            </Card>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Non-CpE Student Notice */}
             <NonCpeNotice
