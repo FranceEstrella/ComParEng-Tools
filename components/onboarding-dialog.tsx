@@ -640,14 +640,15 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
             >
               <div className={cn("flex gap-2", isMobileLayout && "flex-col w-full")}
               >
-                <Button
-                  variant="ghost"
-                  onClick={goPrev}
-                  disabled={currentIndex === 0}
-                  className={cn(isMobileLayout && "w-full justify-center py-3 text-base")}
-                >
-                  Back
-                </Button>
+                {currentIndex > 0 && (
+                  <Button
+                    variant="ghost"
+                    onClick={goPrev}
+                    className={cn(isMobileLayout && "w-full justify-center py-3 text-base")}
+                  >
+                    Back
+                  </Button>
+                )}
                 <Button
                   onClick={goNext}
                   disabled={nextDisabled}
