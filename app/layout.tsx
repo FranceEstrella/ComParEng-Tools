@@ -46,7 +46,7 @@ export const metadata: Metadata = {
     siteName: "ComParEng Tools",
     images: [
       {
-        url: "/opengraph-image",
+        url: "/og-image.jpg",
         width: 1200,
         height: 630,
         alt: "ComParEng Tools preview",
@@ -58,7 +58,7 @@ export const metadata: Metadata = {
     site: "@feutech",
     title: "FEU Tech ComParEng Tools",
     description: "Course Tracker, Schedule Maker, and Academic Planner in one place.",
-    images: ["/opengraph-image"],
+    images: ["/og-image.jpg"],
   },
 }
 
