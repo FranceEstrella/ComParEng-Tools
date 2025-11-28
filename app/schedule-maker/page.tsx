@@ -24,7 +24,7 @@ import {
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { initialCourses, curriculumCodes } from "@/lib/course-data"
+import { initialCourses, curriculumCodes, resolveCanonicalCourseCode, getCourseDetailsByCode } from "@/lib/course-data"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -85,14 +85,27 @@ const getDurationSlots = (start: string, end: string) => {
   return getTimePosition(end) - getTimePosition(start)
 }
 
-// Course details map for quick lookup
-const courseDetailsMap: Record<string, (typeof initialCourses)[number]> = initialCourses.reduce(
-  (map, course) => {
-    map[course.code] = course
-    return map
-  },
-  {} as Record<string, (typeof initialCourses)[number]>,
-)
+type CourseDetail = (typeof initialCourses)[number]
+
+const getCanonicalCourseCode = (courseCode: string): string => {
+  return resolveCanonicalCourseCode(courseCode || "")
+}
+
+const getCourseDetails = (courseCode: string): CourseDetail | null => {
+  return (getCourseDetailsByCode(courseCode) as CourseDetail | null) || null
+}
+
+const getCourseNameAndCredits = (courseCode: string) => {
+  const details = getCourseDetails(courseCode)
+  return {
+    name: details?.name || "Unknown Course",
+    credits: details?.credits || 3,
+  }
+}
+
+const getSelectedCourseCanonicalCode = (course: SelectedCourse) => {
+  return course.canonicalCode || getCanonicalCourseCode(course.courseCode)
+}
 
 // Interface for course data
 interface CourseSection {
@@ -115,6 +128,7 @@ interface ActiveCourse {
 }
 
 interface SelectedCourse extends CourseSection {
+  canonicalCode: string
   name: string
   credits: number
   timeStart: string
@@ -140,7 +154,7 @@ interface GroupedCourseSet {
 // Sample data for available courses - used as fallback
 const sampleAvailableCourses = [
   {
-    courseCode: "COE0001",
+    courseCode: "COE0001C",
     section: "TE31",
     classSize: "40",
     remainingSlots: "15",
@@ -514,6 +528,10 @@ export default function ScheduleMaker() {
   const normalizeSelectedCourse = (course: any): SelectedCourse => {
     const rangeSource = course?.meetingTime ?? `${course?.timeStart ?? ""}-${course?.timeEnd ?? ""}`
     const derivedRange = parseTimeRange(rangeSource)
+    const canonicalCode =
+      typeof course?.canonicalCode === "string" && course.canonicalCode.trim() !== ""
+        ? getCanonicalCourseCode(course.canonicalCode)
+        : getCanonicalCourseCode(course?.courseCode ?? "")
 
     const startLabelCandidate = course?.timeStart ?? derivedRange.start
     const endLabelCandidate = course?.timeEnd ?? derivedRange.end
@@ -546,6 +564,7 @@ export default function ScheduleMaker() {
 
     return {
       ...course,
+      canonicalCode,
       timeStart,
       timeEnd,
       startMinutes,
@@ -576,9 +595,10 @@ export default function ScheduleMaker() {
     const { start: newStart, end: newEnd, startMinutes: newStartMinutes, endMinutes: newEndMinutes } = parseTimeRange(course.meetingTime)
     const newDays = parseDays(course.meetingDays)
     const hasNumericRange = !Number.isNaN(newStartMinutes) && !Number.isNaN(newEndMinutes)
+    const canonicalCode = getCanonicalCourseCode(course.courseCode)
 
     return selectedCourses.some((selected) => {
-      if (selected.courseCode === course.courseCode) return false
+      if (getSelectedCourseCanonicalCode(selected) === canonicalCode) return false
 
       // Convert both day sets to Sets for efficient lookup
       const selectedDaysSet = new Set(selected.parsedDays)
@@ -622,12 +642,14 @@ export default function ScheduleMaker() {
 
   // Check if a course with the same code is already selected
   const hasSameCourseCode = (course: CourseSection): boolean => {
-    return selectedCourses.some((selected) => selected.courseCode === course.courseCode)
+    const canonicalCode = getCanonicalCourseCode(course.courseCode)
+    return selectedCourses.some((selected) => getSelectedCourseCanonicalCode(selected) === canonicalCode)
   }
 
   // Get the selected course with the same code
   const getSelectedCourseWithSameCode = (course: CourseSection): SelectedCourse | undefined => {
-    return selectedCourses.find((selected) => selected.courseCode === course.courseCode)
+    const canonicalCode = getCanonicalCourseCode(course.courseCode)
+    return selectedCourses.find((selected) => getSelectedCourseCanonicalCode(selected) === canonicalCode)
   }
 
   const sortCourses = (courses: CourseSection[]) => {
@@ -670,28 +692,31 @@ export default function ScheduleMaker() {
 
   // Add a course to the selected courses
   const addCourse = (course: CourseSection) => {
-    const existingCourse = selectedCourses.find((selected) => selected.courseCode === course.courseCode)
+    const canonicalCode = getCanonicalCourseCode(course.courseCode)
+    const existingCourse = selectedCourses.find((selected) => getSelectedCourseCanonicalCode(selected) === canonicalCode)
 
     const { start, end, startMinutes, endMinutes } = parseTimeRange(course.meetingTime)
     const parsedDays = parseDays(course.meetingDays)
+    const metadata = getCourseNameAndCredits(course.courseCode)
     
     const newCourse: SelectedCourse = {
       ...course,
-      name: courseDetailsMap[course.courseCode]?.name || "Unknown Course",
-      credits: courseDetailsMap[course.courseCode]?.credits || 3,
+      canonicalCode,
+      name: metadata.name,
+      credits: metadata.credits,
       timeStart: start,
       timeEnd: end,
       startMinutes,
       endMinutes,
       parsedDays,
       displayTime: cleanTimeString(course.meetingTime),
-      displayRoom: cleanRoomString(course.room)
+      displayRoom: cleanRoomString(course.room),
     }
 
     if (existingCourse) {
       setSelectedCourses((prev) =>
         prev.map((selected) =>
-          selected.courseCode === course.courseCode ? newCourse : selected
+          getSelectedCourseCanonicalCode(selected) === canonicalCode ? newCourse : selected
         )
       )
     } else {
@@ -807,6 +832,10 @@ export default function ScheduleMaker() {
       })
   }
 
+  const groupCoursesByDepartment = (courses: CourseSection[]): GroupedCourseSet[] => {
+    return groupCourses(courses)
+  }
+
   const dayFilterSet = React.useMemo(() => new Set(dayFilters), [dayFilters])
 
   const toggleDayFilter = (day: DayToken) => {
@@ -820,7 +849,8 @@ export default function ScheduleMaker() {
   const getFilteredAndSortedCourses = () => {
     const normalizedSearch = searchTerm.trim().toLowerCase()
     const filtered = filteredCourses.filter((course) => {
-      const courseName = (courseDetailsMap[course.courseCode]?.name || "").toLowerCase()
+      const courseDetails = getCourseDetails(course.courseCode)
+      const courseName = (courseDetails?.name || "").toLowerCase()
       const sectionValue = (course.section || "").toLowerCase()
       const meetingDaysValue = (course.meetingDays || "").toLowerCase()
       const meetingTimeRaw = (course.meetingTime || "").toLowerCase()
@@ -966,8 +996,10 @@ export default function ScheduleMaker() {
   // Filter courses based on active status and curriculum
   const filteredCourses = availableCourses.filter((course) => {
     if (showOnlyActive) {
+      const canonicalCode = getCanonicalCourseCode(course.courseCode)
       return (
-        curriculumCodes.includes(course.courseCode) && activeCourses.some((active) => active.code === course.courseCode)
+        curriculumCodes.includes(canonicalCode) &&
+        activeCourses.some((active) => getCanonicalCourseCode(active.code) === canonicalCode)
       )
     } else {
       return true
@@ -988,7 +1020,12 @@ export default function ScheduleMaker() {
 
   // Find active courses that don't have available sections
   const coursesNeedingPetition = activeCourses.filter(
-    (active) => !availableCourses.some((available) => available.courseCode === active.code),
+    (active) => {
+      const activeCanonical = getCanonicalCourseCode(active.code)
+      return !availableCourses.some(
+        (available) => getCanonicalCourseCode(available.courseCode) === activeCanonical,
+      )
+    },
   )
 
   // Get all available department codes
@@ -1560,17 +1597,21 @@ const renderScheduleView = () => {
                                   </TableCell>
                                 </TableRow>
                                 {courses.map((course, index) => {
-                                  const courseDetails = activeCourses.find(
-                                    (active) => active.code === course.courseCode,
-                                  ) || {
-                                    name: courseDetailsMap[course.courseCode]?.name || "Unknown Course",
-                                    credits: courseDetailsMap[course.courseCode]?.credits || 3,
+                                  const canonicalCode = getCanonicalCourseCode(course.courseCode)
+                                  const activeCourseDetails = activeCourses.find(
+                                    (active) => getCanonicalCourseCode(active.code) === canonicalCode,
+                                  )
+                                  const fallbackDetails = getCourseDetails(course.courseCode)
+                                  const courseDetails = activeCourseDetails || {
+                                    name: fallbackDetails?.name || "Unknown Course",
+                                    credits: fallbackDetails?.credits || 3,
                                   }
                                   const departmentValue = extractDepartmentCode(course.courseCode)
                                   const isConflict = hasScheduleConflict(course)
                                   const isAlreadySelected = selectedCourses.some(
                                     (selected) =>
-                                      selected.courseCode === course.courseCode && selected.section === course.section,
+                                      getSelectedCourseCanonicalCode(selected) === canonicalCode &&
+                                      selected.section === course.section,
                                   )
                                   const hasSameCode = hasSameCourseCode(course) && !isAlreadySelected
                                   const existingCourse = hasSameCode ? getSelectedCourseWithSameCode(course) : null
@@ -1662,16 +1703,20 @@ const renderScheduleView = () => {
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
                               {courses.map((course, index) => {
-                                const courseDetails = activeCourses.find(
-                                  (active) => active.code === course.courseCode,
-                                ) || {
-                                  name: courseDetailsMap[course.courseCode]?.name || "Unknown Course",
-                                  credits: courseDetailsMap[course.courseCode]?.credits || 3,
+                                const canonicalCode = getCanonicalCourseCode(course.courseCode)
+                                const activeCourseDetails = activeCourses.find(
+                                  (active) => getCanonicalCourseCode(active.code) === canonicalCode,
+                                )
+                                const fallbackDetails = getCourseDetails(course.courseCode)
+                                const courseDetails = activeCourseDetails || {
+                                  name: fallbackDetails?.name || "Unknown Course",
+                                  credits: fallbackDetails?.credits || 3,
                                 }
                                 const isConflict = hasScheduleConflict(course)
                                 const isAlreadySelected = selectedCourses.some(
                                   (selected) =>
-                                    selected.courseCode === course.courseCode && selected.section === course.section,
+                                    getSelectedCourseCanonicalCode(selected) === canonicalCode &&
+                                    selected.section === course.section,
                                 )
                                 const hasSameCode = hasSameCourseCode(course) && !isAlreadySelected
                                 const existingCourse = hasSameCode ? getSelectedCourseWithSameCode(course) : null

@@ -26,6 +26,10 @@ export const patchNotes: PatchNote[] = [
         type: "improved",
         description: "Filter summaries and empty-state messages now respect the refined course list, so you immediately see how many sections remain after combining search, day, and grouping filters.",
       },
+      {
+        type: "improved",
+        description: "Sections that append extra characters to the course code (e.g., COE0007C or COE0009LC) now alias back to the original curriculum code so names, credits, and active-course filtering stay accurate.",
+      },
     ],
   },
   {
@@ -283,3 +287,26 @@ export const patchNotes: PatchNote[] = [
     ],
   },
 ]
+
+const versionToParts = (version: string) =>
+  version
+    .split(".")
+    .map((part) => Number.parseInt(part, 10) || 0)
+
+const compareSemver = (a: string, b: string) => {
+  const aParts = versionToParts(a)
+  const bParts = versionToParts(b)
+  const maxLength = Math.max(aParts.length, bParts.length)
+
+  for (let i = 0; i < maxLength; i++) {
+    const aValue = aParts[i] ?? 0
+    const bValue = bParts[i] ?? 0
+    if (aValue !== bValue) {
+      return aValue - bValue
+    }
+  }
+
+  return 0
+}
+
+export const orderedPatchNotes: PatchNote[] = [...patchNotes].sort((a, b) => compareSemver(b.version, a.version))

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { patchNotes } from "@/lib/patch-notes"
+import { orderedPatchNotes } from "@/lib/patch-notes"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -21,7 +21,7 @@ type Props = {
 }
 
 export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "What’s New" }: Props) {
-  const latest = useMemo(() => patchNotes[0], [])
+  const latest = useMemo(() => orderedPatchNotes[0], [])
   const [open, setOpen] = useState(false)
   const [isCompactLayout, setIsCompactLayout] = useState(false)
   const [showAllChanges, setShowAllChanges] = useState(false)

@@ -15,7 +15,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import Spinner from "@/components/ui/spinner"
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { patchNotes } from "@/lib/patch-notes"
+import { orderedPatchNotes } from "@/lib/patch-notes"
 import { MESSAGE_MIN } from "../lib/config"
 import NonCpeNotice from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
@@ -334,11 +334,11 @@ export default function Home() {
                 <CardDescription>Latest updates and improvements to the ComParEng Tools</CardDescription>
               </CardHeader>
               <CardContent>
-                <Tabs defaultValue={patchNotes[0].version}>
+                <Tabs defaultValue={orderedPatchNotes[0]?.version ?? "latest"}>
                   {/* Make the version tabs horizontally scrollable on small screens and contained within the card */}
                   <div className="mb-4 overflow-x-auto">
                     <TabsList className="min-w-full w-max flex-nowrap">
-                      {patchNotes.map((note) => (
+                      {orderedPatchNotes.map((note) => (
                         <TabsTrigger key={note.version} value={note.version} className="whitespace-nowrap">
                           {note.version}
                         </TabsTrigger>
@@ -346,7 +346,7 @@ export default function Home() {
                     </TabsList>
                   </div>
 
-                  {patchNotes.map((note) => (
+                  {orderedPatchNotes.map((note) => (
                     <TabsContent key={note.version} value={note.version}>
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
