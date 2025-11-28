@@ -26,12 +26,12 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   initialCourses,
-  curriculumCodes,
   resolveCanonicalCourseCode,
   getCourseDetailsByCode,
   registerExternalCourses,
   registerExternalCourseCodes,
 } from "@/lib/course-data"
+import { loadCurriculumSignature } from "@/lib/course-storage"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -393,28 +393,56 @@ export default function ScheduleMaker() {
   const [scheduleTitle, setScheduleTitle] = useState(
     typeof window !== 'undefined' ? localStorage.getItem('scheduleTitle') || 'Weekly Schedule' : 'Weekly Schedule'
   )
+  const [curriculumSignature, setCurriculumSignature] = useState<string>("")
 
   useEffect(() => {
     setIsClient(true)
   }, [])
 
   // Load data from localStorage only on the client side
+  const clearScheduleSelections = useCallback(() => {
+    setSelectedCourses([])
+    setCustomizations({})
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem("scheduleMakerData")
+      } catch (error) {
+        console.error("Error clearing saved schedule data:", error)
+      }
+    }
+  }, [])
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       try {
         const savedSchedule = localStorage.getItem("scheduleMakerData")
+        const storedSignature = loadCurriculumSignature()
+        let scheduleCurriculumMismatch = false
         if (savedSchedule) {
           const parsed = JSON.parse(savedSchedule)
-          if (parsed.selectedCourses) {
-            const normalizedCourses = (parsed.selectedCourses as SelectedCourse[]).map((stored) =>
-              normalizeSelectedCourse(stored),
-            )
-            setSelectedCourses(normalizedCourses)
-          }
-          if (parsed.customizations) {
-            setCustomizations(parsed.customizations || {})
+          if (
+            parsed?.curriculumSignature &&
+            storedSignature &&
+            parsed.curriculumSignature !== storedSignature
+          ) {
+            scheduleCurriculumMismatch = true
+          } else {
+            if (parsed.selectedCourses) {
+              const normalizedCourses = (parsed.selectedCourses as SelectedCourse[]).map((stored) =>
+                normalizeSelectedCourse(stored),
+              )
+              setSelectedCourses(normalizedCourses)
+            }
+            if (parsed.customizations) {
+              setCustomizations(parsed.customizations || {})
+            }
           }
         }
+
+        if (scheduleCurriculumMismatch) {
+          clearScheduleSelections()
+        }
+        setCurriculumSignature(storedSignature)
 
         const filterCourseCode = localStorage.getItem("filterCourseCode")
         if (filterCourseCode) {
@@ -425,25 +453,30 @@ export default function ScheduleMaker() {
         console.error("Error loading schedule from localStorage:", err)
       }
     }
-  }, [])
+  }, [clearScheduleSelections])
 
   // Save to localStorage whenever selectedCourses or customizations change
   useEffect(() => {
     if (typeof window !== "undefined" && isClient) {
       try {
+        const latestSignature = loadCurriculumSignature()
+        if (latestSignature !== curriculumSignature) {
+          setCurriculumSignature(latestSignature)
+        }
         localStorage.setItem(
           "scheduleMakerData",
           JSON.stringify({
             version: 1,
             selectedCourses,
             customizations,
+            curriculumSignature: latestSignature,
           }),
         )
       } catch (err) {
         console.error("Error saving to localStorage:", err)
       }
     }
-  }, [selectedCourses, customizations, isClient])
+  }, [selectedCourses, customizations, isClient, curriculumSignature])
 
   // Convert 24-hour time to 12-hour format
   const convertTo12Hour = (time24: string): string => {
@@ -1119,14 +1152,27 @@ export default function ScheduleMaker() {
     return () => clearInterval(interval)
   }, [isClient, fetchData])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === "courseCurriculumSignature") {
+        const latestSignature = loadCurriculumSignature()
+        if (latestSignature !== curriculumSignature) {
+          setCurriculumSignature(latestSignature)
+          clearScheduleSelections()
+          fetchData({ silent: true })
+        }
+      }
+    }
+    window.addEventListener("storage", handleStorage)
+    return () => window.removeEventListener("storage", handleStorage)
+  }, [curriculumSignature, fetchData, clearScheduleSelections])
+
   // Filter courses based on active status and curriculum
   const filteredCourses = availableCourses.filter((course) => {
     if (showOnlyActive) {
       const canonicalCode = getCanonicalCourseCode(course.courseCode)
-      return (
-        curriculumCodes.includes(canonicalCode) &&
-        activeCourses.some((active) => getCanonicalCourseCode(active.code) === canonicalCode)
-      )
+      return activeCourses.some((active) => getCanonicalCourseCode(active.code) === canonicalCode)
     } else {
       return true
     }
