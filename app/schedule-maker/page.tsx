@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   ArrowLeft,
+  ArrowUp,
   RefreshCw,
   Plus,
   Trash,
@@ -20,8 +21,11 @@ import {
   Download,
   Palette,
   Edit,
+  Sun,
+  Moon,
 } from "lucide-react"
 import Link from "next/link"
+import { useTheme } from "next-themes"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
@@ -260,9 +264,20 @@ const sampleAvailableCourses = [
   },
 ]
 
-const QuickNavigation = () => {
+const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean }) => {
+  const handleScrollTop = () => {
+    if (typeof window === "undefined") return
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }
+
   return (
     <div className="flex flex-col sm:flex-row gap-3 justify-center">
+      <Link href="/">
+        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
+          <ArrowLeft className="h-4 w-4" />
+          Back to Home
+        </Button>
+      </Link>
       <Link href="/course-tracker">
         <Button className="w-full sm:w-auto bg-blue-700 dark:bg-blue-900 bg-gradient-to-r from-blue-600 to-blue-800 hover:bg-blue-800 dark:hover:bg-blue-950 hover:from-blue-700 hover:to-blue-900 text-white flex items-center gap-2">
           <BookOpen className="h-4 w-4" />
@@ -275,12 +290,17 @@ const QuickNavigation = () => {
           Academic Planner
         </Button>
       </Link>
-      <Link href="/">
-        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
-          <ArrowLeft className="h-4 w-4" />
-          Back to Home
+      {showBackToTop && (
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full sm:w-auto flex items-center gap-2"
+          onClick={handleScrollTop}
+        >
+          <ArrowUp className="h-4 w-4" />
+          Back to Top
         </Button>
-      </Link>
+      )}
     </div>
   )
 }
@@ -367,6 +387,8 @@ const getContrastColor = (hexColor: string): string => {
 }
 
 export default function ScheduleMaker() {
+  const { theme, setTheme } = useTheme()
+
   const [availableCourses, setAvailableCourses] = useState<CourseSection[]>([])
   const [activeCourses, setActiveCourses] = useState<ActiveCourse[]>([])
   const [selectedCourses, setSelectedCourses] = useState<SelectedCourse[]>([])
@@ -1555,14 +1577,14 @@ const renderScheduleView = () => {
       <div className="container mx-auto px-4 py-8">
         <div className="mb-6 space-y-4">
           <QuickNavigation />
-          <div className="flex justify-between items-center">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
               <h1 className="text-3xl font-bold">Schedule Maker</h1>
               <p className="text-gray-600 dark:text-gray-400 mt-2">
                 Create your perfect class schedule with available course sections
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2 self-start md:self-auto">
               <Button
                 variant="outline"
                 size="sm"
@@ -1572,6 +1594,16 @@ const renderScheduleView = () => {
               >
                 <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                 Refresh Data
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                aria-label="Toggle theme"
+                className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+              >
+                <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+                <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
               </Button>
             </div>
           </div>

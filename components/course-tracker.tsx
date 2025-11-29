@@ -22,6 +22,7 @@ import {
   Upload,
   Save,
   Eye,
+  ArrowUp,
   Table,
   Grid3X3,
   GraduationCap,
@@ -37,7 +38,6 @@ import { motion, AnimatePresence } from "framer-motion"
 import { useTheme } from "next-themes"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { saveCourseStatuses, loadCourseStatuses } from "@/lib/course-storage"
 import { initialCourses, registerExternalCourses } from "@/lib/course-data"
 import { parseCurriculumHtml } from "@/lib/curriculum-import"
@@ -117,6 +117,7 @@ interface OverallProgressProps {
   progressByYear: { [key: number]: ProgressStats }
   progressByTerm: { [key: number]: { [term: string]: ProgressStats } }
   courses: Course[]
+  isFloating: boolean
 }
 
 interface SaveLoadControlsProps {
@@ -136,9 +137,20 @@ interface AcademicTimelineProps {
 }
 
 // Quick Navigation Component
-const QuickNavigation = () => {
+const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean }) => {
+  const handleScrollTop = () => {
+    if (typeof window === "undefined") return
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }
+
   return (
     <div className="flex flex-col sm:flex-row gap-3 justify-center">
+      <Link href="/">
+        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
+          <ArrowLeft className="h-4 w-4" />
+          Back to Home
+        </Button>
+      </Link>
       <Link href="/schedule-maker">
         <Button className="w-full sm:w-auto bg-purple-700 dark:bg-purple-900 bg-gradient-to-r from-purple-600 to-purple-800 hover:bg-purple-800 dark:hover:bg-purple-950 hover:from-purple-700 hover:to-purple-900 text-white flex items-center gap-2">
           <Calendar className="h-4 w-4" />
@@ -151,12 +163,17 @@ const QuickNavigation = () => {
           Academic Planner
         </Button>
       </Link>
-      <Link href="/">
-        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
-          <ArrowLeft className="h-4 w-4" />
-          Back to Home
+      {showBackToTop && (
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full sm:w-auto flex items-center gap-2"
+          onClick={handleScrollTop}
+        >
+          <ArrowUp className="h-4 w-4" />
+          Back to Top
         </Button>
-      </Link>
+      )}
     </div>
   )
 }
@@ -466,8 +483,38 @@ const OverallProgress = ({
   progressByYear,
   progressByTerm,
   courses,
+  isFloating,
 }: OverallProgressProps) => {
   const [expandedYears, setExpandedYears] = useState<{ [key: number]: boolean }>({})
+  const noteContentRef = useRef<HTMLDivElement>(null)
+  const [noteHeight, setNoteHeight] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const buffer = 16
+
+    const measure = () => {
+      if (noteContentRef.current) {
+        const height = noteContentRef.current.getBoundingClientRect().height
+        setNoteHeight(Math.ceil(height) + buffer)
+      }
+    }
+
+    measure()
+    window.addEventListener("resize", measure)
+
+    let resizeObserver: ResizeObserver | null = null
+    if (typeof ResizeObserver !== "undefined" && noteContentRef.current) {
+      resizeObserver = new ResizeObserver(measure)
+      resizeObserver.observe(noteContentRef.current)
+    }
+
+    return () => {
+      window.removeEventListener("resize", measure)
+      resizeObserver?.disconnect()
+    }
+  }, [])
 
   const toggleYearExpansion = (year: number) => {
     setExpandedYears((prev) => ({
@@ -482,7 +529,7 @@ const OverallProgress = ({
   }
 
   return (
-    <div className="mb-8 p-4 bg-white dark:bg-gray-800 rounded-lg shadow-md">
+    <div className="p-4 bg-white/95 dark:bg-gray-800/95 rounded-lg shadow-md border border-gray-100 dark:border-gray-700 backdrop-blur transition-all duration-300 ease-in-out">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-semibold">Overall Program Progress</h2>
         <Button
@@ -629,14 +676,30 @@ const OverallProgress = ({
       )}
 
       {/* Note about course status persistence */}
-      <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md text-sm text-blue-700 dark:text-blue-300">
-        <p className="flex items-center">
-          <AlertCircle className="h-4 w-4 mr-2 flex-shrink-0" />
-          <span>
-            <strong>Note:</strong> Course statuses are saved to your browser's local storage. After marking courses as
-            "Active", use the "Go to Schedule Maker" button to see available sections for your active courses.
-          </span>
-        </p>
+      <div
+        className={cn(
+          "overflow-hidden transition-all duration-300 ease-in-out",
+          isFloating && "pointer-events-none",
+        )}
+        style={{
+          maxHeight: isFloating ? 0 : noteHeight ?? 220,
+          marginTop: isFloating ? 0 : "1rem",
+          opacity: isFloating ? 0 : 1,
+        }}
+        aria-hidden={isFloating}
+      >
+        <div
+          ref={noteContentRef}
+          className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md text-sm text-blue-700 dark:text-blue-300"
+        >
+          <p className="flex items-center">
+            <AlertCircle className="h-4 w-4 mr-2 flex-shrink-0" />
+            <span>
+              <strong>Note:</strong> Course statuses are saved to your browser's local storage. After marking courses as
+              "Active", use the "Go to Schedule Maker" button to see available sections for your active courses.
+            </span>
+          </p>
+        </div>
       </div>
     </div>
   )
@@ -931,6 +994,9 @@ export default function CourseTracker() {
   const { theme } = useTheme()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
+  const progressCardRef = useRef<HTMLDivElement>(null)
+  const [isProgressSticky, setIsProgressSticky] = useState(false)
+  const [stickyOffset, setStickyOffset] = useState(16)
 
   // Calculate academic years and expected graduation
   const academicYears = useMemo(() => calculateAcademicYears(startYear), [startYear])
@@ -957,6 +1023,70 @@ export default function CourseTracker() {
       }
     } catch {}
   }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return
+
+    const bannerSelector = "[data-install-banner]"
+    const baseOffset = 16
+    let resizeObserver: ResizeObserver | null = null
+    let mutationObserver: MutationObserver | null = null
+    let observedElement: Element | null = null
+
+    const applyOffset = (height: number) => {
+      const nextOffset = baseOffset + Math.round(height)
+      setStickyOffset((prev) => (Math.abs(prev - nextOffset) < 0.5 ? prev : nextOffset))
+    }
+
+    const updateMeasurements = () => {
+      const banner = document.querySelector(bannerSelector) as HTMLElement | null
+      const bannerHeight = banner ? banner.getBoundingClientRect().height : 0
+      applyOffset(bannerHeight)
+
+      if (banner && typeof ResizeObserver !== "undefined") {
+        if (observedElement !== banner) {
+          resizeObserver?.disconnect()
+          observedElement = banner
+          resizeObserver = new ResizeObserver(() => {
+            const nextHeight = banner.getBoundingClientRect().height
+            applyOffset(nextHeight)
+          })
+          resizeObserver.observe(banner)
+        }
+      } else if (!banner && observedElement) {
+        resizeObserver?.disconnect()
+        observedElement = null
+      }
+    }
+
+    updateMeasurements()
+    window.addEventListener("resize", updateMeasurements)
+
+    if (typeof MutationObserver !== "undefined") {
+      mutationObserver = new MutationObserver(() => {
+        updateMeasurements()
+      })
+      mutationObserver.observe(document.body, { childList: true, subtree: true })
+    }
+
+    return () => {
+      window.removeEventListener("resize", updateMeasurements)
+      resizeObserver?.disconnect()
+      mutationObserver?.disconnect()
+    }
+  }, [])
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (!progressCardRef.current) return
+      const { top } = progressCardRef.current.getBoundingClientRect()
+      setIsProgressSticky(top <= stickyOffset + 0.5)
+    }
+
+    handleScroll()
+    window.addEventListener("scroll", handleScroll, { passive: true } as AddEventListenerOptions)
+    return () => window.removeEventListener("scroll", handleScroll)
+  }, [stickyOffset])
 
   // Pre-calculate dependent courses using useMemo for efficiency
   const dependentCoursesMap = useMemo(() => calculateDependentCoursesMap(courses), [courses])
@@ -1219,14 +1349,25 @@ export default function CourseTracker() {
         />
 
         {/* Overall Progress */}
-        <OverallProgress
-          overallProgress={overallProgress}
-          showDetailedProgress={showDetailedProgress}
-          setShowDetailedProgress={setShowDetailedProgress}
-          progressByYear={progressByYear}
-          progressByTerm={progressByTerm}
-          courses={courses}
-        />
+        <div
+          ref={progressCardRef}
+          className="sticky z-30 mb-8 transition-all duration-300 ease-in-out"
+          style={{
+            top: stickyOffset,
+            opacity: isProgressSticky ? 0.95 : 1,
+            transform: isProgressSticky ? "translateY(-4px)" : "translateY(0)",
+          }}
+        >
+          <OverallProgress
+            overallProgress={overallProgress}
+            showDetailedProgress={showDetailedProgress}
+            setShowDetailedProgress={setShowDetailedProgress}
+            progressByYear={progressByYear}
+            progressByTerm={progressByTerm}
+            courses={courses}
+            isFloating={isProgressSticky}
+          />
+        </div>
 
         {/* Filter and Search Controls */}
         <FilterAndSearchControls
@@ -1240,651 +1381,446 @@ export default function CourseTracker() {
         />
 
         {/* Course Display Area */}
-        <Tabs defaultValue="courses" className="mb-6">
-          <TabsList>
-            <TabsTrigger value="courses">Courses</TabsTrigger>
-            <TabsTrigger value="table-view">Table View</TabsTrigger>
-          </TabsList>
+        <div className="mb-10">
+          {viewMode === "card" ? (
+            <div className="space-y-6">
+              {Object.keys(groupedFilteredCourses).length > 0 ? (
+                Object.entries(groupedFilteredCourses)
+                  .sort(([yearA], [yearB]) => Number.parseInt(yearA) - Number.parseInt(yearB))
+                  .map(([year, terms]: [string, { [term: string]: Course[] }]) => {
+                    const yearNum = Number.parseInt(year, 10)
+                    const yearProgress = progressByYear[yearNum]
+                    const allPassed = areAllCoursesPassed(yearNum)
 
-          <TabsContent value="courses">
-            {viewMode === "card" ? (
-              <div className="space-y-6">
-                {Object.keys(groupedFilteredCourses).length > 0 ? (
-                  Object.entries(groupedFilteredCourses)
-                    .sort(([yearA], [yearB]) => Number.parseInt(yearA) - Number.parseInt(yearB)) // Sort years numerically
-                    .map(([year, terms]: [string, { [term: string]: Course[] }]) => {
-                      const yearNum = Number.parseInt(year, 10)
-                      const yearProgress = progressByYear[yearNum]
-                      const allPassed = areAllCoursesPassed(yearNum)
-
-                      return (
-                        <Collapsible
-                          key={year}
-                          open={openYears[yearNum]}
-                          onOpenChange={() => toggleYear(yearNum)}
-                          className="border dark:border-gray-700 rounded-lg overflow-hidden shadow-md bg-white dark:bg-gray-800"
-                        >
-                          <CollapsibleTrigger className="flex justify-between items-center w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
-                            <div className="flex items-center gap-2">
-                              <h2 className="text-lg font-semibold">Year {year}</h2>
-                              <div className="text-sm text-gray-500 dark:text-gray-400">
-                                ({yearProgress.passed}/{yearProgress.total} courses - {yearProgress.percentage}%)
-                              </div>
+                    return (
+                      <Collapsible
+                        key={year}
+                        open={openYears[yearNum]}
+                        onOpenChange={() => toggleYear(yearNum)}
+                        className="border dark:border-gray-700 rounded-lg overflow-hidden shadow-md bg-white dark:bg-gray-800"
+                      >
+                        <CollapsibleTrigger className="flex justify-between items-center w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <h2 className="text-lg font-semibold">Year {year}</h2>
+                            <div className="text-sm text-gray-500 dark:text-gray-400">
+                              ({yearProgress.passed}/{yearProgress.total} courses - {yearProgress.percentage}%)
                             </div>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                asChild={true}
-                                variant="outline"
-                                size="sm"
-                                className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors bg-transparent"
-                                onClick={(e) => markYearAsPassed(yearNum, e)}
-                              >
-                                <span>
-                                  {areAllCoursesPassed(yearNum)
-                                    ? "Unmark All"
-                                    : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.status !== "passed").length})`}
-                                </span>
-                              </Button>
-                              {openYears[yearNum] ? (
-                                <ChevronDown className="h-5 w-5" />
-                              ) : (
-                                <ChevronRight className="h-5 w-5" />
-                              )}
-                            </div>
-                          </CollapsibleTrigger>
-                          <CollapsibleContent className="p-4 space-y-4">
-                            {/* Year Progress Bar */}
-                            <div className="mb-4">
-                              <Progress
-                                value={yearProgress.percentage}
-                                className="h-2 bg-gray-200 dark:bg-gray-700 overflow-hidden rounded-full"
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              asChild={true}
+                              variant="outline"
+                              size="sm"
+                              className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors bg-transparent"
+                              onClick={(e) => markYearAsPassed(yearNum, e)}
+                            >
+                              <span>
+                                {allPassed
+                                  ? "Unmark All"
+                                  : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.status !== "passed").length})`}
+                              </span>
+                            </Button>
+                            {openYears[yearNum] ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+                          </div>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="p-4 space-y-4">
+                          <div className="mb-4">
+                            <Progress
+                              value={yearProgress.percentage}
+                              className="h-2 bg-gray-200 dark:bg-gray-700 overflow-hidden rounded-full"
+                              style={{ backgroundImage: "none" }}
+                            >
+                              <div
+                                className="h-full rounded-full transition-all"
                                 style={{
-                                  backgroundImage: "none",
+                                  width: `${yearProgress.percentage}%`,
+                                  background: "linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)",
                                 }}
-                              >
-                                <div
-                                  className="h-full rounded-full transition-all"
-                                  style={{
-                                    width: `${yearProgress.percentage}%`,
-                                    background: "linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)",
-                                  }}
-                                />
-                              </Progress>
-                            </div>
+                              />
+                            </Progress>
+                          </div>
 
-                            {Object.entries(terms).map(([term, termCourses]: [string, Course[]]) => {
-                              const termProgress = progressByTerm[yearNum]?.[term] || {
-                                total: 0,
-                                passed: 0,
-                                percentage: 0,
-                              }
-                              const allTermPassed = areAllTermCoursesPassed(yearNum, term)
-                              const academicYear = academicYears[yearNum - 1]
-                              const academicYearStr = academicYear
-                                ? term === "Term 1"
-                                  ? academicYear.term1
-                                  : term === "Term 2"
-                                    ? academicYear.term2
-                                    : academicYear.term3
-                                : ""
+                          {Object.entries(terms).map(([term, termCourses]: [string, Course[]]) => {
+                            const termProgress = progressByTerm[yearNum]?.[term] || {
+                              total: 0,
+                              passed: 0,
+                              percentage: 0,
+                            }
+                            const academicYear = academicYears[yearNum - 1]
+                            const academicYearStr = academicYear
+                              ? term === "Term 1"
+                                ? academicYear.term1
+                                : term === "Term 2"
+                                  ? academicYear.term2
+                                  : academicYear.term3
+                              : ""
 
-                              return (
-                                <div key={term} className="border dark:border-gray-700 rounded-lg p-4">
-                                  <div className="flex justify-between items-center mb-3">
-                                    <div>
-                                      <h3 className="text-md font-medium">{term}</h3>
-                                      <div className="text-xs text-gray-500 dark:text-gray-400">
-                                        S.Y. {academicYearStr} • ({termProgress.passed}/{termProgress.total} courses -{" "}
-                                        {termProgress.percentage}%)
-                                      </div>
+                            return (
+                              <div key={term} className="border dark:border-gray-700 rounded-lg p-4">
+                                <div className="flex justify-between items-center mb-3">
+                                  <div>
+                                    <h3 className="text-md font-medium">{term}</h3>
+                                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                                      S.Y. {academicYearStr} • ({termProgress.passed}/{termProgress.total} courses - {termProgress.percentage}%)
                                     </div>
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors bg-transparent"
-                                      onClick={() => markTermAsPassed(yearNum, term)}
-                                    >
-                                      {areAllTermCoursesPassed(yearNum, term)
-                                        ? "Unmark All"
-                                        : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.term === term && c.status !== "passed").length})`}
-                                    </Button>
                                   </div>
-
-                                  {/* Term Progress Bar */}
-                                  <div className="mb-4">
-                                    <Progress
-                                      value={termProgress.percentage}
-                                      className="h-1 bg-gray-200 dark:bg-gray-700 overflow-hidden rounded-full"
-                                      style={{
-                                        backgroundImage: "none",
-                                      }}
-                                    >
-                                      <div
-                                        className="h-full rounded-full transition-all"
-                                        style={{
-                                          width: `${termProgress.percentage}%`,
-                                          background: "linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)",
-                                        }}
-                                      />
-                                    </Progress>
-                                  </div>
-
-                                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {termCourses.map((course: Course) => {
-                                      // Find prerequisites and dependents for this course
-                                      const prereqCourses = course.prerequisites
-                                        .map((id: string) => findCourseById(id))
-                                        .filter((c: Course | undefined): c is Course => c !== undefined) // Type guard
-
-                                      const dependentCourses = dependentCoursesMap.get(course.id) || []
-                                      const MAX_DEPENDENTS_SHOWN = 2 // Max dependent codes to show initially
-
-                                      const isExpanded = expandedCourseId === course.id
-
-                                      return (
-                                        <Card
-                                          key={course.id}
-                                          className={cn(
-                                            "flex flex-col justify-between shadow-sm hover:shadow-md transition-shadow duration-200 border dark:border-gray-700",
-                                            // Vertical expansion instead of horizontal
-                                            course.status === "passed" && "border-l-4 border-l-green-500",
-                                            course.status === "active" && "border-l-4 border-l-blue-500",
-                                            course.status === "pending" && "border-l-4 border-l-yellow-500",
-                                          )}
-                                          style={{
-                                            transition: "all 0.3s ease", // Add smooth transition
-                                          }}
-                                        >
-                                          {/* === Card Header: Title (Left) and Credits (Right) === */}
-                                          <CardHeader className="pb-3">
-                                            <div className="flex justify-between items-start gap-2">
-                                              <CardTitle className="text-base font-semibold">
-                                                {course.code} - {course.name}
-                                              </CardTitle>
-                                              {/* Credits moved here */}
-                                              <span className="text-xs font-medium text-muted-foreground whitespace-nowrap flex-shrink-0 pt-1">
-                                                {course.credits} Credit{course.credits !== 1 ? "s" : ""}
-                                              </span>
-                                            </div>
-                                          </CardHeader>
-
-                                          {/* === Card Content: Prerequisites and Dependents === */}
-                                          <CardContent
-                                            className={cn(
-                                              "text-sm space-y-3 pb-3 flex-grow overflow-hidden",
-                                              isExpanded && "overflow-visible",
-                                            )}
-                                          >
-                                            {/* Prerequisites Section */}
-                                            {prereqCourses.length > 0 && (
-                                              <div>
-                                                <span className="text-xs font-medium">Prerequisites: </span>
-                                                <div className="flex flex-wrap gap-1 mt-1">
-                                                  {prereqCourses.map((prereq) => (
-                                                    <Badge
-                                                      key={prereq.id}
-                                                      variant="outline"
-                                                      className={cn(
-                                                        "text-xs px-1.5 py-0.5",
-                                                        prereq.status === "passed" &&
-                                                          "bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-700 dark:text-green-400",
-                                                        prereq.status === "active" &&
-                                                          "bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-400",
-                                                        prereq.status === "pending" &&
-                                                          "bg-yellow-50 border-yellow-200 dark:bg-yellow-950/30 dark:border-yellow-700 dark:text-yellow-400",
-                                                      )}
-                                                    >
-                                                      {prereq.code}
-                                                      {getStatusIcon(prereq.status)}
-                                                    </Badge>
-                                                  ))}
-                                                </div>
-                                              </div>
-                                            )}
-
-                                            {/* Dependent Courses (Required For) Section */}
-                                            {dependentCourses.length > 0 && (
-                                              <div className="relative overflow-hidden">
-                                                <span className="text-xs font-medium">Required for: </span>
-                                                <div className="flex flex-wrap gap-1 mt-1">
-                                                  <AnimatePresence>
-                                                    {dependentCourses
-                                                      .slice(
-                                                        0,
-                                                        isExpanded ? dependentCourses.length : MAX_DEPENDENTS_SHOWN,
-                                                      )
-                                                      .map((dep, index) => (
-                                                        <motion.div
-                                                          key={dep.id}
-                                                          initial={{ opacity: 0, y: -10 }}
-                                                          animate={{ opacity: 1, y: 0 }}
-                                                          exit={{ opacity: 0, y: 10 }}
-                                                          transition={{ duration: 0.2, delay: index * 0.05 }}
-                                                        >
-                                                          <Badge
-                                                            variant="secondary"
-                                                            className="text-xs px-1.5 py-0.5 whitespace-nowrap"
-                                                          >
-                                                            {dep.code}
-                                                            {index <
-                                                              (isExpanded
-                                                                ? dependentCourses.length
-                                                                : MAX_DEPENDENTS_SHOWN) -
-                                                                1 && index < dependentCourses.length - 1
-                                                              ? ","
-                                                              : ""}
-                                                          </Badge>
-                                                        </motion.div>
-                                                      ))}
-                                                  </AnimatePresence>
-                                                </div>
-                                                {!isExpanded && dependentCourses.length > MAX_DEPENDENTS_SHOWN && (
-                                                  <Button
-                                                    variant="link"
-                                                    size="sm"
-                                                    className="text-xs p-0 mt-1"
-                                                    onClick={() => toggleCourseExpansion(course.id)}
-                                                  >
-                                                    ...see all {dependentCourses.length}
-                                                  </Button>
-                                                )}
-                                                {isExpanded && (
-                                                  <Button
-                                                    variant="link"
-                                                    size="sm"
-                                                    className="text-xs p-0 mt-1"
-                                                    onClick={() => toggleCourseExpansion(course.id)}
-                                                  >
-                                                    Show less
-                                                  </Button>
-                                                )}
-                                              </div>
-                                            )}
-
-                                            {/* Add a spacer if no content to push footer down */}
-                                            {prereqCourses.length === 0 && dependentCourses.length === 0 && (
-                                              <div className="flex-grow"></div>
-                                            )}
-                                          </CardContent>
-
-                                          {/* === Card Footer: Year/Term (Left) and Status Buttons (Right) === */}
-                                          <CardFooter className="flex justify-between items-center text-xs text-muted-foreground pt-2 border-t dark:border-gray-700 mt-auto">
-                                            <span>
-                                              Year {course.year} - {course.term}
-                                            </span>
-
-                                            {/* --- Status Buttons --- */}
-                                            <div className="flex gap-1">
-                                              <Button
-                                                size="sm"
-                                                variant={course.status === "pending" ? "default" : "outline"}
-                                                onClick={() => handleStatusChange(course.id, "pending")}
-                                                className={cn(
-                                                  "px-2 py-1 text-xs",
-                                                  course.status === "pending"
-                                                    ? "bg-yellow-500 hover:bg-yellow-600 text-white"
-                                                    : "text-yellow-600 hover:text-yellow-700 border-yellow-200 hover:bg-yellow-50 dark:border-yellow-800 dark:hover:bg-yellow-900/30",
-                                                )}
-                                              >
-                                                Pending
-                                              </Button>
-                                              <Button
-                                                size="sm"
-                                                variant={course.status === "active" ? "default" : "outline"}
-                                                onClick={() => handleStatusChange(course.id, "active")}
-                                                className={cn(
-                                                  "px-2 py-1 text-xs",
-                                                  course.status === "active"
-                                                    ? "bg-blue-500 hover:bg-blue-600 text-white"
-                                                    : "text-blue-600 hover:text-blue-700 border-blue-200 hover:bg-blue-50 dark:border-blue-800 dark:hover:bg-blue-900/30",
-                                                )}
-                                              >
-                                                Active
-                                              </Button>
-                                              <Button
-                                                size="sm"
-                                                variant={course.status === "passed" ? "default" : "outline"}
-                                                onClick={() => handleStatusChange(course.id, "passed")}
-                                                className={cn(
-                                                  "px-2 py-1 text-xs",
-                                                  course.status === "passed"
-                                                    ? "bg-green-500 hover:bg-green-600 text-white"
-                                                    : "text-green-600 hover:text-green-700 border-green-200 hover:bg-green-50 dark:border-green-800 dark:hover:bg-green-900/30",
-                                                )}
-                                              >
-                                                Passed
-                                              </Button>
-                                            </div>
-                                          </CardFooter>
-                                        </Card>
-                                      )
-                                    })}
-                                  </div>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors bg-transparent"
+                                    onClick={() => markTermAsPassed(yearNum, term)}
+                                  >
+                                    {areAllTermCoursesPassed(yearNum, term)
+                                      ? "Unmark All"
+                                      : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.term === term && c.status !== "passed").length})`}
+                                  </Button>
                                 </div>
-                              )
-                            })}
-                          </CollapsibleContent>
-                        </Collapsible>
-                      )
-                    })
-                ) : (
-                  <p className="text-center text-gray-500 dark:text-gray-400 mt-10 p-8 bg-white dark:bg-gray-800 rounded-lg shadow-md">
-                    No courses match the current filters.
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden">
+
+                                <div className="mb-4">
+                                  <Progress
+                                    value={termProgress.percentage}
+                                    className="h-1 bg-gray-200 dark:bg-gray-700 overflow-hidden rounded-full"
+                                    style={{ backgroundImage: "none" }}
+                                  >
+                                    <div
+                                      className="h-full rounded-full transition-all"
+                                      style={{
+                                        width: `${termProgress.percentage}%`,
+                                        background: "linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)",
+                                      }}
+                                    />
+                                  </Progress>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                  {termCourses.map((course: Course) => {
+                                    const prereqCourses = course.prerequisites
+                                      .map((id: string) => findCourseById(id))
+                                      .filter((c: Course | undefined): c is Course => c !== undefined)
+
+                                    const dependentCourses = dependentCoursesMap.get(course.id) || []
+                                    const MAX_DEPENDENTS_SHOWN = 2
+                                    const isExpanded = expandedCourseId === course.id
+
+                                    return (
+                                      <Card
+                                        key={course.id}
+                                        className={cn(
+                                          "flex flex-col justify-between shadow-sm hover:shadow-md transition-shadow duration-200 border dark:border-gray-700",
+                                          course.status === "passed" && "border-l-4 border-l-green-500",
+                                          course.status === "active" && "border-l-4 border-l-blue-500",
+                                          course.status === "pending" && "border-l-4 border-l-yellow-500",
+                                        )}
+                                        style={{ transition: "all 0.3s ease" }}
+                                      >
+                                        <CardHeader className="pb-3">
+                                          <div className="flex justify-between items-start gap-2">
+                                            <CardTitle className="text-base font-semibold">
+                                              {course.code} - {course.name}
+                                            </CardTitle>
+                                            <span className="text-xs font-medium text-muted-foreground whitespace-nowrap flex-shrink-0 pt-1">
+                                              {course.credits} Credit{course.credits !== 1 ? "s" : ""}
+                                            </span>
+                                          </div>
+                                        </CardHeader>
+
+                                        <CardContent className={cn("text-sm space-y-3 pb-3 flex-grow overflow-hidden", isExpanded && "overflow-visible")}
+                                        >
+                                          {prereqCourses.length > 0 && (
+                                            <div>
+                                              <span className="text-xs font-medium">Prerequisites: </span>
+                                              <div className="flex flex-wrap gap-1 mt-1">
+                                                {prereqCourses.map((prereq) => (
+                                                  <Badge
+                                                    key={prereq.id}
+                                                    variant="outline"
+                                                    className={cn(
+                                                      "text-xs px-1.5 py-0.5",
+                                                      prereq.status === "passed" &&
+                                                        "bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-700 dark:text-green-400",
+                                                      prereq.status === "active" &&
+                                                        "bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-400",
+                                                      prereq.status === "pending" &&
+                                                        "bg-yellow-50 border-yellow-200 dark:bg-yellow-950/30 dark:border-yellow-700 dark:text-yellow-400",
+                                                    )}
+                                                  >
+                                                    {prereq.code}
+                                                    {getStatusIcon(prereq.status)}
+                                                  </Badge>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          )}
+
+                                          {dependentCourses.length > 0 && (
+                                            <div className="relative overflow-hidden">
+                                              <span className="text-xs font-medium">Required for: </span>
+                                              <div className="flex flex-wrap gap-1 mt-1">
+                                                <AnimatePresence>
+                                                  {dependentCourses
+                                                    .slice(0, isExpanded ? dependentCourses.length : MAX_DEPENDENTS_SHOWN)
+                                                    .map((dep, index) => (
+                                                      <motion.div
+                                                        key={dep.id}
+                                                        initial={{ opacity: 0, y: -10 }}
+                                                        animate={{ opacity: 1, y: 0 }}
+                                                        exit={{ opacity: 0, y: 10 }}
+                                                        transition={{ duration: 0.2, delay: index * 0.05 }}
+                                                      >
+                                                        <Badge variant="secondary" className="text-xs px-1.5 py-0.5 whitespace-nowrap">
+                                                          {dep.code}
+                                                          {index <
+                                                            (isExpanded ? dependentCourses.length : MAX_DEPENDENTS_SHOWN) - 1 &&
+                                                            index < dependentCourses.length - 1
+                                                            ? ","
+                                                            : ""}
+                                                        </Badge>
+                                                      </motion.div>
+                                                    ))}
+                                                </AnimatePresence>
+                                              </div>
+                                              {!isExpanded && dependentCourses.length > MAX_DEPENDENTS_SHOWN && (
+                                                <Button
+                                                  variant="link"
+                                                  size="sm"
+                                                  className="text-xs p-0 mt-1"
+                                                  onClick={() => toggleCourseExpansion(course.id)}
+                                                >
+                                                  ...see all {dependentCourses.length}
+                                                </Button>
+                                              )}
+                                              {isExpanded && (
+                                                <Button
+                                                  variant="link"
+                                                  size="sm"
+                                                  className="text-xs p-0 mt-1"
+                                                  onClick={() => toggleCourseExpansion(course.id)}
+                                                >
+                                                  Show less
+                                                </Button>
+                                              )}
+                                            </div>
+                                          )}
+
+                                          {prereqCourses.length === 0 && dependentCourses.length === 0 && <div className="flex-grow"></div>}
+                                        </CardContent>
+
+                                        <CardFooter className="flex justify-between items-center text-xs text-muted-foreground pt-2 border-t dark:border-gray-700 mt-auto">
+                                          <span>
+                                            Year {course.year} - {course.term}
+                                          </span>
+                                          <div className="flex gap-1">
+                                            <Button
+                                              size="sm"
+                                              variant={course.status === "pending" ? "default" : "outline"}
+                                              onClick={() => handleStatusChange(course.id, "pending")}
+                                              className={cn(
+                                                "px-2 py-1 text-xs",
+                                                course.status === "pending"
+                                                  ? "bg-yellow-500 hover:bg-yellow-600 text-white"
+                                                  : "text-yellow-600 hover:text-yellow-700 border-yellow-200 hover:bg-yellow-50 dark:border-yellow-800 dark:hover:bg-yellow-900/30",
+                                              )}
+                                            >
+                                              Pending
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant={course.status === "active" ? "default" : "outline"}
+                                              onClick={() => handleStatusChange(course.id, "active")}
+                                              className={cn(
+                                                "px-2 py-1 text-xs",
+                                                course.status === "active"
+                                                  ? "bg-blue-500 hover:bg-blue-600 text-white"
+                                                  : "text-blue-600 hover:text-blue-700 border-blue-200 hover:bg-blue-50 dark:border-blue-800 dark:hover:bg-blue-900/30",
+                                              )}
+                                            >
+                                              Active
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant={course.status === "passed" ? "default" : "outline"}
+                                              onClick={() => handleStatusChange(course.id, "passed")}
+                                              className={cn(
+                                                "px-2 py-1 text-xs",
+                                                course.status === "passed"
+                                                  ? "bg-green-500 hover:bg-green-600 text-white"
+                                                  : "text-green-600 hover:text-green-700 border-green-200 hover:bg-green-50 dark:border-green-800 dark:hover:bg-green-900/30",
+                                              )}
+                                            >
+                                              Passed
+                                            </Button>
+                                          </div>
+                                        </CardFooter>
+                                      </Card>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )
+                  })
+              ) : (
+                <p className="text-center text-gray-500 dark:text-gray-400 mt-10 p-8 bg-white dark:bg-gray-800 rounded-lg shadow-md">
+                  No courses match the current filters.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden">
+              {Object.keys(groupedFilteredCourses).length > 0 ? (
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                     <thead className="bg-gray-50 dark:bg-gray-700">
                       <tr>
-                        <th
-                          scope="col"
-                          className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                        >
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                           Code
                         </th>
-                        <th
-                          scope="col"
-                          className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                        >
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                           Course Title
                         </th>
-                        <th
-                          scope="col"
-                          className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                        >
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                           Units
                         </th>
-                        <th
-                          scope="col"
-                          className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                        >
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                           Prerequisites
                         </th>
-                        <th
-                          scope="col"
-                          className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                        >
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                           Status
                         </th>
                       </tr>
                     </thead>
                     <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                      {filteredCourses.length > 0 ? (
-                        filteredCourses.map((course) => {
-                          const prereqCourses = course.prerequisites
-                            .map((id) => findCourseById(id))
-                            .filter((c): c is Course => c !== undefined)
+                      {Object.entries(groupedFilteredCourses)
+                        .sort(([yearA], [yearB]) => Number.parseInt(yearA) - Number.parseInt(yearB))
+                        .map(([year, terms]: [string, { [term: string]: Course[] }]) => {
+                          const yearNum = Number.parseInt(year, 10)
+                          const academicYear = academicYears[yearNum - 1]
+                          const yearLabels = ["First Year", "Second Year", "Third Year", "Fourth Year"]
+                          const yearLabel = yearLabels[yearNum - 1] ?? `Year ${year}`
 
-                          return (
-                            <tr key={course.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{course.code}</td>
-                              <td className="px-6 py-4 text-sm">{course.name}</td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm">{course.credits}</td>
-                              <td className="px-6 py-4 text-sm">
-                                <div className="flex flex-wrap gap-1">
-                                  {prereqCourses.length > 0 ? (
-                                    prereqCourses.map((prereq) => (
-                                      <Badge
-                                        key={prereq.id}
-                                        variant="outline"
-                                        className={cn(
-                                          "text-xs px-1.5 py-0.5",
-                                          prereq.status === "passed" &&
-                                            "bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-700 dark:text-green-400",
-                                          prereq.status === "active" &&
-                                            "bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-400",
-                                          prereq.status === "pending" &&
-                                            "bg-yellow-50 border-yellow-200 dark:bg-yellow-950/30 dark:border-yellow-700 dark:text-yellow-400",
-                                        )}
-                                      >
-                                        {prereq.code}
-                                        {getStatusIcon(prereq.status)}
-                                      </Badge>
-                                    ))
-                                  ) : (
-                                    <span className="text-gray-400 dark:text-gray-500">None</span>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                <div className="flex gap-1">
-                                  <Button
-                                    size="sm"
-                                    variant={course.status === "pending" ? "default" : "outline"}
-                                    onClick={() => handleStatusChange(course.id, "pending")}
-                                    className={cn(
-                                      "px-2 py-1 text-xs",
-                                      course.status === "pending"
-                                        ? "bg-yellow-500 hover:bg-yellow-600 text-white"
-                                        : "text-yellow-600 hover:text-yellow-700 border-yellow-200 hover:bg-yellow-50 dark:border-yellow-800 dark:hover:bg-yellow-900/30",
-                                    )}
-                                  >
-                                    Pending
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant={course.status === "active" ? "default" : "outline"}
-                                    onClick={() => handleStatusChange(course.id, "active")}
-                                    className={cn(
-                                      "px-2 py-1 text-xs",
-                                      course.status === "active"
-                                        ? "bg-blue-500 hover:bg-blue-600 text-white"
-                                        : "text-blue-600 hover:text-blue-700 border-blue-200 hover:bg-blue-50 dark:border-blue-800 dark:hover:bg-blue-900/30",
-                                    )}
-                                  >
-                                    Active
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant={course.status === "passed" ? "default" : "outline"}
-                                    onClick={() => handleStatusChange(course.id, "passed")}
-                                    className={cn(
-                                      "px-2 py-1 text-xs",
-                                      course.status === "passed"
-                                        ? "bg-green-500 hover:bg-green-600 text-white"
-                                        : "text-green-600 hover:text-green-700 border-green-200 hover:bg-green-50 dark:border-green-800 dark:hover:bg-green-900/30",
-                                    )}
-                                  >
-                                    Passed
-                                  </Button>
-                                </div>
-                              </td>
-                            </tr>
-                          )
-                        })
-                      ) : (
-                        <tr>
-                          <td colSpan={5} className="px-6 py-4 text-center text-gray-500 dark:text-gray-400">
-                            No courses match the current filters.
-                          </td>
-                        </tr>
-                      )}
+                          return Object.entries(terms).map(([term, termCourses]) => {
+                            const academicYearStr = academicYear
+                              ? term === "Term 1"
+                                ? academicYear.term1
+                                : term === "Term 2"
+                                  ? academicYear.term2
+                                  : academicYear.term3
+                              : ""
+                            const showYearLabel = term === "Term 1"
+
+                            return (
+                              <React.Fragment key={`${year}-${term}`}>
+                                <tr className="bg-gray-100 dark:bg-gray-700">
+                                  <td colSpan={5} className="px-6 py-2 text-sm font-medium">
+                                    {showYearLabel && <div className="font-bold mb-1">{yearLabel}</div>}
+                                    <div>
+                                      {term}
+                                      {academicYearStr ? ` • S.Y. ${academicYearStr}` : ""}
+                                    </div>
+                                  </td>
+                                </tr>
+                                {termCourses.map((course: Course) => {
+                                  const prereqCourses = course.prerequisites
+                                    .map((id) => findCourseById(id))
+                                    .filter((c): c is Course => c !== undefined)
+
+                                  return (
+                                    <tr key={course.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+                                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{course.code}</td>
+                                      <td className="px-6 py-4 text-sm">{course.name}</td>
+                                      <td className="px-6 py-4 whitespace-nowrap text-sm">{course.credits}</td>
+                                      <td className="px-6 py-4 text-sm">
+                                        <div className="flex flex-wrap gap-1">
+                                          {prereqCourses.length > 0 ? (
+                                            prereqCourses.map((prereq) => (
+                                              <Badge
+                                                key={prereq.id}
+                                                variant="outline"
+                                                className={cn(
+                                                  "text-xs px-1.5 py-0.5",
+                                                  prereq.status === "passed" &&
+                                                    "bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-700 dark:text-green-400",
+                                                  prereq.status === "active" &&
+                                                    "bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-400",
+                                                  prereq.status === "pending" &&
+                                                    "bg-yellow-50 border-yellow-200 dark:bg-yellow-950/30 dark:border-yellow-700 dark:text-yellow-400",
+                                                )}
+                                              >
+                                                {prereq.code}
+                                                {getStatusIcon(prereq.status)}
+                                              </Badge>
+                                            ))
+                                          ) : (
+                                            <span className="text-gray-400 dark:text-gray-500">None</span>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                        <div className="flex gap-1">
+                                          <Button
+                                            size="sm"
+                                            variant={course.status === "pending" ? "default" : "outline"}
+                                            onClick={() => handleStatusChange(course.id, "pending")}
+                                            className={cn(
+                                              "px-2 py-1 text-xs",
+                                              course.status === "pending"
+                                                ? "bg-yellow-500 hover:bg-yellow-600 text-white"
+                                                : "text-yellow-600 hover:text-yellow-700 border-yellow-200 hover:bg-yellow-50 dark:border-yellow-800 dark:hover:bg-yellow-900/30",
+                                            )}
+                                          >
+                                            Pending
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant={course.status === "active" ? "default" : "outline"}
+                                            onClick={() => handleStatusChange(course.id, "active")}
+                                            className={cn(
+                                              "px-2 py-1 text-xs",
+                                              course.status === "active"
+                                                ? "bg-blue-500 hover:bg-blue-600 text-white"
+                                                : "text-blue-600 hover:text-blue-700 border-blue-200 hover:bg-blue-50 dark:border-blue-800 dark:hover:bg-blue-900/30",
+                                            )}
+                                          >
+                                            Active
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant={course.status === "passed" ? "default" : "outline"}
+                                            onClick={() => handleStatusChange(course.id, "passed")}
+                                            className={cn(
+                                              "px-2 py-1 text-xs",
+                                              course.status === "passed"
+                                                ? "bg-green-500 hover:bg-green-600 text-white"
+                                                : "text-green-600 hover:text-green-700 border-green-200 hover:bg-green-50 dark:border-green-800 dark:hover:bg-green-900/30",
+                                            )}
+                                          >
+                                            Passed
+                                          </Button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
+                              </React.Fragment>
+                            )
+                          })
+                        })}
                     </tbody>
                   </table>
                 </div>
-              </div>
-            )}
-          </TabsContent>
-
-          <TabsContent value="table-view">
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                  <thead className="bg-gray-50 dark:bg-gray-700">
-                    <tr>
-                      <th
-                        scope="col"
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      >
-                        Course
-                      </th>
-                      <th
-                        scope="col"
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      >
-                        Course
-                      </th>
-                      <th
-                        scope="col"
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      >
-                        Course Title
-                      </th>
-                      <th
-                        scope="col"
-                        className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      >
-                        Units
-                      </th>
-                      <th
-                        scope="col"
-                        className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      >
-                        Laboratory
-                      </th>
-                      <th
-                        scope="col"
-                        className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      >
-                        Units
-                      </th>
-                      <th
-                        scope="col"
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      >
-                        Prerequisite
-                      </th>
-                      <th
-                        scope="col"
-                        className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
-                      >
-                        Status
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                    {Object.entries(groupCourses(courses))
-                      .sort(([yearA], [yearB]) => Number.parseInt(yearA) - Number.parseInt(yearB))
-                      .map(([year, terms]: [string, { [term: string]: Course[] }]) => {
-                        const yearNum = Number.parseInt(year, 10)
-                        const academicYear = academicYears[yearNum - 1]
-
-                        return Object.entries(terms).map(([term, termCourses]) => {
-                          const termStr = term === "Term 1" ? "Term : 1" : term === "Term 2" ? "Term : 2" : "Term : 3"
-                          const academicYearStr = academicYear
-                            ? term === "Term 1"
-                              ? academicYear.term1
-                              : term === "Term 2"
-                                ? academicYear.term2
-                                : academicYear.term3
-                            : ""
-
-                          return (
-                            <React.Fragment key={`${year}-${term}`}>
-                              <tr className="bg-gray-100 dark:bg-gray-700">
-                                <td colSpan={7} className="px-6 py-2 text-sm font-medium">
-                                  {yearNum === 1 && term === "Term 1" && (
-                                    <div className="font-bold mb-1">First Year</div>
-                                  )}
-                                  {yearNum === 2 && term === "Term 1" && (
-                                    <div className="font-bold mb-1">Second Year</div>
-                                  )}
-                                  {yearNum === 3 && term === "Term 1" && (
-                                    <div className="font-bold mb-1">Third Year</div>
-                                  )}
-                                  {yearNum === 4 && term === "Term 1" && (
-                                    <div className="font-bold mb-1">Fourth Year</div>
-                                  )}
-                                  {termStr} S.Y : {academicYearStr}
-                                </td>
-                              </tr>
-                              {termCourses.map((course: Course) => {
-                                const prereqCourses = course.prerequisites
-                                  .map((id: string) => findCourseById(id))
-                                  .filter((c: Course | undefined): c is Course => c !== undefined)
-
-                                // Check if this is a lab course
-                                const isLabCourse = course.code.endsWith("L")
-                                const mainCourseCode = isLabCourse ? course.code.slice(0, -1) : null
-                                const mainCourse = mainCourseCode
-                                  ? courses.find((c) => c.code === mainCourseCode)
-                                  : null
-
-                                return (
-                                  <tr key={course.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                                    <td className="px-6 py-3 whitespace-nowrap text-sm font-medium">{course.code}</td>
-                                    <td className="px-6 py-3 text-sm">{course.name}</td>
-                                    <td className="px-6 py-3 text-center text-sm">
-                                      {!isLabCourse ? course.credits : ""}
-                                    </td>
-                                    <td className="px-6 py-3 text-center text-sm">{isLabCourse ? course.code : ""}</td>
-                                    <td className="px-6 py-3 text-center text-sm">
-                                      {isLabCourse ? course.credits : ""}
-                                    </td>
-                                    <td className="px-6 py-3 text-sm">
-                                      <div className="flex flex-wrap gap-1">
-                                        {prereqCourses.length > 0 ? (
-                                          prereqCourses.map((prereq) => (
-                                            <Badge
-                                              key={prereq.id}
-                                              variant="outline"
-                                              className={cn(
-                                                "text-xs px-1.5 py-0.5",
-                                                prereq.status === "passed" &&
-                                                  "bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-700 dark:text-green-400",
-                                                prereq.status === "active" &&
-                                                  "bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-400",
-                                                prereq.status === "pending" &&
-                                                  "bg-yellow-50 border-yellow-200 dark:bg-yellow-950/30 dark:border-yellow-700 dark:text-yellow-400",
-                                              )}
-                                            >
-                                              {prereq.code}
-                                            </Badge>
-                                          ))
-                                        ) : (
-                                          <span className="text-gray-400 dark:text-gray-500">None</span>
-                                        )}
-                                      </div>
-                                    </td>
-                                    <td className="px-6 py-3 text-center">
-                                      <select
-                                        value={course.status}
-                                        onChange={(e) => handleStatusChange(course.id, e.target.value as CourseStatus)}
-                                        className={cn(
-                                          "text-sm rounded-md border px-2 py-1",
-                                          course.status === "passed" &&
-                                            "bg-green-100 text-green-800 border-green-300 dark:bg-green-900/30 dark:text-green-400 dark:border-green-700",
-                                          course.status === "active" &&
-                                            "bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-700",
-                                          course.status === "pending" &&
-                                            "bg-yellow-100 text-yellow-800 border-yellow-300 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-700",
-                                        )}
-                                      >
-                                        <option value="pending">PENDING</option>
-                                        <option value="active">ACTIVE</option>
-                                        <option value="passed">PASSED</option>
-                                      </select>
-                                    </td>
-                                  </tr>
-                                )
-                              })}
-                            </React.Fragment>
-                          )
-                        })
-                      })}
-                  </tbody>
-                </table>
-              </div>
+              ) : (
+                <div className="p-8 text-center text-gray-500 dark:text-gray-400">No courses match the current filters.</div>
+              )}
             </div>
-          </TabsContent>
-        </Tabs>
+          )}
+        </div>
 
         {/* Navigation Buttons (Bottom) */}
         <div className="mt-10 mb-6">
-          <QuickNavigation />
+          <QuickNavigation showBackToTop />
         </div>
 
         {/* Footer */}

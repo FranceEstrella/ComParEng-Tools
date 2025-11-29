@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react"
+import Image from "next/image"
 import { useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
@@ -19,18 +20,22 @@ import {
   Calendar,
   CalendarDays,
   Download,
-  HelpCircle,
+  GraduationCap,
+  Laptop,
+  MessageSquare,
   Moon,
   Palette,
   PartyPopper,
   PlugZap,
   RefreshCw,
+  Repeat2,
   Rocket,
+  Share2,
+  ShieldCheck,
   Sparkles,
   Sun,
   Target,
   Upload,
-  GraduationCap,
 } from "lucide-react"
 
 type OnboardingCompletionOptions = {
@@ -116,9 +121,9 @@ const slides: Slide[] = [
   {
     id: "live-data",
     label: "Live Data",
-    title: "Fresh data with safety nets",
-    description: "Uploads expire automatically, signatures prevent mix-ups, and you can re-import anytime for cleaner schedules. Everything stays on your device—no cloud uploads.",
-    icon: <RefreshCw className="h-10 w-10 text-cyan-600 animate-spin" />,
+    title: "What every student should know",
+    description: "Your imports stay private, power every tool, and are easy to share or refresh when plans change.",
+    icon: <ShieldCheck className="h-10 w-10 text-emerald-600 animate-pulse" />,
   },
   {
     id: "theme",
@@ -132,7 +137,16 @@ const slides: Slide[] = [
     label: "You",
     title: "Are you a Computer Engineering student?",
     description: "We deliver CpE defaults out of the box, but other programs can still import their curricula.",
-    icon: <HelpCircle className="h-10 w-10 text-slate-600 animate-pulse" />,
+    icon: (
+      <Image
+        src="/android-icon-192x192.png"
+        alt="ComParEng Tools logo"
+        width={48}
+        height={48}
+        className="h-10 w-10 rounded-full animate-bounce"
+        priority
+      />
+    ),
   },
   {
     id: "wrap-up",
@@ -145,6 +159,17 @@ const slides: Slide[] = [
 
 const lightPreview = "bg-white text-slate-900 border-slate-200 shadow-sm"
 const darkPreview = "bg-slate-900 text-white border-white/10"
+
+const ToolPill = ({ label, className }: { label: string; className?: string }) => (
+  <span
+    className={cn(
+      "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide",
+      className
+    )}
+  >
+    {label}
+  </span>
+)
 
 export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCompletedOnce }: OnboardingDialogProps) {
   const { setTheme: setGlobalTheme } = useTheme()
@@ -400,24 +425,51 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         return (
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
-              {["Auto-expiring uploads", "Curriculum signatures", "Manual refresh"].map((item, idx) => (
-                <Card key={item}>
-                  <CardHeader className="pb-2">
+              {[
+                {
+                  title: "Private by design",
+                  body: "Curriculum files, section uploads, and planner tweaks never leave your browser—no passwords or grades hit another server.",
+                  icon: <ShieldCheck className="h-4 w-4 text-emerald-600" />,
+                },
+                {
+                  title: "One import powers all tools",
+                  body: "Upload once and Course Tracker, Schedule Maker, and Academic Planner stay in sync without retyping anything.",
+                  icon: <Repeat2 className="h-4 w-4 text-blue-600" />,
+                },
+                {
+                  title: "Secure source data",
+                  body: "Sections come from SOLAR after you sign in with Microsoft 2FA, so only authenticated students can pull the latest offerings.",
+                  icon: <ShieldCheck className="h-4 w-4 text-cyan-600" />,
+                },
+                {
+                  title: "Hop between devices",
+                  body: "Need to plan on a lab PC? Re-import the same HTML or extension payload and you're caught up in seconds.",
+                  icon: <Laptop className="h-4 w-4 text-purple-600" />,
+                },
+                {
+                  title: "Share with blockmates",
+                  body: "Export CSV/JSON/ICS so friends can compare schedules, avoid conflicts, or merge plans for petitions.",
+                  icon: <Share2 className="h-4 w-4 text-amber-600" />,
+                },
+                {
+                  title: "Always in the loop",
+                  body: "Patch Notes list every change and the Send Feedback button reaches the maintainer when something breaks.",
+                  icon: <MessageSquare className="h-4 w-4 text-rose-600" />,
+                },
+              ].map((item) => (
+                <Card key={item.title}>
+                  <CardHeader className="pb-1">
                     <CardTitle className="text-base flex items-center gap-2">
-                      <Sparkles className="h-4 w-4 text-amber-500" />
-                      {item}
+                      {item.icon}
+                      {item.title}
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="text-sm text-muted-foreground">
-                    {idx === 0 && "Old section data clears out after a short time so you never plan around stale slots."}
-                    {idx === 1 && "We tag every upload with a fingerprint and clear conflicting plans when you switch curricula."}
-                    {idx === 2 && "Need instant updates? Press Refresh inside Schedule Maker and we'll fetch the latest payload."}
-                  </CardContent>
+                  <CardContent className="text-sm text-muted-foreground">{item.body}</CardContent>
                 </Card>
               ))}
             </div>
             <p className="text-xs text-muted-foreground">
-              Privacy note: nothing you import is uploaded to our servers. Section payloads and planner data stay inside your browser's local storage.
+              Everything lives locally, so refreshing uploads or re-importing files is the fastest way to recover or move between machines.
             </p>
           </div>
         )
@@ -546,13 +598,60 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       case "wrap-up":
         return (
           <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Start with Course Tracker so your statuses and curriculum are ready. Once your courses look right, jump over to Schedule Maker and Academic Planner from inside the tool.
-            </p>
+            <div>
+              <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">What's Next?</h3>
+              <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
+                <li>
+                  <ToolPill
+                    label="Course Tracker"
+                    className="bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-100"
+                  />
+                  <span className="ml-2">
+                    Mark every passed or active course so prerequisites stay accurate.
+                  </span>
+                </li>
+                <li>
+                  <ToolPill
+                    label="Schedule Maker"
+                    className="bg-purple-100 text-purple-800 dark:bg-purple-500/20 dark:text-purple-100"
+                  />
+                  <span className="ml-2">
+                    In Available Courses, add the subjects you plan to take while comparing sections.
+                  </span>
+                </li>
+                <li>
+                  <ToolPill
+                    label="Schedule Maker"
+                    className="bg-purple-100 text-purple-800 dark:bg-purple-500/20 dark:text-purple-100"
+                  />
+                  <span className="ml-2">
+                    Switch to Selected Courses to fine-tune names, rooms, and notes for the timetable and exported .ics file.
+                  </span>
+                </li>
+                <li>
+                  <ToolPill
+                    label="Schedule Maker"
+                    className="bg-purple-100 text-purple-800 dark:bg-purple-500/20 dark:text-purple-100"
+                  />
+                  <span className="ml-2">
+                    Set the Schedule View start date to the first day of class you will attend (match the weekday of your earliest session).
+                  </span>
+                </li>
+                <li>
+                  <ToolPill
+                    label="Academic Planner"
+                    className="bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-100"
+                  />
+                  <span className="ml-2">
+                    Map future terms, verify the suggested load, and adjust it to hit your earliest graduation date.
+                  </span>
+                </li>
+              </ol>
+            </div>
             <div className="grid gap-3 sm:grid-cols-1">
               <Button variant="outline" className="justify-center gap-2" onClick={handleOpenCourseTracker}>
                 <BookOpenCheck className="h-4 w-4" />
-                Open Course Tracker
+                Jump to Course Tracker
               </Button>
             </div>
           </div>
