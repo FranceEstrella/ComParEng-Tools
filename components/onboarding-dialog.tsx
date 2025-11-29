@@ -757,7 +757,8 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
               </Button>
             )}
           </div>
-          <div className="px-6 pb-4 pt-5">
+          {/* Scrollable slide content */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-4 pt-5">
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide">
                 <span className={slideAccentClasses[activeSlide.id] ?? "text-emerald-600 dark:text-emerald-300"}>{activeSlide.label}</span>
