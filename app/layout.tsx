@@ -5,6 +5,7 @@ import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import InstallBanner from "@/components/install-banner"
 import ServiceWorkerRegister from "@/components/service-worker-register"
+import ReportIssueButton from "@/components/report-issue-button"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -77,6 +78,7 @@ export default function RootLayout({
           <InstallBanner />
           <ServiceWorkerRegister />
           {children}
+          <ReportIssueButton />
         </ThemeProvider>
       </body>
     </html>

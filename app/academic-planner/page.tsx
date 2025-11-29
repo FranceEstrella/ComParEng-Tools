@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -38,7 +38,7 @@ import { useTheme } from "next-themes"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { initialCourses } from "@/lib/course-data"
-import { loadCourseStatuses } from "@/lib/course-storage"
+import { loadCourseStatuses, loadTrackerPreferences, TRACKER_PREFERENCES_KEY } from "@/lib/course-storage"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -121,6 +121,9 @@ interface ConflictInfo {
   message: string
   affectedCourses: string[]
 }
+
+const PERIOD_CONFIRM_PREFIX = "planner.period.confirmed"
+const PERIOD_REGULAR_PREFIX = "planner.period.regular"
 
 // Import data interface
 interface ImportedPlanData {
@@ -234,6 +237,10 @@ export default function AcademicPlanner() {
   // Course priorities and locked placements (persisted)
   const [coursePriorities, setCoursePriorities] = useState<Record<string, keyof typeof PRIORITY_WEIGHTS>>({})
   const [lockedPlacements, setLockedPlacements] = useState<Record<string, { year: number; term: string }>>({})
+  const [periodDialogOpen, setPeriodDialogOpen] = useState(false)
+  const [periodDialogKey, setPeriodDialogKey] = useState<string | null>(null)
+  const [regularPeriodDialogOpen, setRegularPeriodDialogOpen] = useState(false)
+  const [regularPeriodInfo, setRegularPeriodInfo] = useState<{ year: number; term: string; courses: Course[] } | null>(null)
 
   // Load persisted settings
   useEffect(() => {
@@ -350,6 +357,65 @@ export default function AcademicPlanner() {
     loadData()
   }, [])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const applyTrackerPreferences = () => {
+      const prefs = loadTrackerPreferences()
+      if (!prefs) return
+
+      let resolvedStartYear: number | null = null
+      if (
+        typeof prefs.startYear === "number" &&
+        Number.isFinite(prefs.startYear) &&
+        prefs.startYear >= 2000 &&
+        prefs.startYear <= 2100
+      ) {
+        resolvedStartYear = Math.floor(prefs.startYear)
+        setStartYear(resolvedStartYear)
+        try {
+          window.localStorage.setItem("startYear", resolvedStartYear.toString())
+        } catch {}
+      }
+
+      let baseStartYear = resolvedStartYear
+      if (baseStartYear === null) {
+        const storedYear = Number.parseInt(window.localStorage.getItem("startYear") || "", 10)
+        if (!Number.isNaN(storedYear)) {
+          baseStartYear = storedYear
+        }
+      }
+
+      if (
+        typeof prefs.currentYearLevel === "number" &&
+        Number.isFinite(prefs.currentYearLevel) &&
+        prefs.currentYearLevel >= 1 &&
+        baseStartYear !== null
+      ) {
+        const sanitizedLevel = Math.max(1, Math.floor(prefs.currentYearLevel))
+        setCurrentYear(baseStartYear + sanitizedLevel - 1)
+      }
+
+      if (typeof prefs.currentTerm === "string") {
+        const validTerms = ["Term 1", "Term 2", "Term 3"]
+        if (validTerms.includes(prefs.currentTerm)) {
+          setCurrentTerm(prefs.currentTerm)
+        }
+      }
+    }
+
+    applyTrackerPreferences()
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === TRACKER_PREFERENCES_KEY) {
+        applyTrackerPreferences()
+      }
+    }
+
+    window.addEventListener("storage", handleStorage)
+    return () => window.removeEventListener("storage", handleStorage)
+  }, [])
+
   // Generate graduation plan when courses or available sections change
   useEffect(() => {
     if (!loading) {
@@ -367,6 +433,87 @@ export default function AcademicPlanner() {
   useEffect(() => {
     detectConflicts()
   }, [graduationPlan])
+
+  const activeCourses = useMemo(() => courses.filter((course) => course.status === "active"), [courses])
+  const activeCourseHash = useMemo(() => JSON.stringify(activeCourses.map((course) => course.id).sort()), [activeCourses])
+
+  const currentTermPlanCourses = useMemo(() => {
+    const semester = graduationPlan.find((plan) => plan.year === currentYear && plan.term === currentTerm)
+    if (semester) return semester.courses
+
+    const curriculumYear = currentYear - startYear + 1
+    return courses.filter((course) => {
+      if (!Number.isFinite(course.year)) return false
+      const courseCalendarYear = startYear + (course.year - 1)
+      return courseCalendarYear === currentYear && course.term === currentTerm
+    })
+  }, [graduationPlan, currentYear, currentTerm, courses, startYear])
+
+  const currentTermPlanUnits = useMemo(
+    () => currentTermPlanCourses.reduce((total, course) => total + (Number(course.credits) || 0), 0),
+    [currentTermPlanCourses],
+  )
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const key = `${currentYear}-${currentTerm}`
+    setPeriodDialogKey(key)
+    const hashKey = `${PERIOD_CONFIRM_PREFIX}:${key}:hash`
+    const previousHash = window.sessionStorage.getItem(hashKey)
+    if (!previousHash || previousHash !== activeCourseHash) {
+      window.sessionStorage.removeItem(`${PERIOD_CONFIRM_PREFIX}:${key}`)
+      window.sessionStorage.setItem(hashKey, activeCourseHash)
+    }
+    const confirmed = window.sessionStorage.getItem(`${PERIOD_CONFIRM_PREFIX}:${key}`) === "true"
+    if (!confirmed) {
+      setPeriodDialogOpen(true)
+    }
+  }, [currentYear, currentTerm, activeCourseHash])
+
+  const confirmPeriodDialog = () => {
+    let nextRegularInfo: { year: number; term: string; courses: Course[] } | null = null
+    if (typeof window !== "undefined") {
+      if (periodDialogKey) {
+        try {
+          window.sessionStorage.setItem(`${PERIOD_CONFIRM_PREFIX}:${periodDialogKey}`, "true")
+          window.sessionStorage.setItem(`${PERIOD_CONFIRM_PREFIX}:${periodDialogKey}:hash`, activeCourseHash)
+        } catch {
+          // ignore write errors
+        }
+      }
+
+      nextRegularInfo = (() => {
+        if (!currentTermPlanCourses.length) return null
+        const curriculumYear = currentYear - startYear + 1
+        if (!Number.isFinite(curriculumYear) || curriculumYear < 1) return null
+        const curriculumCourses = (initialCourses as unknown as Course[]).filter(
+          (course) => course.year === curriculumYear && course.term === currentTerm,
+        )
+        if (!curriculumCourses.length) return null
+        if (curriculumCourses.length !== currentTermPlanCourses.length) return null
+        const planIds = new Set(currentTermPlanCourses.map((course) => course.id))
+        const allMatch = curriculumCourses.every((course) => planIds.has(course.id))
+        return allMatch ? { year: currentYear, term: currentTerm, courses: curriculumCourses as Course[] } : null
+      })()
+
+      if (nextRegularInfo) {
+        const matchKey = `${nextRegularInfo.year}-${nextRegularInfo.term}`
+        const storageKey = `${PERIOD_REGULAR_PREFIX}:${matchKey}`
+        const alreadyShown = window.sessionStorage.getItem(storageKey) === "true"
+        if (!alreadyShown) {
+          try {
+            window.sessionStorage.setItem(storageKey, "true")
+          } catch {
+            // ignore write errors
+          }
+          setRegularPeriodInfo(nextRegularInfo)
+          setRegularPeriodDialogOpen(true)
+        }
+      }
+    }
+
+    setPeriodDialogOpen(false)
+  }
 
   // Auto-detect "regular student" semesters: if a generated semester contains all
   // curriculum courses for its curriculum year+term, show a one-time popup notice
@@ -2789,6 +2936,15 @@ export default function AcademicPlanner() {
             <div className="flex items-center gap-2 self-start md:self-auto">
               <Button
                 variant="outline"
+                size="sm"
+                onClick={() => setPeriodDialogOpen(true)}
+                disabled={periodDialogOpen}
+                className="px-4"
+              >
+                Review Period
+              </Button>
+              <Button
+                variant="outline"
                 size="icon"
                 onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
                 aria-label="Toggle theme"
@@ -2808,6 +2964,142 @@ export default function AcademicPlanner() {
           onOpenChange={setFeedbackDialogOpen}
           defaultSubject="Non-CpE curriculum import issue"
         />
+        <Dialog
+          open={periodDialogOpen}
+          onOpenChange={(nextOpen) => {
+            if (nextOpen) {
+              setPeriodDialogOpen(true)
+            } else {
+              confirmPeriodDialog()
+            }
+          }}
+        >
+          <DialogContent
+            className={cn(
+              "max-w-2xl flex flex-col gap-4",
+              isMobile
+                ? "h-[90vh] max-w-none rounded-none border-0 px-4 pb-6 pt-4"
+                : "rounded-2xl border"
+            )}
+            onInteractOutside={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>Confirm your current academic period</DialogTitle>
+              <DialogDescription>
+                We synced this planner with {formatAcademicYear(currentYear)} {currentTerm}. Double-check the courses you
+                plan to take so recommendations stay aligned.
+              </DialogDescription>
+            </DialogHeader>
+            <div className={cn("space-y-6", isMobile ? "flex-1 overflow-y-auto pr-1" : "")}>
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Marked as active</p>
+                <p className="text-xs text-muted-foreground">
+                  Pulled from Course Tracker — adjust there if something looks off.
+                </p>
+                <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-dashed border-blue-200 bg-blue-50/40 p-3 text-sm dark:border-blue-900 dark:bg-blue-900/20">
+                  {activeCourses.length > 0 ? (
+                    <ul className="space-y-1">
+                      {activeCourses.map((course) => (
+                        <li key={`active-${course.id}`} className="flex items-center justify-between gap-3">
+                          <span className="font-medium text-blue-900 dark:text-blue-100">{course.code}</span>
+                          <span className="text-muted-foreground truncate">{course.name}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-muted-foreground">No courses are currently marked as active.</p>
+                  )}
+                </div>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Planned for this term</p>
+                <p className="text-xs text-muted-foreground">
+                  {currentTermPlanCourses.length > 0
+                    ? "Based on the generated plan for this academic period."
+                    : "Once you add courses to this term, they will appear here."}
+                </p>
+                <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-200 mt-1">
+                  Total units: {currentTermPlanUnits}
+                </p>
+                <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-dashed border-emerald-200 bg-emerald-50/40 p-3 text-sm dark:border-emerald-900 dark:bg-emerald-900/20">
+                  {currentTermPlanCourses.length > 0 ? (
+                    <ul className="space-y-1">
+                      {currentTermPlanCourses.map((course) => (
+                        <li key={`term-${course.id}`} className="flex items-center justify-between gap-3">
+                          <span className="font-medium text-emerald-900 dark:text-emerald-100">{course.code}</span>
+                          <span className="text-muted-foreground truncate">
+                            {course.name} • {course.credits}u
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-muted-foreground">You have not added any courses to this term yet.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+            <DialogFooter
+              className={cn(
+                "flex flex-col gap-2 sm:flex-row sm:justify-end",
+                isMobile ? "border-t border-border/40 pt-4" : ""
+              )}
+            >
+              <Button variant="outline" className="w-full" asChild>
+                <Link href="/course-tracker">Open Course Tracker</Link>
+              </Button>
+              <Button onClick={confirmPeriodDialog}>Looks good</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={regularPeriodDialogOpen}
+          onOpenChange={(nextOpen) => {
+            setRegularPeriodDialogOpen(nextOpen)
+            if (!nextOpen) setRegularPeriodInfo(null)
+          }}
+        >
+          <DialogContent
+            className={cn(
+              "max-w-xl flex flex-col gap-4",
+              isMobile ? "h-[90vh] max-w-none rounded-none border-0 px-4 pb-6 pt-4" : "rounded-2xl border"
+            )}
+          >
+            <DialogHeader>
+              <DialogTitle>Term matches the official curriculum</DialogTitle>
+              <DialogDescription>
+                Great job! Your plan for {regularPeriodInfo ? `${formatAcademicYear(regularPeriodInfo.year)} ${regularPeriodInfo.term}` : "this term"}
+                includes every subject from the CpE curriculum without extras.
+              </DialogDescription>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              We will treat this term as a regular load so all validations follow the standard sequence. Adjust anything
+              below if you plan to deviate.
+            </p>
+            <div
+              className={cn(
+                "mt-2 max-h-60 overflow-y-auto rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 text-sm dark:border-emerald-900 dark:bg-emerald-900/20",
+                isMobile ? "flex-1" : ""
+              )}
+            >
+              {regularPeriodInfo ? (
+                <ul className="space-y-1">
+                  {regularPeriodInfo.courses.map((course) => (
+                    <li key={`regular-${course.id}`} className="flex items-center justify-between gap-3">
+                      <span className="font-medium text-emerald-900 dark:text-emerald-100">{course.code}</span>
+                      <span className="text-muted-foreground truncate">{course.name}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-muted-foreground">Curriculum courses for this term will appear here.</p>
+              )}
+            </div>
+            <DialogFooter className={cn(isMobile ? "border-t border-border/40 pt-4" : "")}>
+              <Button onClick={() => setRegularPeriodDialogOpen(false)}>Awesome</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         <Dialog open={regularNoticeOpen} onOpenChange={setRegularNoticeOpen}>
           <DialogContent>
             <DialogHeader>
@@ -3039,7 +3331,7 @@ export default function AcademicPlanner() {
               )}
 
             {/* Current Term Settings */}
-            <Card className="mb-6">
+            <Card id="planner-period-controls" className="mb-6">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Calendar className="h-5 w-5" />

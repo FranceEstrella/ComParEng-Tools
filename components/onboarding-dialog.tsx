@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import { parseCurriculumHtml } from "@/lib/curriculum-import"
 import { registerExternalCourses } from "@/lib/course-data"
@@ -40,6 +40,7 @@ import {
 
 type OnboardingCompletionOptions = {
   deferWhatsNew?: boolean
+  source?: "finish" | "jump" | "skip"
 }
 
 export type OnboardingDialogProps = {
@@ -183,6 +184,11 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const [curriculumImportMessage, setCurriculumImportMessage] = useState<string | null>(null)
   const [showCurriculumHow, setShowCurriculumHow] = useState(false)
   const [hasCustomCurriculum, setHasCustomCurriculum] = useState(false)
+  const [extensionConfirmOpen, setExtensionConfirmOpen] = useState(false)
+  const [extensionConfirmAction, setExtensionConfirmAction] = useState<"next" | "skip" | null>(null)
+  const [cpeSkipPromptOpen, setCpeSkipPromptOpen] = useState(false)
+  const [cpeSkipPromptContext, setCpeSkipPromptContext] = useState<"missing-upload" | "confirm">("missing-upload")
+  const [generalSkipPromptOpen, setGeneralSkipPromptOpen] = useState(false)
 
   useEffect(() => {
     const monitor = () => setIsMobileLayout(window.innerWidth < 640)
@@ -219,7 +225,16 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
     onOpenChange(false)
   }
 
+  const promptExtensionConfirmation = (action: "next" | "skip") => {
+    setExtensionConfirmAction(action)
+    setExtensionConfirmOpen(true)
+  }
+
   const goNext = () => {
+    if (activeSlide.id === "extension") {
+      promptExtensionConfirmation("next")
+      return
+    }
     if (activeSlide.id === "cpe-check") {
       if (cpeAnswer === null) return
       if (cpeAnswer === "no" && !hasCustomCurriculum) {
@@ -231,7 +246,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       setGlobalTheme(themePreview)
     }
     if (isLastSlide) {
-      finishOnboarding()
+      finishOnboarding({ source: "finish" })
       return
     }
     setCurrentIndex((prev) => Math.min(prev + 1, slides.length - 1))
@@ -240,11 +255,26 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const goPrev = () => setCurrentIndex((prev) => Math.max(prev - 1, 0))
 
   const handleSkip = () => {
-    if (activeSlide.id === "cpe-check") {
-      const proceed = typeof window === "undefined" || window.confirm("We'll keep the default CpE curriculum unless you import a new one later inside Course Tracker. Continue?")
-      if (!proceed) return
+    if (activeSlide.id === "extension") {
+      promptExtensionConfirmation("skip")
+      return
     }
-    finishOnboarding()
+    const generalSkipSlides: SlideId[] = ["welcome", "mission", "course-tracker", "schedule-maker", "academic-planner", "live-data", "theme"]
+    if (generalSkipSlides.includes(activeSlide.id)) {
+      setGeneralSkipPromptOpen(true)
+      return
+    }
+    if (activeSlide.id === "cpe-check") {
+      if (cpeAnswer === "no" && !hasCustomCurriculum) {
+        setCpeSkipPromptContext("missing-upload")
+        setCpeSkipPromptOpen(true)
+        return
+      }
+      setCpeSkipPromptContext("confirm")
+      setCpeSkipPromptOpen(true)
+      return
+    }
+    finishOnboarding({ source: "skip" })
   }
 
   const handleCurriculumImport = (file: File) => {
@@ -295,9 +325,46 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   }
 
   const handleOpenCourseTracker = () => {
-    finishOnboarding({ deferWhatsNew: true })
+    finishOnboarding({ deferWhatsNew: true, source: "jump" })
     router.push("/course-tracker")
   }
+
+  const handleExtensionConfirm = () => {
+    if (extensionConfirmAction === "next") {
+      setCurrentIndex((prev) => Math.min(prev + 1, slides.length - 1))
+    } else if (extensionConfirmAction === "skip") {
+      finishOnboarding({ source: "skip" })
+    }
+    setExtensionConfirmOpen(false)
+    setExtensionConfirmAction(null)
+  }
+
+  const handleExtensionCancel = () => {
+    setExtensionConfirmOpen(false)
+    setExtensionConfirmAction(null)
+  }
+
+  const handleGeneralSkipStay = () => {
+    setGeneralSkipPromptOpen(false)
+  }
+
+  const handleGeneralSkipConfirm = () => {
+    setGeneralSkipPromptOpen(false)
+    finishOnboarding({ source: "skip" })
+  }
+
+  const handleCpeSkipPrimaryAction = () => {
+    if (cpeSkipPromptContext === "missing-upload") {
+      curriculumFileInputRef.current?.click()
+    }
+    setCpeSkipPromptOpen(false)
+  }
+
+  const handleCpeSkipContinue = () => {
+    setCpeSkipPromptOpen(false)
+    finishOnboarding({ source: "skip" })
+  }
+
 
   const renderSlideContent = (slideId: SlideId) => {
     switch (slideId) {
@@ -662,9 +729,11 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent
         hideCloseButton
+        onInteractOutside={(event) => event.preventDefault()}
         className={cn(
           "border-none bg-transparent p-0 shadow-none",
           isMobileLayout
@@ -682,9 +751,11 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
           <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-400 via-blue-400 to-amber-400" />
           <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 text-sm font-medium uppercase tracking-wide dark:border-white/10">
             <span>Guided onboarding</span>
-            <Button variant="ghost" size="sm" onClick={handleSkip}>
-              Skip tour
-            </Button>
+            {activeSlide.id !== "wrap-up" && (
+              <Button variant="ghost" size="sm" onClick={handleSkip}>
+                Skip tour
+              </Button>
+            )}
           </div>
           <div className="px-6 pb-4 pt-5">
             <div className="mb-4 flex items-center justify-between">
@@ -763,7 +834,123 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
             </div>
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={extensionConfirmOpen} onOpenChange={(nextOpen) => (!nextOpen ? handleExtensionCancel() : null)}>
+        <DialogContent onInteractOutside={(event) => event.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Install the Course Data Extractor first</DialogTitle>
+            <DialogDescription>
+              Schedule Maker and Academic Planner rely on the Chrome extension. Without it, live sections and planner data
+              will not stay in sync.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>
+              Use the Chrome Web Store button on this slide to install the extension, then sign in to SOLAR so uploads work
+              instantly.
+            </p>
+            <p>Only continue if the extension is already installed or you understand the limitations.</p>
+          </div>
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" onClick={handleExtensionCancel} className="w-full sm:w-auto">
+              I'll install it
+            </Button>
+            <Button
+              onClick={handleExtensionConfirm}
+              className={cn(
+                "w-full text-white focus-visible:ring-2 sm:w-auto",
+                extensionConfirmAction === "skip"
+                  ? "bg-red-600 hover:bg-red-700 focus-visible:ring-red-600"
+                  : "bg-green-600 hover:bg-green-700 focus-visible:ring-green-600"
+              )}
+            >
+              {extensionConfirmAction === "skip" ? "Continue without it" : "Already installed! Continue"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={generalSkipPromptOpen} onOpenChange={(nextOpen) => (!nextOpen ? setGeneralSkipPromptOpen(false) : null)}>
+        <DialogContent className="sm:max-w-md" onInteractOutside={(event) => event.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Skip the rest of the tour?</DialogTitle>
+            <DialogDescription>
+              The next slides cover must-know tips for Course Tracker, Schedule Maker, and Academic Planner. You can always
+              return later from the homepage.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-2xl border border-dashed bg-slate-50 p-4 text-sm text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-white">
+            <p className="font-semibold">Before you skip:</p>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              <li>You'll miss quick-start guidance for the remaining tools.</li>
+              <li>The onboarding button on the homepage reopens this walkthrough anytime.</li>
+            </ul>
+          </div>
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" className="w-full sm:w-auto" onClick={handleGeneralSkipStay}>
+              Continue onboarding
+            </Button>
+            <Button
+              variant="destructive"
+              className="w-full bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-600 sm:w-auto"
+              onClick={handleGeneralSkipConfirm}
+            >
+              Skip tour now
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={cpeSkipPromptOpen} onOpenChange={(openState) => (!openState ? setCpeSkipPromptOpen(false) : null)}>
+        <DialogContent className="sm:max-w-md" onInteractOutside={(event) => event.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>
+              {cpeSkipPromptContext === "missing-upload" ? "Upload your curriculum before skipping?" : "Keep CpE defaults?"}
+            </DialogTitle>
+            <DialogDescription>
+              {cpeSkipPromptContext === "missing-upload"
+                ? "You selected \"Nope\" which means we need your program's curriculum to keep prerequisites accurate."
+                : "Skipping now ends the tour and keeps the default FEU Tech CpE curriculum until you import something else."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-2xl border border-dashed bg-amber-50/70 p-4 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+            {cpeSkipPromptContext === "missing-upload" ? (
+              <>
+                <p className="font-semibold">Without that HTML file:</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  <li>We'll fall back to the default CpE curriculum.</li>
+                  <li>Course Tracker and Scheduler might hide the classes you really need.</li>
+                </ul>
+                <p className="mt-3 text-xs opacity-80">
+                  Upload now to stay aligned, or continue and import later inside Course Tracker.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-semibold">Need to see the defaults first?</p>
+                <p className="mt-2">
+                  Skipping lets you dive right in, but you can always reopen this onboarding later from the homepage if you
+                  change your mind.
+                </p>
+                <p className="mt-3 text-xs opacity-80">Choose Continue to keep exploring the tour, or Skip to finish now.</p>
+              </>
+            )}
+          </div>
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" className="w-full sm:w-auto" onClick={handleCpeSkipPrimaryAction}>
+              {cpeSkipPromptContext === "missing-upload" ? "Upload file now" : "Continue onboarding"}
+            </Button>
+            <Button
+              variant="destructive"
+              className="w-full bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-600 sm:w-auto"
+              onClick={handleCpeSkipContinue}
+            >
+              {cpeSkipPromptContext === "missing-upload" ? "Continue without upload" : "Skip tour anyway"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }

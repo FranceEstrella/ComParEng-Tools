@@ -17,7 +17,7 @@ import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, Dialog
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { orderedPatchNotes } from "@/lib/patch-notes"
 import { MESSAGE_MIN } from "../lib/config"
-import NonCpeNotice from "@/components/non-cpe-notice"
+import NonCpeNotice, { markNonCpeNoticeDismissed } from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
 import OnboardingDialog from "@/components/onboarding-dialog"
 
@@ -73,13 +73,17 @@ export default function Home() {
     }
   }, [])
 
-  const completeOnboarding = (options?: { deferWhatsNew?: boolean }) => {
+  const completeOnboarding = (options?: { deferWhatsNew?: boolean; source?: "finish" | "jump" | "skip" }) => {
     try {
       localStorage.setItem("compareng.onboarding.completed", "true")
     } catch {
       // ignore storage failures
     }
     setHasCompletedOnboarding(true)
+    if (options?.source === "finish" || options?.source === "jump") {
+      dismissExtensionCard()
+      markNonCpeNoticeDismissed()
+    }
     if (options?.deferWhatsNew) {
       try {
         sessionStorage.setItem("compareng.deferWhatsNew", "true")

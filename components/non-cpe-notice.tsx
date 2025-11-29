@@ -12,6 +12,19 @@ interface NonCpeNoticeProps {
   onReportIssue?: () => void
 }
 
+const NON_CPE_STORAGE_KEY = "compareng.nonCpeNotice.dismissed"
+export const NON_CPE_NOTICE_DISMISS_EVENT = "compareng:nonCpeNoticeDismissed" as const
+
+export const markNonCpeNoticeDismissed = () => {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(NON_CPE_STORAGE_KEY, "true")
+  } catch {
+    // ignore storage failures
+  }
+  window.dispatchEvent(new Event(NON_CPE_NOTICE_DISMISS_EVENT))
+}
+
 export default function NonCpeNotice({ compact = false, onReportIssue }: NonCpeNoticeProps) {
   const pathname = usePathname()
   const router = useRouter()
@@ -19,20 +32,23 @@ export default function NonCpeNotice({ compact = false, onReportIssue }: NonCpeN
 
   useEffect(() => {
     try {
-      const dismissed = localStorage.getItem("compareng.nonCpeNotice.dismissed") === "true"
+      const dismissed = localStorage.getItem(NON_CPE_STORAGE_KEY) === "true"
       setShowNotice(!dismissed)
     } catch {
       // ignore storage failures
     }
   }, [])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleGlobalDismiss = () => setShowNotice(false)
+    window.addEventListener(NON_CPE_NOTICE_DISMISS_EVENT, handleGlobalDismiss)
+    return () => window.removeEventListener(NON_CPE_NOTICE_DISMISS_EVENT, handleGlobalDismiss)
+  }, [])
+
   const dismissNotice = () => {
     setShowNotice(false)
-    try {
-      localStorage.setItem("compareng.nonCpeNotice.dismissed", "true")
-    } catch {
-      // ignore storage failures
-    }
+    markNonCpeNoticeDismissed()
   }
 
   const goToImport = () => {

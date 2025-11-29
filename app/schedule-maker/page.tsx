@@ -16,6 +16,7 @@ import {
   GraduationCap,
   FileWarning,
   ExternalLink,
+  Loader2,
   Check,
   Calendar,
   Download,
@@ -28,6 +29,14 @@ import Link from "next/link"
 import { useTheme } from "next-themes"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   initialCourses,
   resolveCanonicalCourseCode,
@@ -167,6 +176,7 @@ interface ApplyAvailableCoursesOptions {
   preserveError?: boolean
   skipTimestamp?: boolean
   forceUpdate?: boolean
+  isSampleData?: boolean
 }
 
 const buildCourseSignature = (course: CourseSection) => {
@@ -396,6 +406,13 @@ export default function ScheduleMaker() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [noDataDialogOpen, setNoDataDialogOpen] = useState(false)
+  const [noDataDialogPaused, setNoDataDialogPaused] = useState(false)
+  const [hideNoDataDialog, setHideNoDataDialog] = useState(false)
+  const [awaitingDataDialogOpen, setAwaitingDataDialogOpen] = useState(false)
+  const [hasRealCourseData, setHasRealCourseData] = useState(false)
+  const [hasFetchedOnce, setHasFetchedOnce] = useState(false)
+  const [noDataDialogDismissed, setNoDataDialogDismissed] = useState(false)
   const [viewMode, setViewMode] = useState<"card" | "table">("card")
   const [selectedViewMode, setSelectedViewMode] = useState<"card" | "table">("card")
   const scheduleRef = useRef<HTMLDivElement>(null)
@@ -416,6 +433,35 @@ export default function ScheduleMaker() {
     typeof window !== 'undefined' ? localStorage.getItem('scheduleTitle') || 'Weekly Schedule' : 'Weekly Schedule'
   )
   const [curriculumSignature, setCurriculumSignature] = useState<string>("")
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    setHideNoDataDialog(localStorage.getItem("scheduleMaker.hideNoDataDialog") === "true")
+  }, [])
+
+  const noActiveCourses = activeCourses.length === 0
+
+  useEffect(() => {
+    const missingExtractedData = hasFetchedOnce && !hasRealCourseData
+    const shouldShow =
+      !hideNoDataDialog &&
+      !noDataDialogPaused &&
+      !noDataDialogDismissed &&
+      (missingExtractedData || noActiveCourses)
+    setNoDataDialogOpen(shouldShow)
+  }, [hasFetchedOnce, hideNoDataDialog, noDataDialogPaused, hasRealCourseData, noDataDialogDismissed, noActiveCourses])
+
+  useEffect(() => {
+    if (!awaitingDataDialogOpen) {
+      setNoDataDialogPaused(false)
+    }
+  }, [awaitingDataDialogOpen])
+
+  useEffect(() => {
+    if (hasRealCourseData) {
+      setNoDataDialogDismissed(false)
+    }
+  }, [hasRealCourseData])
 
   useEffect(() => {
     setIsClient(true)
@@ -1015,6 +1061,35 @@ export default function ScheduleMaker() {
     window.open("https://solar.feutech.edu.ph/course/offerings", "_blank")
   }
 
+  const handleStudentPortalLaunch = () => {
+    openStudentPortal()
+    setAwaitingDataDialogOpen(true)
+    setNoDataDialogPaused(true)
+  }
+
+  const handleNoDataDialogToggle = (checked: boolean) => {
+    setHideNoDataDialog(checked)
+    if (typeof window !== "undefined") {
+      localStorage.setItem("scheduleMaker.hideNoDataDialog", checked ? "true" : "false")
+    }
+    if (checked) {
+      setNoDataDialogOpen(false)
+      setNoDataDialogDismissed(true)
+    } else {
+      setNoDataDialogDismissed(false)
+    }
+  }
+
+  const handleNoDataDialogOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setNoDataDialogDismissed(false)
+      setNoDataDialogOpen(true)
+      return
+    }
+    setNoDataDialogOpen(false)
+    setNoDataDialogDismissed(true)
+  }
+
   // Check if a time slot falls within a course's time range
   const isTimeInRange = (timeSlot: string, course: SelectedCourse): boolean => {
     const [slotHour, slotMinute] = timeSlot.split(":").map(Number)
@@ -1119,6 +1194,8 @@ export default function ScheduleMaker() {
       }
 
       setAvailableCourses(normalized)
+      const hasCourses = normalized.length > 0 && !options.isSampleData
+      setHasRealCourseData(hasCourses)
 
       if (!options.skipTimestamp) {
         if (options.lastUpdated) {
@@ -1142,7 +1219,7 @@ export default function ScheduleMaker() {
         setError(null)
       }
     },
-    [setAvailableCourses, setError, setLastUpdated],
+    [setAvailableCourses, setError, setLastUpdated, setHasRealCourseData],
   )
 
   // Fetch both available courses and active courses
@@ -1169,6 +1246,7 @@ export default function ScheduleMaker() {
             applyAvailableCourses(sampleAvailableCourses, {
               preserveError: true,
               skipTimestamp: true,
+              isSampleData: true,
             })
           }
         } else {
@@ -1187,12 +1265,14 @@ export default function ScheduleMaker() {
           applyAvailableCourses(sampleAvailableCourses, {
             preserveError: true,
             skipTimestamp: true,
+            isSampleData: true,
           })
         }
       } finally {
         if (!silent) {
           setLoading(false)
         }
+        setHasFetchedOnce(true)
       }
     },
     [applyAvailableCourses, fetchAvailableCourses],
@@ -1574,6 +1654,95 @@ const renderScheduleView = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+      <Dialog open={noDataDialogOpen} onOpenChange={handleNoDataDialogOpenChange}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>No course data detected</DialogTitle>
+            <DialogDescription>
+              Keep the Student Portal&apos;s Course Offerings tab open with the ComParEng Tools extension enabled so we can import the latest sections.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
+            <p>
+              {noActiveCourses
+                ? "You haven't marked any courses as Active in the Course Tracker yet. Mark at least one course so we know which sections to prioritize here."
+                : "We haven't received any extracted offerings yet. Launch the Student Portal so the extension can listen for the Course Offerings table and push it here automatically."}
+            </p>
+            <p className="rounded-md border border-amber-400/40 bg-amber-50/70 p-3 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+              Make sure the extension is installed and active <span className="font-semibold">before</span> visiting the Course Offerings page. Otherwise the capture will be empty.
+            </p>
+            {noActiveCourses && (
+              <p className="rounded-md border border-blue-300/50 bg-blue-50/80 p-3 text-blue-900 dark:border-blue-400/30 dark:bg-blue-400/10 dark:text-blue-50">
+                Tip: open Course Tracker, mark your in-progress classes as <span className="font-semibold">Active</span>, then return here to filter sections for them automatically.
+              </p>
+            )}
+            <div className="flex items-center justify-between gap-4 rounded-md border border-slate-200/70 bg-slate-50/60 p-3 dark:border-white/10 dark:bg-white/5">
+              <div>
+                <p className="text-sm font-medium">Don&apos;t show again</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Hide this reminder even if we still don&apos;t detect course data.</p>
+              </div>
+              <Switch
+                checked={hideNoDataDialog}
+                onCheckedChange={(value) => handleNoDataDialogToggle(Boolean(value))}
+                aria-label="Don&apos;t show reminder again"
+              />
+            </div>
+          </div>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button
+              className="w-full sm:w-auto gap-2"
+              onClick={handleStudentPortalLaunch}
+            >
+              <ExternalLink className="h-4 w-4" />
+              Open Student Portal
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={awaitingDataDialogOpen} onOpenChange={setAwaitingDataDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{hasRealCourseData ? "Course data received" : "Awaiting course data"}</DialogTitle>
+            <DialogDescription>
+              {hasRealCourseData
+                ? "Great! We just pulled fresh sections from the Student Portal."
+                : "Keep the Student Portal tab open while the extension copies the Course Offerings list."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col items-center gap-4 py-2 text-center">
+            {hasRealCourseData ? (
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-500">
+                <Check className="h-8 w-8" />
+              </div>
+            ) : (
+              <Loader2 className="h-12 w-12 animate-spin text-blue-500" />
+            )}
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              {hasRealCourseData
+                ? "Your schedule builder is now synced with the newly captured offerings."
+                : "We’re listening for the extension to finish scraping. This can take a few moments depending on your connection."}
+            </p>
+          </div>
+          <DialogFooter>
+            {hasRealCourseData ? (
+              <Button
+                className="gap-2"
+                onClick={() => setAwaitingDataDialogOpen(false)}
+              >
+                Let&apos;s get started
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={() => setAwaitingDataDialogOpen(false)}
+              >
+                Try again later
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="container mx-auto px-4 py-8">
         <div className="mb-6 space-y-4">
           <QuickNavigation />
@@ -1621,7 +1790,7 @@ const renderScheduleView = () => {
             <AlertDescription>
               {error}
               <div className="mt-4">
-                <Button onClick={openStudentPortal} className="flex items-center gap-2">
+                <Button onClick={handleStudentPortalLaunch} className="flex items-center gap-2">
                   <ExternalLink className="h-4 w-4" />
                   Open Student Portal Course Offerings
                 </Button>

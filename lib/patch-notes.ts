@@ -10,61 +10,60 @@ export interface PatchNote {
 
 export const patchNotes: PatchNote[] = [
   {
+    version: "1.45",
+    date: "November 29, 2025",
+    title: "Major Update",
+    changes: [
+      {
+        type: "new",
+        description: "A floating Report an issue button sticks to the bottom-right corner on every page, letting you send feedback without leaving the screen you’re on.",
+      },
+      {
+        type: "new",
+        description: "Onboarding now ships with dedicated confirmation cards for the extension slide, CpE slide, and general slides, making the entire tour feel brand new and context-aware.",
+      },
+      {
+        type: "new",
+        description: "Course Tracker now saves every grade attempt plus your tracker timeline, so importing/exporting backups keeps the full history intact.",
+      },
+      {
+        type: "new",
+        description: "You can generate a Transcript of Records PDF directly from Course Tracker—fill in your name and number, review the entries, and download a polished file for sharing.",
+      },
+      {
+        type: "new",
+        description: "ComParEng Tools now advertises install prompts so you can add it as a desktop or mobile PWA.",
+      },
+    ],
+  },
+  {
     version: "1.44",
     date: "November 28, 2025",
     title: "Schedule Maker grouping & fresher data",
     changes: [
       {
         type: "new",
-        description: "Non-CpE onboarding now lets you upload your SOLAR curriculum directly inside the tour and blocks Next until the file is parsed, so custom programs start with the right course list before reaching the tools.",
+        description: "New guided onboarding walks through Course Tracker, Schedule Maker, and Academic Planner with live theme previews, privacy tips, and a CpE-only branch.",
       },
       {
         type: "new",
-        description: "New guided onboarding walks you through the Course Tracker, Schedule Maker, and Academic Planner with live theme previews, CpE-specific branching, and privacy tips before you dive in.",
+        description: "Non-CpE students can now upload their SOLAR curriculum during the tour before accessing the tools.",
       },
       {
         type: "improved",
-        description: "Slide 9 adds a \"Show me how\" helper with the exact SOLAR save steps, and the wrap-up slide now sends everyone to Course Tracker first to mark statuses before touching the other apps.",
+        description: "Schedule Maker can group sections by department, section name, course code, or room—each group shows the full course title and richer search matches.",
       },
       {
         type: "fixed",
-        description: "Finishing onboarding or using the \"Open Course Tracker\" CTA now records completion without suppressing the What's New dialog—you'll still see the latest updates once you return home.",
-      },
-      {
-        type: "new",
-        description: "Schedule Maker now lets you group available sections by Department, Section, Course Code, or Room so related sections stay together in both table and card layouts.",
-      },
-      {
-        type: "improved",
-        description: "Course-code groups now display the course title (e.g., COE0007 – CALCULUS 1) so you can scan grouped cards without memorizing every code.",
-      },
-      {
-        type: "improved",
-        description: "The search bar matches more metadata (section labels, meeting days, formatted times, and room names) which makes partial queries and nicknames far more forgiving.",
-      },
-      {
-        type: "improved",
-        description: "Filter summaries and empty-state messages now respect the refined course list, so you immediately see how many sections remain after combining search, day, and grouping filters.",
-      },
-      {
-        type: "improved",
-        description: "Sections that append extra characters to the course code (e.g., COE0007C or COE0009LC) now alias back to the original curriculum code so names, credits, and active-course filtering stay accurate.",
+        description: "Fresh SOLAR extracts now replace cached sections immediately and expire after an hour so you never browse stale slots.",
       },
       {
         type: "fixed",
-        description: "Newly extracted course data now replaces the previous dataset automatically—API responses bypass the service-worker cache, hash changes trigger live refreshes, and extracted sections expire after an hour so you never see stale slots.",
-      },
-      {
-        type: "fixed",
-        description: "Importing a different curriculum clears incompatible schedule selections and syncs the new active-course list, so Schedule Maker always reflects the currently loaded program without manual cache clearing.",
+        description: "Uploading a different curriculum clears incompatible selections and syncs the new active-course list automatically.",
       },
       {
         type: "improved",
-        description: "The homepage extension reminder now places its dismiss button in the top-right corner and remembers your choice, so the notice stays out of the way once you install the extractor.",
-      },
-      {
-        type: "improved",
-        description: "The Non-CpE curriculum helper card can now be dismissed via a matching top-right button, keeping the homepage focused once you've saved those import steps.",
+        description: "Extension reminder and Non-CpE helper banners gained dismiss buttons that remember your choice and keep the homepage tidy.",
       },
     ],
   },

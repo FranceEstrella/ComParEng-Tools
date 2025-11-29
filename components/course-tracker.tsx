@@ -2,7 +2,7 @@
 
 import React from "react"
 
-import { useState, useEffect, useMemo, useRef } from "react"
+import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
@@ -27,6 +27,7 @@ import {
   Grid3X3,
   GraduationCap,
   RefreshCw,
+  Plus,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -38,11 +39,12 @@ import { motion, AnimatePresence } from "framer-motion"
 import { useTheme } from "next-themes"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { saveCourseStatuses, loadCourseStatuses } from "@/lib/course-storage"
+import { saveCourseStatuses, loadCourseStatuses, saveTrackerPreferences, loadTrackerPreferences } from "@/lib/course-storage"
 import { initialCourses, registerExternalCourses } from "@/lib/course-data"
 import { parseCurriculumHtml } from "@/lib/curriculum-import"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import NonCpeNotice from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
 import {
@@ -53,11 +55,29 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { orderedPatchNotes } from "@/lib/patch-notes"
+
+const APP_VERSION = orderedPatchNotes[0]?.version ?? "Dev"
 
 // --- Types and Interfaces ---
 
 // Course status types
 type CourseStatus = "passed" | "active" | "pending"
+
+type TermName = "Term 1" | "Term 2" | "Term 3"
+
+interface LastTakenInfo {
+  year: number
+  term: TermName
+}
+
+interface GradeAttempt {
+  id: string
+  year: number
+  term: TermName
+  grade: string
+  recordedAt: string
+}
 
 // Course interface
 interface Course {
@@ -70,6 +90,8 @@ interface Course {
   description: string | null // Kept in interface, but not displayed in card
   year: number
   term: string // e.g., "Fall", "Spring", "Summer"
+  lastTaken?: LastTakenInfo | null
+  gradeAttempts?: GradeAttempt[]
 }
 
 // Group courses by year and term
@@ -123,9 +145,8 @@ interface OverallProgressProps {
 interface SaveLoadControlsProps {
   saveProgress: () => void
   downloadProgress: () => void
-  uploadProgress: (e: React.ChangeEvent<HTMLInputElement>) => void
   saveMessage: string | null
-  fileInputRef: React.RefObject<HTMLInputElement | null>
+  triggerUploadDialog: () => void
   setCourses: React.Dispatch<React.SetStateAction<Course[]>>
   setSaveMessage: (m: string | null) => void
 }
@@ -134,7 +155,227 @@ interface AcademicTimelineProps {
   startYear: number
   handleStartYearChange: (v: string | React.ChangeEvent<HTMLInputElement>) => void
   academicYears: AcademicYear[]
+  currentYearLevel: number
+  onCurrentYearLevelChange: (value: number) => void
+  currentTerm: TermName
+  onCurrentTermChange: (term: TermName) => void
+  yearLevelOptions: number[]
+  onExtendYearOptions: () => void
 }
+
+interface YearTermOption {
+  year: number
+  term: TermName
+}
+
+interface GradeModalFormState {
+  year: number | null
+  term: TermName | null
+  grade: string
+}
+
+interface TranscriptEntry {
+  id: string
+  courseCode: string
+  courseName: string
+  units: number
+  year: number
+  term: TermName
+  grade: string
+}
+
+interface PendingPassDowngrade {
+  courseId: string
+  targetAttempt: { year: number; term: TermName; grade: string }
+  downgradeAttempts: GradeAttempt[]
+  futureRemovals: GradeAttempt[]
+  updateLastTaken: boolean
+  source: "table" | "modal"
+}
+
+interface TrackerPreferences {
+  startYear: number
+  currentYearLevel: number
+  currentTerm: TermName
+}
+
+const PASSING_GRADE_VALUES: ReadonlyArray<string> = [
+  "1.0",
+  "1.5",
+  "2.0",
+  "2.5",
+  "3.0",
+  "3.5",
+  "4.0",
+  "8.0",
+]
+
+const FAIL_GRADE_VALUES: ReadonlyArray<string> = ["0.0", "0.5", "7.0", "9.0"]
+const ACCEPTABLE_GRADE_VALUES: ReadonlyArray<string> = [...FAIL_GRADE_VALUES, ...PASSING_GRADE_VALUES]
+const DOWNGRADE_FAIL_GRADE = "0.5"
+
+const GRADE_LABELS: Record<string, string> = {
+  "0.0": "Excessive Absence",
+  "0.5": "Fail",
+  "1.0": "Passed (Barely Passing)",
+  "1.5": "Passed (Fair)",
+  "2.0": "Passed (Satisfactory)",
+  "2.5": "Passed (Good)",
+  "3.0": "Passed (Very Good)",
+  "3.5": "Passed (Superior)",
+  "4.0": "Passed (Excellent)",
+  "7.0": "Officially Dropped",
+  "8.0": "Credited (Transferee)",
+  "9.0": "Incomplete Grade",
+}
+
+const ALL_GRADE_OPTIONS = ACCEPTABLE_GRADE_VALUES.map((value) => ({
+  value,
+  label: `${value} — ${GRADE_LABELS[value] ?? ""}`.trim(),
+}))
+
+const FAIL_GRADE_OPTIONS = FAIL_GRADE_VALUES.map((value) => ({
+  value,
+  label: `${value} — ${GRADE_LABELS[value] ?? ""}`.trim(),
+}))
+
+const TERM_SEQUENCE: TermName[] = ["Term 1", "Term 2", "Term 3"]
+
+const sanitizeTermName = (term?: string | null): TermName => {
+  if (!term) return "Term 1"
+  return TERM_SEQUENCE.includes(term as TermName) ? (term as TermName) : "Term 1"
+}
+
+const termIndex = (term: TermName) => TERM_SEQUENCE.indexOf(term)
+
+const compareYearTerm = (aYear: number, aTerm: TermName, bYear: number, bTerm: TermName) => {
+  if (aYear !== bYear) return aYear - bYear
+  return termIndex(aTerm) - termIndex(bTerm)
+}
+
+const isYearTermBeforeOrEqual = (candidate: YearTermOption, limit: YearTermOption) => {
+  return compareYearTerm(candidate.year, candidate.term, limit.year, limit.term) <= 0
+}
+
+const generateAttemptId = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `attempt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+const sanitizeGradeAttempts = (attempts?: GradeAttempt[]): GradeAttempt[] => {
+  if (!Array.isArray(attempts)) return []
+  return attempts
+    .map((attempt) => {
+      if (typeof attempt?.year !== "number" || !attempt?.term) return null
+      const normalizedGrade = normalizeGradeValue(attempt.grade)
+      if (!normalizedGrade) return null
+      return {
+        id: attempt?.id || generateAttemptId(),
+        year: attempt.year,
+        term: sanitizeTermName(attempt.term as string),
+        grade: normalizedGrade,
+        recordedAt: attempt.recordedAt || new Date().toISOString(),
+      }
+    })
+    .filter((attempt): attempt is GradeAttempt => attempt !== null)
+    .sort((a, b) => compareYearTerm(a.year, a.term, b.year, b.term))
+}
+
+const hydrateCourses = (rawCourses: Course[]): Course[] => {
+  if (!Array.isArray(rawCourses)) return []
+  return rawCourses.map((course) => ({
+    ...course,
+    lastTaken: course.lastTaken
+      ? {
+          year: course.lastTaken.year,
+          term: sanitizeTermName(course.lastTaken.term as string),
+        }
+      : null,
+    gradeAttempts: sanitizeGradeAttempts(course.gradeAttempts),
+  }))
+}
+
+const buildYearTermOptions = (
+  course: Course,
+  currentYearLevel: number,
+  currentTerm: TermName,
+): YearTermOption[] => {
+  const startYear = course.year
+  const startTerm = sanitizeTermName(course.term as string)
+  if (currentYearLevel < startYear) return []
+
+  const limitOption: YearTermOption = { year: currentYearLevel, term: currentTerm }
+  const options: YearTermOption[] = []
+  for (let year = startYear; year <= currentYearLevel; year++) {
+    for (const term of TERM_SEQUENCE) {
+      if (year === startYear && compareYearTerm(year, term, startYear, startTerm) < 0) continue
+      const candidate = { year, term }
+      if (!isYearTermBeforeOrEqual(candidate, limitOption)) continue
+      options.push(candidate)
+    }
+  }
+  return options
+}
+
+const getGradeAttempts = (course: Course): GradeAttempt[] => course.gradeAttempts ?? []
+
+const findAttemptForYearTerm = (course: Course, year: number, term: TermName) => {
+  return getGradeAttempts(course).find((attempt) => attempt.year === year && attempt.term === term)
+}
+
+const isPassingGrade = (grade?: string | null) => (grade ? PASSING_GRADE_VALUES.includes(grade) : false)
+const isAcceptableGrade = (grade?: string | null) => (grade ? ACCEPTABLE_GRADE_VALUES.includes(grade) : false)
+
+const normalizeGradeValue = (grade: unknown): string | null => {
+  if (grade === null || grade === undefined) return null
+  let candidate: string
+  if (typeof grade === "number") {
+    candidate = grade === 9 ? "9.0" : grade.toFixed(1)
+  } else if (typeof grade === "string") {
+    const trimmed = grade.trim()
+    if (!trimmed) return null
+    const parsed = Number.parseFloat(trimmed)
+    if (Number.isFinite(parsed)) {
+      candidate = parsed === 9 ? "9.0" : parsed.toFixed(1)
+    } else {
+      candidate = trimmed
+    }
+  } else {
+    return null
+  }
+
+  return isAcceptableGrade(candidate) ? candidate : null
+}
+
+const getLatestPassingAttempt = (course: Course): GradeAttempt | null => {
+  return (
+    getGradeAttempts(course)
+      .filter((attempt) => isPassingGrade(attempt.grade))
+      .sort((a, b) => compareYearTerm(b.year, b.term, a.year, a.term))[0] || null
+  )
+}
+
+const getPassingAttemptsBeforeYearTerm = (course: Course, year: number, term: TermName): GradeAttempt[] => {
+  return getGradeAttempts(course)
+    .filter((attempt) => isPassingGrade(attempt.grade) && compareYearTerm(attempt.year, attempt.term, year, term) < 0)
+    .sort((a, b) => compareYearTerm(a.year, a.term, b.year, b.term))
+}
+
+const getAttemptsAfterYearTerm = (course: Course, year: number, term: TermName): GradeAttempt[] => {
+  return getGradeAttempts(course)
+    .filter((attempt) => compareYearTerm(attempt.year, attempt.term, year, term) > 0)
+    .sort((a, b) => compareYearTerm(a.year, a.term, b.year, b.term))
+}
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;")
 
 // Quick Navigation Component
 const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean }) => {
@@ -709,9 +950,8 @@ const OverallProgress = ({
 const SaveLoadControls = ({
   saveProgress,
   downloadProgress,
-  uploadProgress,
   saveMessage,
-  fileInputRef,
+  triggerUploadDialog,
   setCourses,
   setSaveMessage,
 }: SaveLoadControlsProps) => {
@@ -748,6 +988,8 @@ const SaveLoadControls = ({
       const resetCourses = prevCourses.map((course: Course) => ({
         ...course,
         status: "pending" as CourseStatus,
+        lastTaken: null,
+        gradeAttempts: [],
       }))
       saveCourseStatuses(resetCourses)
       return resetCourses
@@ -782,20 +1024,13 @@ const SaveLoadControls = ({
               <Download className="h-4 w-4" />
               Download Progress
             </Button>
-            <div className="relative">
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={uploadProgress}
-                accept=".json"
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                aria-label="Upload progress file"
-              />
-              <Button className="flex items-center gap-2 bg-green-600 hover:bg-green-700">
-                <Upload className="h-4 w-4" />
-                Upload Progress
-              </Button>
-            </div>
+            <Button
+              onClick={triggerUploadDialog}
+              className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
+            >
+              <Upload className="h-4 w-4" />
+              Upload Progress
+            </Button>
             {/* Import Curriculum (HTML) */}
             <div
               className={cn(
@@ -820,9 +1055,10 @@ const SaveLoadControls = ({
                         setTimeout(() => setSaveMessage(null), 3000)
                         return
                       }
-                      registerExternalCourses(parsed)
-                      setCourses(parsed)
-                      saveCourseStatuses(parsed)
+                      const hydrated = hydrateCourses(parsed as Course[])
+                      registerExternalCourses(hydrated)
+                      setCourses(hydrated)
+                      saveCourseStatuses(hydrated)
                       setSaveMessage("Curriculum imported successfully")
                       setTimeout(() => setSaveMessage(null), 3000)
                     } catch (err) {
@@ -894,7 +1130,17 @@ const SaveLoadControls = ({
 }
 
 // --- Academic Timeline (Simplified) ---
-const AcademicTimeline = ({ startYear, handleStartYearChange, academicYears }: AcademicTimelineProps) => {
+const AcademicTimeline = ({
+  startYear,
+  handleStartYearChange,
+  academicYears,
+  currentYearLevel,
+  onCurrentYearLevelChange,
+  currentTerm,
+  onCurrentTermChange,
+  yearLevelOptions,
+  onExtendYearOptions,
+}: AcademicTimelineProps) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const [inputValue, setInputValue] = useState<string>(String(startYear))
   const expectedGraduation = startYear + 4
@@ -906,31 +1152,81 @@ const AcademicTimeline = ({ startYear, handleStartYearChange, academicYears }: A
 
   return (
     <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
-            <GraduationCap className="h-5 w-5" />
-            Academic Timeline
-          </h2>
-          <div className="flex items-center gap-2">
-            <Label htmlFor="start-year" className="whitespace-nowrap">
-              Starting Year:
-            </Label>
-            <Input
-              id="start-year"
-              type="text" /* use text + inputMode to show numeric keyboard on mobile without spinner */
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onBlur={() => handleStartYearChange(inputValue)}
-              className="w-24"
-              inputMode="numeric" /* prefer numeric keypad on mobile */
-              pattern="\\d*" /* allow digits only on some mobile browsers */
-              placeholder="2025"
-            />
-          </div>
-        </div>
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
+              <GraduationCap className="h-5 w-5" />
+              Academic Timeline
+            </h2>
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="start-year" className="whitespace-nowrap">
+                  Starting Year:
+                </Label>
+                <Input
+                  id="start-year"
+                  type="text" /* use text + inputMode to show numeric keyboard on mobile without spinner */
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onBlur={() => handleStartYearChange(inputValue)}
+                  className="w-24"
+                  inputMode="numeric" /* prefer numeric keypad on mobile */
+                  pattern="\\d*" /* allow digits only on some mobile browsers */
+                  placeholder="2025"
+                />
+              </div>
 
-        <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Label className="whitespace-nowrap">Current Year:</Label>
+                <Select
+                  value={String(currentYearLevel)}
+                  onValueChange={(value) => {
+                    if (value === "extend") {
+                      onExtendYearOptions()
+                      return
+                    }
+                    const parsed = Number.parseInt(value, 10)
+                    if (!Number.isNaN(parsed)) {
+                      onCurrentYearLevelChange(parsed)
+                    }
+                  }}
+                >
+                  <SelectTrigger className="w-32">
+                    <SelectValue placeholder="Year" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {yearLevelOptions.map((year) => (
+                      <SelectItem key={year} value={String(year)}>
+                        Year {year}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value="extend" className="text-emerald-600 font-semibold">
+                      Year {yearLevelOptions.length + 1} +
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Label className="whitespace-nowrap">Current Term:</Label>
+                <Select value={currentTerm} onValueChange={(value: TermName) => onCurrentTermChange(value)}>
+                  <SelectTrigger className="w-32">
+                    <SelectValue placeholder="Term" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["Term 1", "Term 2", "Term 3"].map((term) => (
+                      <SelectItem key={term} value={term}>
+                        {term}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
           <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-md">
             <p className="text-blue-700 dark:text-blue-300 font-medium">Expected Graduation: {expectedGraduation}</p>
           </div>
@@ -976,13 +1272,14 @@ const AcademicTimeline = ({ startYear, handleStartYearChange, academicYears }: A
         </Link>
       </div>
     </div>
+    </div>
   )
 }
 
 // --- Main Component ---
 
 export default function CourseTracker() {
-  const [courses, setCourses] = useState<Course[]>(initialCourses as unknown as Course[])
+  const [courses, setCourses] = useState<Course[]>(() => hydrateCourses(initialCourses as unknown as Course[]))
   const [searchTerm, setSearchTerm] = useState("")
   const [filterStatus, setFilterStatus] = useState<CourseStatus | "all" | "future">("all")
   const [openYears, setOpenYears] = useState<{ [key: number]: boolean }>({ 1: true }) // Start with Year 1 open
@@ -991,27 +1288,182 @@ export default function CourseTracker() {
   const [viewMode, setViewMode] = useState<"card" | "table">("card")
   const [showDetailedProgress, setShowDetailedProgress] = useState(false)
   const [startYear, setStartYear] = useState<number>(new Date().getFullYear())
+  const [currentYearLevel, setCurrentYearLevel] = useState(1)
+  const [currentTerm, setCurrentTerm] = useState<TermName>("Term 1")
+  const [maxYearLevelOption, setMaxYearLevelOption] = useState(4)
   const { theme } = useTheme()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const progressCardRef = useRef<HTMLDivElement>(null)
   const [isProgressSticky, setIsProgressSticky] = useState(false)
   const [stickyOffset, setStickyOffset] = useState(16)
+  const [gradeModalCourseId, setGradeModalCourseId] = useState<string | null>(null)
+  const [gradeModalForm, setGradeModalForm] = useState<GradeModalFormState>({ year: null, term: null, grade: "" })
+  const [gradeModalError, setGradeModalError] = useState<string | null>(null)
+  const [pendingGradeReplacement, setPendingGradeReplacement] = useState<
+    | {
+        courseId: string
+        year: number
+        term: TermName
+        grade: string
+        previousGrade: string
+      }
+    | null
+  >(null)
+  const [pendingPassDowngrade, setPendingPassDowngrade] = useState<PendingPassDowngrade | null>(null)
+  const [transcriptModalOpen, setTranscriptModalOpen] = useState(false)
+  const [transcriptStep, setTranscriptStep] = useState<"details" | "review">("details")
+  const [transcriptForm, setTranscriptForm] = useState({ studentName: "", studentNumber: "" })
+  const [transcriptError, setTranscriptError] = useState<string | null>(null)
+  const [noGradesDialogOpen, setNoGradesDialogOpen] = useState(false)
+  const [trackerSetupDialogOpen, setTrackerSetupDialogOpen] = useState(false)
+  const [setupStartYearInput, setSetupStartYearInput] = useState<string>(() => String(new Date().getFullYear()))
+  const [setupYearLevel, setSetupYearLevel] = useState<number>(1)
+  const [setupTerm, setSetupTerm] = useState<TermName>("Term 1")
+  const [setupError, setSetupError] = useState<string | null>(null)
+  const [hasSeenSetupDialog, setHasSeenSetupDialog] = useState(false)
+  const [noProgressDismissed, setNoProgressDismissed] = useState(false)
+  const [coursesHydrated, setCoursesHydrated] = useState(false)
+  const [setupUploadStatus, setSetupUploadStatus] = useState<{ fileName: string; uploadedAt: number } | null>(null)
+  const yearLevelOptions = useMemo(() => Array.from({ length: maxYearLevelOption }, (_, idx) => idx + 1), [maxYearLevelOption])
+  const extendYearOptions = useCallback(() => {
+    setMaxYearLevelOption((prev) => prev + 5)
+  }, [])
+
+  const ensureYearOption = useCallback((value: number) => {
+    if (!Number.isFinite(value)) return
+    setMaxYearLevelOption((prev) => {
+      if (value <= prev) return prev
+      const nextCeil = Math.ceil(value / 5) * 5
+      return Math.max(prev, nextCeil)
+    })
+  }, [])
+
+  const handleCurrentYearLevelChange = useCallback(
+    (value: number) => {
+      const sanitized = Math.max(1, Math.floor(value))
+      ensureYearOption(sanitized)
+      setCurrentYearLevel(sanitized)
+    },
+    [ensureYearOption],
+  )
 
   // Calculate academic years and expected graduation
   const academicYears = useMemo(() => calculateAcademicYears(startYear), [startYear])
   const expectedGraduation = startYear + 4
+  const markedCourseCount = useMemo(() => courses.filter((course) => course.status !== "pending").length, [courses])
 
   // Load saved course statuses on component mount
   useEffect(() => {
     const savedCourses = loadCourseStatuses()
     if (savedCourses) {
-      registerExternalCourses(savedCourses)
-      setCourses(savedCourses)
+      const hydrated = hydrateCourses(savedCourses as Course[])
+      registerExternalCourses(hydrated)
+      setCourses(hydrated)
       setSaveMessage("Loaded saved course statuses from local storage")
       setTimeout(() => setSaveMessage(null), 3000)
     }
+    setCoursesHydrated(true)
   }, [])
+
+  useEffect(() => {
+    const prefs = loadTrackerPreferences()
+    if (!prefs) return
+
+    if (typeof prefs.startYear === "number" && prefs.startYear >= 2000 && prefs.startYear <= 2100) {
+      setStartYear(prefs.startYear)
+      setSetupStartYearInput(String(prefs.startYear))
+    }
+    if (typeof prefs.currentYearLevel === "number" && Number.isFinite(prefs.currentYearLevel) && prefs.currentYearLevel >= 1) {
+      const sanitizedLevel = Math.floor(prefs.currentYearLevel)
+      ensureYearOption(sanitizedLevel)
+      setCurrentYearLevel(sanitizedLevel)
+      setSetupYearLevel(sanitizedLevel)
+    }
+    if (prefs.currentTerm && TERM_SEQUENCE.includes(prefs.currentTerm as TermName)) {
+      setCurrentTerm(prefs.currentTerm as TermName)
+      setSetupTerm(prefs.currentTerm as TermName)
+    }
+  }, [ensureYearOption])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const hasSeen = localStorage.getItem("courseTracker.setupSeen") === "true"
+    setHasSeenSetupDialog(hasSeen)
+  }, [])
+
+  useEffect(() => {
+    if (!coursesHydrated) return
+
+    if (markedCourseCount > 0) {
+      if (noProgressDismissed) {
+        setNoProgressDismissed(false)
+      }
+      if (trackerSetupDialogOpen && hasSeenSetupDialog) {
+        setTrackerSetupDialogOpen(false)
+      }
+      return
+    }
+
+    if (!hasSeenSetupDialog || !noProgressDismissed) {
+      if (!trackerSetupDialogOpen) {
+        setTrackerSetupDialogOpen(true)
+      }
+    }
+  }, [coursesHydrated, markedCourseCount, noProgressDismissed, hasSeenSetupDialog, trackerSetupDialogOpen])
+
+  const triggerUploadDialog = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""
+      fileInputRef.current.click()
+    }
+  }
+
+  const markTrackerSetupSeen = () => {
+    if (typeof window === "undefined") return
+    localStorage.setItem("courseTracker.setupSeen", "true")
+    setHasSeenSetupDialog(true)
+  }
+
+  const handleTrackerSetupClose = () => {
+    markTrackerSetupSeen()
+    setTrackerSetupDialogOpen(false)
+    setSetupError(null)
+    if (markedCourseCount === 0) {
+      setNoProgressDismissed(true)
+    }
+  }
+
+  const handleSetupSubmit = () => {
+    setSetupError(null)
+    const parsedStartYear = Number.parseInt(setupStartYearInput, 10)
+    if (!Number.isFinite(parsedStartYear) || parsedStartYear < 2000 || parsedStartYear > 2100) {
+      setSetupError("Enter a valid starting school year between 2000 and 2100.")
+      return
+    }
+    const numericYearLevel = Number(setupYearLevel)
+    const sanitizedYearLevel = Math.max(1, Number.isFinite(numericYearLevel) ? Math.floor(numericYearLevel) : 1)
+    const sanitizedTerm: TermName = TERM_SEQUENCE.includes(setupTerm) ? setupTerm : "Term 1"
+    ensureYearOption(sanitizedYearLevel)
+
+    setStartYear(parsedStartYear)
+    setCurrentYearLevel(sanitizedYearLevel)
+    setCurrentTerm(sanitizedTerm)
+    setSetupStartYearInput(String(parsedStartYear))
+    setSetupYearLevel(sanitizedYearLevel)
+    setSetupTerm(sanitizedTerm)
+    saveTrackerPreferences({ startYear: parsedStartYear, currentYearLevel: sanitizedYearLevel, currentTerm: sanitizedTerm })
+    markTrackerSetupSeen()
+    setTrackerSetupDialogOpen(false)
+    if (markedCourseCount === 0) {
+      setNoProgressDismissed(true)
+    }
+  }
+
+  const handleSetupUploadClick = () => {
+    setSetupError(null)
+    triggerUploadDialog()
+  }
 
   // Scroll to Import block when navigating with hash
   useEffect(() => {
@@ -1088,6 +1540,27 @@ export default function CourseTracker() {
     return () => window.removeEventListener("scroll", handleScroll)
   }, [stickyOffset])
 
+  useEffect(() => {
+    setCourses((prevCourses) => {
+      let hasChanges = false
+      const nextCourses = prevCourses.map((course) => {
+        if (!course.lastTaken) return course
+        const options = buildYearTermOptions(course, currentYearLevel, currentTerm)
+        const stillValid = options.some(
+          (opt) => opt.year === course.lastTaken?.year && opt.term === course.lastTaken?.term,
+        )
+        if (stillValid) return course
+        hasChanges = true
+        return { ...course, lastTaken: null }
+      })
+      if (hasChanges) {
+        saveCourseStatuses(nextCourses)
+        return nextCourses
+      }
+      return prevCourses
+    })
+  }, [currentYearLevel, currentTerm])
+
   // Pre-calculate dependent courses using useMemo for efficiency
   const dependentCoursesMap = useMemo(() => calculateDependentCoursesMap(courses), [courses])
 
@@ -1124,10 +1597,668 @@ export default function CourseTracker() {
     return termStats
   }, [courses])
 
+  const transcriptEntries = useMemo<TranscriptEntry[]>(() => {
+    const entries: TranscriptEntry[] = []
+    courses.forEach((course) => {
+      const attempts = getGradeAttempts(course)
+      attempts.forEach((attempt) => {
+        entries.push({
+          id: `${course.id}-${attempt.id}`,
+          courseCode: course.code,
+          courseName: course.name,
+          units: course.credits,
+          year: attempt.year,
+          term: attempt.term,
+          grade: attempt.grade,
+        })
+      })
+    })
+
+    return entries.sort((a, b) => compareYearTerm(a.year, a.term, b.year, b.term))
+  }, [courses])
+
   // Find a course by its ID
   const findCourseById = (id: string): Course | undefined => {
     return courses.find((course) => course.id === id)
   }
+
+  const updateCourseData = (courseId: string, updater: (course: Course) => Course) => {
+    setCourses((prevCourses) => {
+      const updatedCourses = prevCourses.map((course) => (course.id === courseId ? updater(course) : course))
+      saveCourseStatuses(updatedCourses)
+      return updatedCourses
+    })
+  }
+
+  const upsertGradeAttempt = (
+    courseId: string,
+    payload: { year: number; term: TermName; grade: string },
+    options?: { updateLastTaken?: boolean },
+  ) => {
+    if (!isAcceptableGrade(payload.grade)) return
+    updateCourseData(courseId, (prevCourse) => {
+      const attempts = getGradeAttempts(prevCourse)
+      const existingIndex = attempts.findIndex(
+        (attempt) => attempt.year === payload.year && attempt.term === payload.term,
+      )
+      const sanitizedGrade = payload.grade.trim()
+      const timestamp = new Date().toISOString()
+      let updatedAttempts: GradeAttempt[]
+
+      if (existingIndex >= 0) {
+        updatedAttempts = attempts.map((attempt, index) =>
+          index === existingIndex ? { ...attempt, grade: sanitizedGrade, recordedAt: timestamp } : attempt,
+        )
+      } else {
+        updatedAttempts = [
+          ...attempts,
+          {
+            id: generateAttemptId(),
+            year: payload.year,
+            term: payload.term,
+            grade: sanitizedGrade,
+            recordedAt: timestamp,
+          },
+        ]
+      }
+
+      const shouldUpdateLastTaken =
+        options?.updateLastTaken &&
+        (!prevCourse.lastTaken ||
+          compareYearTerm(payload.year, payload.term, prevCourse.lastTaken.year, prevCourse.lastTaken.term) >= 0)
+
+      const nextCourse: Course = {
+        ...prevCourse,
+        gradeAttempts: sanitizeGradeAttempts(updatedAttempts),
+      }
+
+      if (shouldUpdateLastTaken) {
+        nextCourse.lastTaken = { year: payload.year, term: payload.term }
+      }
+
+      return nextCourse
+    })
+  }
+
+  const removeGradeAttempt = (courseId: string, year: number, term: TermName) => {
+    updateCourseData(courseId, (prevCourse) => {
+      const attempts = getGradeAttempts(prevCourse)
+      const nextAttempts = attempts.filter((attempt) => !(attempt.year === year && attempt.term === term))
+      if (nextAttempts.length === attempts.length) return prevCourse
+      return {
+        ...prevCourse,
+        gradeAttempts: sanitizeGradeAttempts(nextAttempts),
+      }
+    })
+  }
+
+  const handleLastTakenYearSelect = (courseId: string, value: string) => {
+    if (value === "unset") {
+      updateCourseData(courseId, (prevCourse) => ({ ...prevCourse, lastTaken: null }))
+      return
+    }
+    const parsedYear = Number.parseInt(value, 10)
+    if (Number.isNaN(parsedYear)) return
+
+    updateCourseData(courseId, (prevCourse) => {
+      const options = buildYearTermOptions(prevCourse, currentYearLevel, currentTerm)
+      const yearTerms = options.filter((option) => option.year === parsedYear)
+      if (yearTerms.length === 0) {
+        return { ...prevCourse, lastTaken: null }
+      }
+
+      const preferredTerm = prevCourse.lastTaken?.term
+      const nextTerm = preferredTerm && yearTerms.some((option) => option.term === preferredTerm)
+        ? preferredTerm
+        : yearTerms[0].term
+
+      return {
+        ...prevCourse,
+        lastTaken: { year: parsedYear, term: nextTerm },
+      }
+    })
+  }
+
+  const handleLastTakenTermSelect = (courseId: string, termValue: TermName) => {
+    updateCourseData(courseId, (prevCourse) => {
+      if (!prevCourse.lastTaken) return prevCourse
+      const options = buildYearTermOptions(prevCourse, currentYearLevel, currentTerm)
+      const isAllowed = options.some(
+        (option) => option.year === prevCourse.lastTaken?.year && option.term === termValue,
+      )
+      if (!isAllowed) return prevCourse
+      return {
+        ...prevCourse,
+        lastTaken: {
+          year: prevCourse.lastTaken.year,
+          term: termValue,
+        },
+      }
+    })
+  }
+
+  const handleLatestGradeInput = (courseId: string, gradeValue: string) => {
+    const course = findCourseById(courseId)
+    if (!course || !course.lastTaken) return
+    if (gradeValue === "clear") {
+      removeGradeAttempt(courseId, course.lastTaken.year, course.lastTaken.term)
+      return
+    }
+
+    const sanitized = gradeValue.trim()
+    if (!sanitized) {
+      removeGradeAttempt(courseId, course.lastTaken.year, course.lastTaken.term)
+      return
+    }
+
+    if (!isAcceptableGrade(sanitized)) return
+
+    if (isPassingGrade(sanitized)) {
+      const downgradeAttempts = getPassingAttemptsBeforeYearTerm(course, course.lastTaken.year, course.lastTaken.term)
+      const futureRemovals = getAttemptsAfterYearTerm(course, course.lastTaken.year, course.lastTaken.term)
+      if (downgradeAttempts.length > 0 || futureRemovals.length > 0) {
+        setPendingPassDowngrade({
+          courseId,
+          targetAttempt: { year: course.lastTaken.year, term: course.lastTaken.term, grade: sanitized },
+          downgradeAttempts,
+          futureRemovals,
+          updateLastTaken: false,
+          source: "table",
+        })
+        return
+      }
+    }
+
+    upsertGradeAttempt(
+      courseId,
+      { year: course.lastTaken.year, term: course.lastTaken.term, grade: sanitized },
+      { updateLastTaken: false },
+    )
+  }
+
+  const openGradeModal = (courseId: string) => {
+    const course = findCourseById(courseId)
+    if (!course) return
+    const options = buildYearTermOptions(course, currentYearLevel, currentTerm)
+    const fallbackYear = course.lastTaken?.year ?? options[0]?.year ?? null
+    const fallbackTerm =
+      course.lastTaken?.term ?? options.find((option) => option.year === fallbackYear)?.term ?? options[0]?.term ?? null
+
+    const existingGrade =
+      fallbackYear && fallbackTerm ? findAttemptForYearTerm(course, fallbackYear, fallbackTerm)?.grade ?? "" : ""
+
+    setGradeModalCourseId(courseId)
+    setGradeModalForm({ year: fallbackYear, term: fallbackTerm ?? null, grade: existingGrade })
+    setGradeModalError(null)
+  }
+
+  const closeGradeModal = () => {
+    setGradeModalCourseId(null)
+    setGradeModalForm({ year: null, term: null, grade: "" })
+    setGradeModalError(null)
+    setPendingGradeReplacement(null)
+  }
+
+  const handleGradeModalYearChange = (value: string) => {
+    if (!gradeModalCourseId) return
+    if (value === "unset") {
+      setGradeModalForm((prev) => ({ ...prev, year: null, term: null, grade: "" }))
+      return
+    }
+
+    const parsedYear = Number.parseInt(value, 10)
+    if (Number.isNaN(parsedYear)) return
+    const course = findCourseById(gradeModalCourseId)
+    if (!course) return
+    const options = buildYearTermOptions(course, currentYearLevel, currentTerm)
+    const yearTerms = options.filter((option) => option.year === parsedYear)
+    if (yearTerms.length === 0) return
+
+    const nextTerm = yearTerms[0].term
+    const existingGrade = findAttemptForYearTerm(course, parsedYear, nextTerm)?.grade ?? ""
+    setGradeModalForm((prev) => ({ ...prev, year: parsedYear, term: nextTerm, grade: existingGrade }))
+  }
+
+  const handleGradeModalTermChange = (value: TermName) => {
+    if (!gradeModalCourseId) return
+    const course = findCourseById(gradeModalCourseId)
+    if (!course) return
+    const options = buildYearTermOptions(course, currentYearLevel, currentTerm)
+
+    setGradeModalForm((prev) => {
+      if (!prev.year) return prev
+      const isAllowed = options.some((option) => option.year === prev.year && option.term === value)
+      if (!isAllowed) return prev
+      const existingGrade = findAttemptForYearTerm(course, prev.year, value)?.grade ?? prev.grade
+      return { ...prev, term: value, grade: existingGrade }
+    })
+  }
+
+  const handleGradeModalGradeChange = (value: string) => {
+    if (!isAcceptableGrade(value)) return
+    setGradeModalForm((prev) => ({ ...prev, grade: value }))
+  }
+
+  const handleAddGradeAttempt = () => {
+    if (!gradeModalCourseId) return
+    const course = findCourseById(gradeModalCourseId)
+    if (!course) return
+    const { year, term, grade } = gradeModalForm
+
+    if (!year || !term) {
+      setGradeModalError("Select the year and term for this attempt.")
+      return
+    }
+    if (!grade) {
+      setGradeModalError("Select a grade before saving.")
+      return
+    }
+    const sanitizedGrade = grade
+    const payload = { year, term, grade: sanitizedGrade }
+
+    if (isPassingGrade(sanitizedGrade)) {
+      const downgradeAttempts = getPassingAttemptsBeforeYearTerm(course, year, term)
+      const futureRemovals = getAttemptsAfterYearTerm(course, year, term)
+      if (downgradeAttempts.length > 0 || futureRemovals.length > 0) {
+        setPendingPassDowngrade({
+          courseId: gradeModalCourseId,
+          targetAttempt: payload,
+          downgradeAttempts,
+          futureRemovals,
+          updateLastTaken: true,
+          source: "modal",
+        })
+        setGradeModalError(null)
+        return
+      }
+    }
+
+    const existingAttempt = findAttemptForYearTerm(course, year, term)
+
+    if (existingAttempt) {
+      setPendingGradeReplacement({
+        courseId: gradeModalCourseId,
+        year,
+        term,
+        grade: sanitizedGrade,
+        previousGrade: existingAttempt.grade,
+      })
+      return
+    }
+
+    upsertGradeAttempt(gradeModalCourseId, payload, { updateLastTaken: true })
+    setGradeModalForm((prev) => ({ ...prev, grade: sanitizedGrade }))
+    setGradeModalError(null)
+  }
+
+  const cancelGradeReplacement = () => {
+    setPendingGradeReplacement(null)
+  }
+
+  const confirmGradeReplacement = () => {
+    if (!pendingGradeReplacement) return
+    const { courseId, year, term, grade } = pendingGradeReplacement
+    upsertGradeAttempt(courseId, { year, term, grade }, { updateLastTaken: true })
+    setPendingGradeReplacement(null)
+    setGradeModalForm((prev) => ({ ...prev, grade: "" }))
+    setGradeModalError(null)
+  }
+
+  const cancelPassDowngrade = () => {
+    setPendingPassDowngrade(null)
+  }
+
+  const confirmPassDowngrade = () => {
+    if (!pendingPassDowngrade) return
+    const { courseId, targetAttempt, downgradeAttempts, futureRemovals, updateLastTaken, source } = pendingPassDowngrade
+    const downgradeKeySet = new Set(downgradeAttempts.map((attempt) => `${attempt.year}-${attempt.term}`))
+    const futureRemovalKeySet = new Set(futureRemovals.map((attempt) => `${attempt.year}-${attempt.term}`))
+    const targetKey = `${targetAttempt.year}-${targetAttempt.term}`
+
+    updateCourseData(courseId, (prevCourse) => {
+      if (prevCourse.id !== courseId) return prevCourse
+      const timestamp = new Date().toISOString()
+      const attempts = getGradeAttempts(prevCourse)
+      let targetFound = false
+
+      const adjustedAttempts = attempts.reduce<GradeAttempt[]>((acc, attempt) => {
+        const attemptKey = `${attempt.year}-${attempt.term}`
+        if (futureRemovalKeySet.has(attemptKey) && attemptKey !== targetKey) {
+          return acc
+        }
+        if (attemptKey === targetKey) {
+          targetFound = true
+          acc.push({ ...attempt, grade: targetAttempt.grade, recordedAt: timestamp })
+          return acc
+        }
+        if (downgradeKeySet.has(attemptKey)) {
+          acc.push({ ...attempt, grade: DOWNGRADE_FAIL_GRADE, recordedAt: timestamp })
+          return acc
+        }
+        acc.push(attempt)
+        return acc
+      }, [])
+
+      const finalAttempts = targetFound
+        ? adjustedAttempts
+        : [
+            ...adjustedAttempts,
+            {
+              id: generateAttemptId(),
+              year: targetAttempt.year,
+              term: targetAttempt.term,
+              grade: targetAttempt.grade,
+              recordedAt: timestamp,
+            },
+          ]
+
+      const nextCourse: Course = {
+        ...prevCourse,
+        gradeAttempts: sanitizeGradeAttempts(finalAttempts),
+      }
+
+      if (
+        updateLastTaken &&
+        (!prevCourse.lastTaken ||
+          compareYearTerm(targetAttempt.year, targetAttempt.term, prevCourse.lastTaken.year, prevCourse.lastTaken.term) >= 0)
+      ) {
+        nextCourse.lastTaken = { year: targetAttempt.year, term: targetAttempt.term }
+      }
+
+      return nextCourse
+    })
+
+    if (source === "modal") {
+      setGradeModalForm((prev) => ({ ...prev, grade: targetAttempt.grade }))
+      setGradeModalError(null)
+    }
+
+    setPendingPassDowngrade(null)
+  }
+
+  const gradeModalCourse = gradeModalCourseId ? findCourseById(gradeModalCourseId) : null
+  const gradeModalLatestPassingAttempt = gradeModalCourse ? getLatestPassingAttempt(gradeModalCourse) : null
+  const gradeModalOptions = gradeModalCourse
+    ? buildYearTermOptions(gradeModalCourse, currentYearLevel, currentTerm).filter((option) => {
+        if (!gradeModalLatestPassingAttempt) return true
+        return (
+          compareYearTerm(option.year, option.term, gradeModalLatestPassingAttempt.year, gradeModalLatestPassingAttempt.term) <= 0
+        )
+      })
+    : []
+  const gradeModalYearOptions = Array.from(new Set(gradeModalOptions.map((option) => option.year)))
+  const gradeModalTermOptions = gradeModalForm.year
+    ? gradeModalOptions.filter((option) => option.year === gradeModalForm.year).map((option) => option.term)
+    : []
+  const gradeModalAttempts = gradeModalCourse ? getGradeAttempts(gradeModalCourse) : []
+  const gradeModalSelectedAttempt =
+    gradeModalCourse && gradeModalForm.year && gradeModalForm.term
+      ? findAttemptForYearTerm(gradeModalCourse, gradeModalForm.year, gradeModalForm.term)
+      : null
+  const gradeModalIsDuplicateSelection = Boolean(
+    gradeModalSelectedAttempt &&
+      gradeModalForm.grade &&
+      gradeModalSelectedAttempt.grade === gradeModalForm.grade,
+  )
+  const gradeModalLatestAttempt =
+    gradeModalCourse && gradeModalCourse.lastTaken
+      ? findAttemptForYearTerm(
+          gradeModalCourse,
+          gradeModalCourse.lastTaken.year,
+          gradeModalCourse.lastTaken.term,
+        )
+      : null
+  const gradeModalIsBeforeLatestPass = Boolean(
+    gradeModalLatestPassingAttempt &&
+      gradeModalForm.year &&
+      gradeModalForm.term &&
+      compareYearTerm(
+        gradeModalForm.year,
+        gradeModalForm.term,
+        gradeModalLatestPassingAttempt.year,
+        gradeModalLatestPassingAttempt.term,
+      ) < 0,
+  )
+  const gradeModalGradeOptions = gradeModalIsBeforeLatestPass ? FAIL_GRADE_OPTIONS : ALL_GRADE_OPTIONS
+  const pendingReplacementCourse = pendingGradeReplacement
+    ? findCourseById(pendingGradeReplacement.courseId)
+    : null
+  const pendingPassDowngradeCourse = pendingPassDowngrade
+    ? findCourseById(pendingPassDowngrade.courseId)
+    : null
+
+  useEffect(() => {
+    if (!gradeModalCourseId) return
+    if (!gradeModalForm.year || !gradeModalForm.term) return
+    if (!gradeModalGradeOptions.length) return
+    if (gradeModalGradeOptions.some((option) => option.value === gradeModalForm.grade)) return
+    setGradeModalForm((prev) => ({ ...prev, grade: gradeModalGradeOptions[0].value }))
+  }, [gradeModalCourseId, gradeModalForm.year, gradeModalForm.term, gradeModalGradeOptions, setGradeModalForm])
+
+  const transcriptFormValid =
+    transcriptForm.studentName.trim().length > 0 && transcriptForm.studentNumber.trim().length > 0
+  const hasAnyGrades = transcriptEntries.length > 0
+
+  const openTranscriptModal = () => {
+    if (!hasAnyGrades) {
+      setNoGradesDialogOpen(true)
+      return
+    }
+    setTranscriptModalOpen(true)
+    setTranscriptStep("details")
+    setTranscriptError(null)
+  }
+
+  const closeTranscriptModal = () => {
+    setTranscriptModalOpen(false)
+    setTranscriptStep("details")
+    setTranscriptError(null)
+  }
+
+  const handleTranscriptFieldChange = (field: "studentName" | "studentNumber", value: string) => {
+    setTranscriptForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const goToTranscriptReview = () => {
+    if (!transcriptFormValid) {
+      setTranscriptError("Please complete both fields before continuing.")
+      return
+    }
+    setTranscriptStep("review")
+    setTranscriptError(null)
+  }
+
+  const handleGenerateTranscriptPdf = () => {
+    if (!transcriptFormValid) {
+      setTranscriptStep("details")
+      setTranscriptError("Please complete the student details first.")
+      return
+    }
+
+    if (typeof window === "undefined") return
+
+    const transcriptWindow = window.open("", "_blank", "width=900,height=700")
+    if (!transcriptWindow) {
+      setTranscriptError("Pop-up blocked. Allow pop-ups to save the PDF.")
+      return
+    }
+
+    const generatedAt = new Date()
+    // Use icons for grade status
+    const gradeIcon = (grade: string) => {
+      if (!grade) return ''
+      if (grade.toLowerCase() === 'passed' || grade === '1.00' || grade === 'A') {
+        return '<span style="color:#22c55e;font-size:16px;vertical-align:middle;">✔️</span>'
+      }
+      if (grade.toLowerCase() === 'failed' || grade === '5.00' || grade === 'F') {
+        return '<span style="color:#ef4444;font-size:16px;vertical-align:middle;">❌</span>'
+      }
+      if (grade.toLowerCase() === 'incomplete' || grade === 'INC') {
+        return '<span style="color:#eab308;font-size:16px;vertical-align:middle;">⏳</span>'
+      }
+      return ''
+    }
+
+    const rowsHtml = transcriptEntries.length
+      ? transcriptEntries
+          .map(
+            (entry) => `
+              <tr>
+                <td><b>${escapeHtml(entry.courseCode)}</b></td>
+                <td>${escapeHtml(entry.courseName)}</td>
+                <td style="text-align:center;">${entry.units}</td>
+                <td>Year ${entry.year} • ${entry.term}</td>
+                <td style="text-align:center;">${escapeHtml(entry.grade || "")} ${gradeIcon(entry.grade)}</td>
+              </tr>
+            `,
+          )
+          .join("")
+      : '<tr><td colspan="5" style="text-align:center;">No grade attempts recorded yet.</td></tr>'
+
+    const academicStartLabel = `S.Y. ${startYear}-${startYear + 1}`
+    const displayName = escapeHtml(transcriptForm.studentName.trim())
+    const displayNumber = escapeHtml(transcriptForm.studentNumber.trim())
+    const standing = `Year ${currentYearLevel} • ${currentTerm}`
+    const generatedAtLabel = generatedAt.toLocaleString(undefined, {
+      dateStyle: "long",
+      timeStyle: "short",
+    })
+
+    // Use requested logo from public/android-icon-192x192.png
+    const logoUrl = `${window.location.origin}/android-icon-192x192.png`
+
+    transcriptWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>ComParEng Tools — Transcript</title>
+          <style>
+            :root {
+              font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+              color: #0f172a;
+            }
+            body {
+              margin: 0;
+              padding: 32px;
+              background: #f8fafc;
+            }
+            .transcript-header {
+              display: flex;
+              align-items: center;
+              gap: 18px;
+              margin-bottom: 12px;
+            }
+            .transcript-logo {
+              width: 56px;
+              height: 56px;
+              border-radius: 16px;
+              box-shadow: 0 2px 8px #0001;
+              background: #fff;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              overflow: hidden;
+            }
+            h1 {
+              font-size: 28px;
+              margin: 0 0 2px 0;
+              font-weight: 700;
+              letter-spacing: -0.02em;
+              color: #0f172a;
+            }
+            h2 {
+              font-size: 16px;
+              margin: 24px 0 8px 0;
+              color: #334155;
+            }
+            .meta {
+              font-size: 13px;
+              margin: 2px 0;
+              color: #475569;
+            }
+            table {
+              width: 100%;
+              border-collapse: separate;
+              border-spacing: 0;
+              margin-top: 16px;
+              font-size: 13px;
+              background: #fff;
+              border-radius: 12px;
+              box-shadow: 0 2px 8px #0001;
+              overflow: hidden;
+            }
+            th,
+            td {
+              border-bottom: 1px solid #e2e8f0;
+              padding: 10px 8px;
+              text-align: left;
+            }
+            th {
+              background: #f1f5f9;
+              text-transform: uppercase;
+              letter-spacing: 0.04em;
+              font-size: 11px;
+              color: #475569;
+              font-weight: 600;
+              border-bottom: 2px solid #cbd5f5;
+            }
+            tr:last-child td {
+              border-bottom: none;
+            }
+            .footer {
+              margin-top: 32px;
+              font-size: 12px;
+              color: #64748b;
+              text-align: center;
+            }
+          </style>
+        </head>
+        <body>
+          <header class="transcript-header">
+            <div class="transcript-logo">
+              <img src="${logoUrl}" alt="ComParEng Tools Logo" style="width:100%;height:100%;object-fit:contain;" />
+            </div>
+            <div>
+              <h1>Unofficial Transcript</h1>
+              <p class="meta">Generated via ComParEng Tools Course Tracker</p>
+            </div>
+          </header>
+          <div class="meta"><strong>Student:</strong> ${displayName}</div>
+          <div class="meta"><strong>Student Number:</strong> ${displayNumber}</div>
+          <div class="meta"><strong>Starting Year:</strong> ${academicStartLabel}</div>
+          <div class="meta"><strong>Current Standing:</strong> ${standing}</div>
+          <div class="meta"><strong>Date Generated:</strong> ${escapeHtml(generatedAtLabel)}</div>
+          <div class="meta"><strong>App Version:</strong> v${APP_VERSION}</div>
+          <div class="meta"><strong>Total Recorded Attempts:</strong> ${transcriptEntries.length}</div>
+
+          <h2>Recorded Grades</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Course Code</th>
+                <th>Course Title</th>
+                <th>Units</th>
+                <th>Year & Term</th>
+                <th>Grade</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+
+          <p class="footer">* Save or print this page as PDF for your own record. Data is based on manual entries inside the Course Tracker.<br>ComParEng Tools &copy; 2025</p>
+        </body>
+      </html>
+    `)
+
+    transcriptWindow.document.close()
+    transcriptWindow.focus()
+    transcriptWindow.print()
+    closeTranscriptModal()
+  }
+
 
   // Check if a course can be taken next (all prerequisites are passed or active)
   const canTakeNext = (course: Course): boolean => {
@@ -1240,7 +2371,17 @@ export default function CourseTracker() {
 
   // Download course progress as JSON file
   const downloadProgress = () => {
-    const dataStr = JSON.stringify(courses, null, 2)
+    const snapshot = {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      tracker: {
+        startYear,
+        currentYearLevel,
+        currentTerm,
+      },
+      courses,
+    }
+    const dataStr = JSON.stringify(snapshot, null, 2)
     const dataUri = `data:application/json;charset=utf-8,${encodeURIComponent(dataStr)}`
 
     const exportFileDefaultName = `course-progress-${new Date().toISOString().slice(0, 10)}.json`
@@ -1250,7 +2391,7 @@ export default function CourseTracker() {
     linkElement.setAttribute("download", exportFileDefaultName)
     linkElement.click()
 
-    setSaveMessage("Course progress downloaded successfully")
+    setSaveMessage("Course progress and timeline downloaded successfully")
     setTimeout(() => setSaveMessage(null), 3000)
   }
 
@@ -1258,16 +2399,28 @@ export default function CourseTracker() {
   const uploadProgress = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
+    const fileName = file.name
 
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
         const content = e.target?.result as string
-        const parsedCourses = JSON.parse(content) as Course[]
+        const parsed = JSON.parse(content)
 
-        // Validate the imported data
+        let parsedCourses: Course[] | null = null
+        let parsedTracker: Partial<TrackerPreferences> | null = null
+
+        if (Array.isArray(parsed)) {
+          parsedCourses = parsed as Course[]
+        } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.courses)) {
+          parsedCourses = parsed.courses as Course[]
+          if (parsed.tracker && typeof parsed.tracker === "object") {
+            parsedTracker = parsed.tracker as Partial<TrackerPreferences>
+          }
+        }
+
         if (
-          !Array.isArray(parsedCourses) ||
+          !parsedCourses ||
           !parsedCourses.every(
             (course) =>
               course.id && course.code && course.name && ["passed", "active", "pending"].includes(course.status),
@@ -1276,15 +2429,51 @@ export default function CourseTracker() {
           throw new Error("Invalid course data format")
         }
 
-        registerExternalCourses(parsedCourses)
-        setCourses(parsedCourses)
-        saveCourseStatuses(parsedCourses)
+        const hydrated = hydrateCourses(parsedCourses as Course[])
+        registerExternalCourses(hydrated)
+        setCourses(hydrated)
+        saveCourseStatuses(hydrated)
+
+        if (parsedTracker) {
+          let nextStartYear = startYear
+          let nextYearLevel = currentYearLevel
+          let nextTerm: TermName = currentTerm
+
+          if (typeof parsedTracker.startYear === "number" && parsedTracker.startYear >= 2000 && parsedTracker.startYear <= 2100) {
+            nextStartYear = parsedTracker.startYear
+            setStartYear(nextStartYear)
+            setSetupStartYearInput(String(nextStartYear))
+          }
+          if (
+            typeof parsedTracker.currentYearLevel === "number" &&
+            Number.isFinite(parsedTracker.currentYearLevel) &&
+            parsedTracker.currentYearLevel >= 1
+          ) {
+            nextYearLevel = Math.floor(parsedTracker.currentYearLevel)
+            ensureYearOption(nextYearLevel)
+            setCurrentYearLevel(nextYearLevel)
+            setSetupYearLevel(nextYearLevel)
+          }
+          if (
+            typeof parsedTracker.currentTerm === "string" &&
+            TERM_SEQUENCE.includes(parsedTracker.currentTerm as TermName)
+          ) {
+            nextTerm = parsedTracker.currentTerm as TermName
+            setCurrentTerm(nextTerm)
+            setSetupTerm(nextTerm)
+          }
+
+          saveTrackerPreferences({ startYear: nextStartYear, currentYearLevel: nextYearLevel, currentTerm: nextTerm })
+        }
+
+        setSetupUploadStatus({ fileName, uploadedAt: Date.now() })
         setSaveMessage("Course progress imported successfully")
         setTimeout(() => setSaveMessage(null), 3000)
       } catch (error) {
         console.error("Error parsing course progress file:", error)
         setSaveMessage("Error importing course progress: Invalid file format")
         setTimeout(() => setSaveMessage(null), 3000)
+        setSetupUploadStatus(null)
       }
     }
     reader.readAsText(file)
@@ -1298,7 +2487,8 @@ export default function CourseTracker() {
   // Save current progress to localStorage
   const saveProgress = () => {
     saveCourseStatuses(courses)
-    setSaveMessage("Course progress saved to browser storage")
+    saveTrackerPreferences({ startYear, currentYearLevel, currentTerm })
+    setSaveMessage("Course progress and timeline saved to browser storage")
     setTimeout(() => setSaveMessage(null), 3000)
   }
 
@@ -1315,12 +2505,22 @@ export default function CourseTracker() {
 
   // --- JSX ---
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
-      <div className="mb-6 mt-4">
-        <QuickNavigation />
-      </div>
+    <>
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept=".json"
+        onChange={uploadProgress}
+        tabIndex={-1}
+        aria-hidden="true"
+        className="sr-only"
+      />
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+        <div className="mb-6 mt-4">
+          <QuickNavigation />
+        </div>
 
-      <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto font-sans">
+        <div className="p-4 md:p-6 lg:p-8 w-full max-w-[95rem] mx-auto font-sans">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl md:text-3xl font-bold text-center">FEU TECH Computer Engineering Course Tracker</h1>
           <ThemeToggle />
@@ -1334,9 +2534,8 @@ export default function CourseTracker() {
         <SaveLoadControls
           saveProgress={saveProgress}
           downloadProgress={downloadProgress}
-          uploadProgress={uploadProgress}
           saveMessage={saveMessage}
-          fileInputRef={fileInputRef}
+          triggerUploadDialog={triggerUploadDialog}
           setCourses={setCourses}
           setSaveMessage={setSaveMessage}
         />
@@ -1346,6 +2545,12 @@ export default function CourseTracker() {
           startYear={startYear}
           handleStartYearChange={handleStartYearChange}
           academicYears={academicYears}
+          currentYearLevel={currentYearLevel}
+          onCurrentYearLevelChange={handleCurrentYearLevelChange}
+          currentTerm={currentTerm}
+          onCurrentTermChange={setCurrentTerm}
+          yearLevelOptions={yearLevelOptions}
+          onExtendYearOptions={extendYearOptions}
         />
 
         {/* Overall Progress */}
@@ -1671,11 +2876,14 @@ export default function CourseTracker() {
           ) : (
             <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden">
               {Object.keys(groupedFilteredCourses).length > 0 ? (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <div className="w-full overflow-x-auto">
+                  <table className="min-w-full w-full divide-y divide-gray-200 dark:divide-gray-700">
                     <thead className="bg-gray-50 dark:bg-gray-700">
                       <tr>
-                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                        <th
+                          scope="col"
+                          className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
+                        >
                           Code
                         </th>
                         <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
@@ -1689,6 +2897,24 @@ export default function CourseTracker() {
                         </th>
                         <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                           Status
+                        </th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                          Last Taken
+                        </th>
+                        <th
+                          scope="col"
+                          className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider"
+                          style={{ minWidth: "260px" }}
+                        >
+                          <div className="flex flex-col gap-0.5">
+                            <span>Final Grade</span>
+                            <span className="text-[10px] font-normal normal-case text-gray-400 dark:text-gray-500">
+                              Valid: 0.0, 0.5, 1.0-4.0, 7.0, 8.0, 9.0
+                            </span>
+                            <span className="text-[10px] font-normal normal-case text-gray-400 dark:text-gray-500">
+                              Later passing entries replace earlier passes and clear newer attempts when you move back in time.
+                            </span>
+                          </div>
                         </th>
                       </tr>
                     </thead>
@@ -1714,7 +2940,7 @@ export default function CourseTracker() {
                             return (
                               <React.Fragment key={`${year}-${term}`}>
                                 <tr className="bg-gray-100 dark:bg-gray-700">
-                                  <td colSpan={5} className="px-6 py-2 text-sm font-medium">
+                                  <td colSpan={7} className="px-6 py-2 text-sm font-medium">
                                     {showYearLabel && <div className="font-bold mb-1">{yearLabel}</div>}
                                     <div>
                                       {term}
@@ -1726,6 +2952,21 @@ export default function CourseTracker() {
                                   const prereqCourses = course.prerequisites
                                     .map((id) => findCourseById(id))
                                     .filter((c): c is Course => c !== undefined)
+                                  const allowedYearTermOptions = buildYearTermOptions(course, currentYearLevel, currentTerm)
+                                  const yearOptions = Array.from(new Set(allowedYearTermOptions.map((option) => option.year)))
+                                  const lastTaken = course.lastTaken ?? null
+                                  const termOptionsForYear = lastTaken
+                                    ? allowedYearTermOptions
+                                        .filter((option) => option.year === lastTaken.year)
+                                        .map((option) => option.term)
+                                    : []
+                                  const latestAttempt =
+                                    lastTaken && lastTaken.year && lastTaken.term
+                                      ? findAttemptForYearTerm(course, lastTaken.year, lastTaken.term)
+                                      : null
+                                  const gradeValue = latestAttempt?.grade ?? ""
+                                  const canOpenGradeModal =
+                                    allowedYearTermOptions.length > 0 || getGradeAttempts(course).length > 0
 
                                   return (
                                     <tr key={course.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
@@ -1801,6 +3042,80 @@ export default function CourseTracker() {
                                           </Button>
                                         </div>
                                       </td>
+                                      <td className="px-6 py-4 text-sm">
+                                        {yearOptions.length > 0 ? (
+                                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                            <Select
+                                              value={lastTaken ? String(lastTaken.year) : undefined}
+                                              onValueChange={(value) => handleLastTakenYearSelect(course.id, value)}
+                                            >
+                                              <SelectTrigger className="h-9 w-full sm:w-28 text-sm">
+                                                <SelectValue placeholder="Year" />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                <SelectItem value="unset">Not set</SelectItem>
+                                                {yearOptions.map((yearOption) => (
+                                                  <SelectItem key={`${course.id}-${yearOption}`} value={String(yearOption)}>
+                                                    Year {yearOption}
+                                                  </SelectItem>
+                                                ))}
+                                              </SelectContent>
+                                            </Select>
+                                            <Select
+                                              value={lastTaken ? lastTaken.term : undefined}
+                                              onValueChange={(value) => handleLastTakenTermSelect(course.id, value as TermName)}
+                                              disabled={!lastTaken}
+                                            >
+                                              <SelectTrigger className="h-9 w-full sm:w-28 text-sm">
+                                                <SelectValue placeholder="Term" />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                {termOptionsForYear.map((termOption) => (
+                                                  <SelectItem key={`${course.id}-${termOption}`} value={termOption}>
+                                                    {termOption}
+                                                  </SelectItem>
+                                                ))}
+                                              </SelectContent>
+                                            </Select>
+                                          </div>
+                                        ) : (
+                                          <p className="text-xs text-gray-500 dark:text-gray-400">Update current timeline</p>
+                                        )}
+                                      </td>
+                                      <td className="px-6 py-4 text-sm" style={{ minWidth: "260px" }}>
+                                        <div className="flex flex-col gap-2">
+                                          <div className="flex items-center gap-2">
+                                            <Select
+                                              value={gradeValue || undefined}
+                                              onValueChange={(value) => handleLatestGradeInput(course.id, value)}
+                                              disabled={!lastTaken}
+                                            >
+                                              <SelectTrigger className="h-9 w-36 text-sm">
+                                                <SelectValue placeholder={lastTaken ? "Select" : "Set last taken"} />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                <SelectItem value="clear">Clear grade</SelectItem>
+                                                {ALL_GRADE_OPTIONS.map((option) => (
+                                                  <SelectItem key={`${course.id}-${option.value}`} value={option.value}>
+                                                    {option.label}
+                                                  </SelectItem>
+                                                ))}
+                                              </SelectContent>
+                                            </Select>
+                                            <Button
+                                              type="button"
+                                              variant="outline"
+                                              size="icon"
+                                              className="h-9 w-9"
+                                              onClick={() => openGradeModal(course.id)}
+                                              disabled={!canOpenGradeModal}
+                                              aria-label="Manage grade attempts"
+                                            >
+                                              <Plus className="h-4 w-4" />
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      </td>
                                     </tr>
                                   )
                                 })}
@@ -1817,6 +3132,584 @@ export default function CourseTracker() {
             </div>
           )}
         </div>
+
+        {viewMode === "table" && (
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-muted-foreground">
+              Export your recorded grades as a PDF transcript.
+            </p>
+            <Button onClick={openTranscriptModal} className="w-full sm:w-auto">
+              Save Grades as PDF
+            </Button>
+          </div>
+        )}
+
+        <Dialog
+          open={trackerSetupDialogOpen}
+          onOpenChange={(nextOpen) => {
+            if (nextOpen) {
+              setTrackerSetupDialogOpen(true)
+            } else {
+              handleTrackerSetupClose()
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Set up Course Tracker</DialogTitle>
+              <DialogDescription>
+                Enter your timeline so we can personalize the academic planner and progress views. You can change these anytime.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label className="text-sm font-medium">Starting School Year</Label>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={2000}
+                  max={2100}
+                  value={setupStartYearInput}
+                  onChange={(event) => {
+                    setSetupStartYearInput(event.target.value)
+                    setSetupError(null)
+                  }}
+                  className="mt-1"
+                  placeholder="2023"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">Example: enter 2023 for S.Y. 2023-2024.</p>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <Label className="text-sm font-medium">Current Year Level</Label>
+                  <Select
+                    value={String(setupYearLevel)}
+                    onValueChange={(value) => {
+                      if (value === "extend") {
+                        extendYearOptions()
+                        return
+                      }
+                      const parsed = Number.parseInt(value, 10)
+                      if (!Number.isNaN(parsed)) {
+                        ensureYearOption(parsed)
+                        setSetupYearLevel(parsed)
+                        setSetupError(null)
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="mt-1">
+                      <SelectValue placeholder="Year level" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {yearLevelOptions.map((level) => (
+                        <SelectItem key={`setup-year-${level}`} value={String(level)}>
+                          Year {level}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="extend" className="text-emerald-600 font-semibold">
+                        Year {yearLevelOptions.length + 1} +
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium">Current Term</Label>
+                  <Select
+                    value={setupTerm}
+                    onValueChange={(value) => {
+                      setSetupTerm(value as TermName)
+                      setSetupError(null)
+                    }}
+                  >
+                    <SelectTrigger className="mt-1">
+                      <SelectValue placeholder="Term" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TERM_SEQUENCE.map((term) => (
+                        <SelectItem key={`setup-term-${term}`} value={term}>
+                          {term}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              {setupError && <p className="text-xs text-red-500">{setupError}</p>}
+              <p className="text-xs text-muted-foreground">
+                Already tracked your grades elsewhere? Upload your exported progress JSON and we'll fill everything in for you.
+              </p>
+              {setupUploadStatus && (
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                  <p className="font-medium">Imported {setupUploadStatus.fileName}</p>
+                  <p className="text-xs">
+                    {new Date(setupUploadStatus.uploadedAt).toLocaleString(undefined, {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      hour12: true,
+                    })}
+                  </p>
+                </div>
+              )}
+            </div>
+            <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-between">
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto gap-2"
+                onClick={handleSetupUploadClick}
+              >
+                <Upload className="h-4 w-4" />
+                Upload saved progress
+              </Button>
+              <Button className="w-full sm:w-auto" onClick={handleSetupSubmit}>
+                Save timeline
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={Boolean(gradeModalCourseId)} onOpenChange={(open) => (!open ? closeGradeModal() : null)}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>
+                {gradeModalCourse ? `${gradeModalCourse.code} — ${gradeModalCourse.name}` : "Manage Grades"}
+              </DialogTitle>
+              <DialogDescription>
+                Track grade attempts and make sure retakes stay in sync with the table view.
+              </DialogDescription>
+            </DialogHeader>
+
+            {gradeModalCourse ? (
+              <div className="space-y-5">
+                <div className="rounded-md border border-dashed p-3 text-sm bg-slate-50 dark:bg-slate-900/30">
+                  <p className="font-semibold">Latest Grade</p>
+                  {gradeModalCourse.lastTaken ? (
+                    <div className="mt-1 flex items-center justify-between">
+                      <span>
+                        Year {gradeModalCourse.lastTaken.year} • {gradeModalCourse.lastTaken.term}
+                      </span>
+                      <span className="text-base font-bold text-emerald-600 dark:text-emerald-300">
+                        {gradeModalLatestAttempt?.grade || "Not recorded"}
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Set the last taken fields in the table to activate the final grade input.
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-sm font-medium">Add Grade Attempt</p>
+                  {gradeModalYearOptions.length > 0 ? (
+                    <div className="flex flex-col gap-3 sm:flex-row">
+                      <div className="flex-1">
+                        <Label className="text-xs text-muted-foreground">Year</Label>
+                        <Select
+                          value={gradeModalForm.year ? String(gradeModalForm.year) : undefined}
+                          onValueChange={handleGradeModalYearChange}
+                        >
+                          <SelectTrigger className="mt-1 h-9 text-sm">
+                            <SelectValue placeholder="Year" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {gradeModalYearOptions.map((yearOption) => (
+                              <SelectItem key={`modal-year-${yearOption}`} value={String(yearOption)}>
+                                Year {yearOption}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex-1">
+                        <Label className="text-xs text-muted-foreground">Term</Label>
+                        <Select
+                          value={gradeModalForm.term || undefined}
+                          onValueChange={(value) => handleGradeModalTermChange(value as TermName)}
+                          disabled={!gradeModalForm.year}
+                        >
+                          <SelectTrigger className="mt-1 h-9 text-sm">
+                            <SelectValue placeholder="Term" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {gradeModalTermOptions.map((termOption) => (
+                              <SelectItem key={`modal-term-${termOption}`} value={termOption}>
+                                {termOption}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex-1">
+                        <Label className="text-xs text-muted-foreground">Grade</Label>
+                        <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:items-center">
+                          <div className="flex-1">
+                            {gradeModalForm.year && gradeModalForm.term ? (
+                              <Select value={gradeModalForm.grade || undefined} onValueChange={handleGradeModalGradeChange}>
+                                <SelectTrigger className="h-9 text-sm">
+                                  <SelectValue placeholder="Choose" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {gradeModalGradeOptions.map((option) => (
+                                    <SelectItem key={`modal-grade-${option.value}`} value={option.value}>
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <div className="text-xs text-muted-foreground">Select a year and term first.</div>
+                            )}
+                          </div>
+                          <Button
+                            type="button"
+                            onClick={handleAddGradeAttempt}
+                            disabled={
+                              !gradeModalForm.year ||
+                              !gradeModalForm.term ||
+                              !gradeModalForm.grade ||
+                              gradeModalIsDuplicateSelection
+                            }
+                            className="w-full sm:w-auto"
+                          >
+                            Add Attempt
+                          </Button>
+                        </div>
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          {gradeModalIsBeforeLatestPass && gradeModalLatestPassingAttempt
+                            ? `Passed on Year ${gradeModalLatestPassingAttempt.year} • ${gradeModalLatestPassingAttempt.term}. Earlier attempts can only be logged as failed outcomes.`
+                            : `Valid grades: 0.0, 0.5, 1.0–4.0, 7.0, 8.0, 9.0. Adding a later passing grade will convert older passes to ${DOWNGRADE_FAIL_GRADE} — ${GRADE_LABELS[DOWNGRADE_FAIL_GRADE]} and back-dating a pass clears later term attempts.`}
+                        </p>
+                        {gradeModalIsDuplicateSelection && (
+                          <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">
+                            Grade already matches the current record for this attempt.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Update the current year and term to start logging attempts for this course.
+                    </p>
+                  )}
+                  {gradeModalError && <p className="text-xs text-red-500">{gradeModalError}</p>}
+                </div>
+
+                <div>
+                  <p className="text-sm font-medium mb-2">Grade History</p>
+                  {gradeModalAttempts.length > 0 ? (
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {gradeModalAttempts.map((attempt) => (
+                        <div
+                          key={attempt.id}
+                          className={cn(
+                            "flex items-center justify-between rounded border p-2 text-sm",
+                            gradeModalCourse.lastTaken &&
+                              attempt.year === gradeModalCourse.lastTaken.year &&
+                              attempt.term === gradeModalCourse.lastTaken.term
+                              ? "border-emerald-300 bg-emerald-50 dark:border-emerald-800/70 dark:bg-emerald-900/20"
+                              : "border-slate-200 dark:border-slate-800",
+                          )}
+                        >
+                          <div>
+                            <p className="font-medium">
+                              Year {attempt.year} • {attempt.term}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Recorded {new Date(attempt.recordedAt).toLocaleDateString()}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-base font-semibold">{attempt.grade || "N/A"}</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              {GRADE_LABELS[attempt.grade] || ""}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No grades recorded for this course yet.</p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Select a course from the table to manage grades.</p>
+            )}
+
+            <DialogFooter>
+              <Button variant="outline" onClick={closeGradeModal}>
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={Boolean(pendingGradeReplacement)} onOpenChange={(open) => (!open ? cancelGradeReplacement() : null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Replace Recorded Grade?</DialogTitle>
+              <DialogDescription>
+                {pendingReplacementCourse
+                  ? `${pendingReplacementCourse.code} — ${pendingReplacementCourse.name}`
+                  : "This attempt already has a grade."}
+              </DialogDescription>
+            </DialogHeader>
+            {pendingGradeReplacement && (
+              <div className="space-y-3 text-sm">
+                <p>
+                  Year {pendingGradeReplacement.year} • {pendingGradeReplacement.term}
+                </p>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Existing Grade</p>
+                  <p className="text-base font-semibold">
+                    {pendingGradeReplacement.previousGrade || "N/A"}
+                  </p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">New Grade</p>
+                  <p className="text-base font-semibold">{pendingGradeReplacement.grade}</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Continuing will overwrite the previous grade with the new value.
+                </p>
+              </div>
+            )}
+            <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={cancelGradeReplacement} className="w-full sm:w-auto">
+                Cancel
+              </Button>
+              <Button onClick={confirmGradeReplacement} className="w-full sm:w-auto" variant="destructive">
+                Replace Grade
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={Boolean(pendingPassDowngrade)} onOpenChange={(open) => (!open ? cancelPassDowngrade() : null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Resolve Grade Attempt Conflicts?</DialogTitle>
+              <DialogDescription>
+                {pendingPassDowngradeCourse
+                  ? `${pendingPassDowngradeCourse.code} — ${pendingPassDowngradeCourse.name}`
+                  : "Logging a new passing grade can alter existing attempts."}
+              </DialogDescription>
+            </DialogHeader>
+            {pendingPassDowngrade && (
+              <div className="space-y-4 text-sm">
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">New Attempt</p>
+                  <p className="font-semibold">
+                    Year {pendingPassDowngrade.targetAttempt.year} • {pendingPassDowngrade.targetAttempt.term}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Grade {pendingPassDowngrade.targetAttempt.grade} — {GRADE_LABELS[pendingPassDowngrade.targetAttempt.grade] || ""}
+                  </p>
+                </div>
+
+                {pendingPassDowngrade.downgradeAttempts.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium mb-2">
+                      Will be changed to {DOWNGRADE_FAIL_GRADE} — {GRADE_LABELS[DOWNGRADE_FAIL_GRADE]}
+                    </p>
+                    <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                      {pendingPassDowngrade.downgradeAttempts.map((attempt: GradeAttempt) => (
+                        <div key={`${attempt.year}-${attempt.term}`} className="rounded border p-2 text-sm">
+                          <p className="font-semibold">
+                            Year {attempt.year} • {attempt.term}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Current grade {attempt.grade} — {GRADE_LABELS[attempt.grade] || ""}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[11px] text-muted-foreground">
+                      This keeps only the newest passing record. Earlier passes are preserved as failed outcomes for audit trails.
+                    </p>
+                  </div>
+                )}
+
+                {pendingPassDowngrade.futureRemovals.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium mb-2">Later attempts will be removed</p>
+                    <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                      {pendingPassDowngrade.futureRemovals.map((attempt: GradeAttempt) => (
+                        <div key={`future-${attempt.year}-${attempt.term}`} className="rounded border p-2 text-sm">
+                          <p className="font-semibold">
+                            Year {attempt.year} • {attempt.term}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Current grade {attempt.grade || "—"} {attempt.grade ? `— ${GRADE_LABELS[attempt.grade] || ""}` : ""}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[11px] text-muted-foreground">
+                      Moving the "Last Taken" back means later term attempts are cleared so your transcript remains chronological.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+            <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={cancelPassDowngrade} className="w-full sm:w-auto">
+                Cancel
+              </Button>
+              <Button onClick={confirmPassDowngrade} className="w-full sm:w-auto" variant="destructive">
+                Apply Changes
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={transcriptModalOpen} onOpenChange={(open) => (!open ? closeTranscriptModal() : null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Save Grades as PDF</DialogTitle>
+              <DialogDescription>
+                {transcriptStep === "details"
+                  ? "Enter your student details so we can stamp them on the transcript."
+                  : "Review everything before we generate the PDF."
+                }
+              </DialogDescription>
+            </DialogHeader>
+
+            {transcriptStep === "details" ? (
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="transcript-name" className="text-sm font-medium">Student Name</Label>
+                  <Input
+                    id="transcript-name"
+                    value={transcriptForm.studentName}
+                    onChange={(e) => handleTranscriptFieldChange("studentName", e.target.value)}
+                    placeholder="Jane Doe"
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="transcript-number" className="text-sm font-medium">Student Number</Label>
+                  <Input
+                    id="transcript-number"
+                    value={transcriptForm.studentNumber}
+                    onChange={(e) => handleTranscriptFieldChange("studentNumber", e.target.value)}
+                    placeholder="2025-123456"
+                    className="mt-1"
+                  />
+                </div>
+                {transcriptError && <p className="text-xs text-red-500">{transcriptError}</p>}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">Student</p>
+                    <p className="font-medium">{transcriptForm.studentName || "—"}</p>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">Student No.</p>
+                    <p className="font-medium">{transcriptForm.studentNumber || "—"}</p>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">Starting Year</p>
+                    <p className="font-medium">S.Y. {startYear}-{startYear + 1}</p>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">Current Standing</p>
+                    <p className="font-medium">Year {currentYearLevel} • {currentTerm}</p>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">Date Generated</p>
+                    <p className="font-medium">{new Date().toLocaleString()}</p>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">App Version</p>
+                    <p className="font-medium">v{APP_VERSION}</p>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-sm font-medium">Recorded Grades ({transcriptEntries.length})</p>
+                    {transcriptEntries.length > 0 && (
+                      <span className="text-xs text-muted-foreground">Showing chronological order</span>
+                    )}
+                  </div>
+                  {transcriptEntries.length > 0 ? (
+                    <div className="max-h-48 overflow-y-auto rounded border">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-slate-50 dark:bg-slate-900/40">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-semibold">Code</th>
+                            <th className="px-3 py-2 text-left font-semibold">Title</th>
+                            <th className="px-3 py-2 text-left font-semibold">Units</th>
+                            <th className="px-3 py-2 text-left font-semibold">Year & Term</th>
+                            <th className="px-3 py-2 text-left font-semibold">Grade</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {transcriptEntries.slice(0, 8).map((entry) => (
+                            <tr key={entry.id} className="border-t text-[11px]">
+                              <td className="px-3 py-1">{entry.courseCode}</td>
+                              <td className="px-3 py-1">{entry.courseName}</td>
+                              <td className="px-3 py-1">{entry.units}</td>
+                              <td className="px-3 py-1">Year {entry.year} • {entry.term}</td>
+                              <td className="px-3 py-1">{entry.grade || "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {transcriptEntries.length > 8 && (
+                        <p className="px-3 py-2 text-xs text-muted-foreground">+{transcriptEntries.length - 8} more entries will be included.</p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No grade attempts recorded yet. You can still generate the PDF.</p>
+                  )}
+                </div>
+                {transcriptError && <p className="text-xs text-red-500">{transcriptError}</p>}
+              </div>
+            )}
+
+            <DialogFooter className="flex flex-col sm:flex-row sm:justify-between">
+              {transcriptStep === "review" ? (
+                <Button variant="outline" onClick={() => setTranscriptStep("details")} className="w-full sm:w-auto">
+                  Back
+                </Button>
+              ) : (
+                <Button variant="outline" onClick={closeTranscriptModal} className="w-full sm:w-auto">
+                  Cancel
+                </Button>
+              )}
+              {transcriptStep === "details" ? (
+                <Button onClick={goToTranscriptReview} className="w-full sm:w-auto" disabled={!transcriptFormValid}>
+                  Review Details
+                </Button>
+              ) : (
+                <Button onClick={handleGenerateTranscriptPdf} className="w-full sm:w-auto">
+                  Generate PDF
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={noGradesDialogOpen} onOpenChange={setNoGradesDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add a Grade First</DialogTitle>
+              <DialogDescription>
+                Record at least one course grade before generating the transcript PDF.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="text-sm text-muted-foreground">
+              Use the Final Grade column or grade modal to log your first attempt, then try exporting again.
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setNoGradesDialogOpen(false)}>Okay</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Navigation Buttons (Bottom) */}
         <div className="mt-10 mb-6">
@@ -1841,6 +3734,7 @@ export default function CourseTracker() {
           </div>
         </footer>
       </div>
-    </div>
+      </div>
+    </>
   )
 }
