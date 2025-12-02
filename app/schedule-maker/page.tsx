@@ -177,6 +177,31 @@ interface ApplyAvailableCoursesOptions {
   isSampleData?: boolean
 }
 
+interface ExportedSelectedCourse {
+  courseCode: string
+  section: string
+  meetingDays: string
+  meetingTime: string
+  room: string
+  customTitle?: string | null
+  customColor?: string | null
+}
+
+interface SelectedCourseExportPayload {
+  version: number
+  generatedAt: string
+  courses: ExportedSelectedCourse[]
+}
+
+const SELECTED_COURSE_EXPORT_VERSION = 1
+const STALE_IMPORT_NOTICE_STORAGE_KEY = "scheduleMaker.staleImportNotice"
+
+interface ImportDialogConfig {
+  title: string
+  message: string
+  onAcknowledge?: () => void
+}
+
 const buildCourseSignature = (course: CourseSection) => {
   if (!course) return ""
   return [
@@ -418,6 +443,8 @@ export default function ScheduleMaker() {
   const [selectedViewMode, setSelectedViewMode] = useState<"card" | "table">("card")
   const scheduleRef = useRef<HTMLDivElement>(null)
   const lastAvailableHashRef = useRef<string>("")
+  const importFileInputRef = useRef<HTMLInputElement | null>(null)
+  const pendingImportFollowUpRef = useRef<(() => void) | null>(null)
   const [showOnlyActive, setShowOnlyActive] = useState(true)
   const [startDate, setStartDate] = useState<Date>(new Date())
   const [searchTerm, setSearchTerm] = useState("")
@@ -434,11 +461,51 @@ export default function ScheduleMaker() {
     typeof window !== 'undefined' ? localStorage.getItem('scheduleTitle') || 'Weekly Schedule' : 'Weekly Schedule'
   )
   const [curriculumSignature, setCurriculumSignature] = useState<string>("")
+  const [importStatus, setImportStatus] = useState<null | { type: "success" | "warning" | "error"; message: string }>(null)
+  const [importErrorDialog, setImportErrorDialog] = useState<ImportDialogConfig | null>(null)
+  const [staleImportNotice, setStaleImportNotice] = useState<string | null>(null)
+
+  const persistStaleImportNotice = useCallback((message: string | null) => {
+    setStaleImportNotice(message)
+    if (typeof window === "undefined") return
+    if (message) {
+      localStorage.setItem(STALE_IMPORT_NOTICE_STORAGE_KEY, message)
+    } else {
+      localStorage.removeItem(STALE_IMPORT_NOTICE_STORAGE_KEY)
+    }
+  }, [])
+
+  const dismissStaleImportNotice = useCallback(() => {
+    persistStaleImportNotice(null)
+  }, [persistStaleImportNotice])
+
+  const closeImportDialog = useCallback(() => {
+    setImportErrorDialog((prev) => {
+      if (prev?.onAcknowledge) {
+        pendingImportFollowUpRef.current = prev.onAcknowledge
+      } else {
+        pendingImportFollowUpRef.current = null
+      }
+      return null
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!importErrorDialog && pendingImportFollowUpRef.current) {
+      const followUp = pendingImportFollowUpRef.current
+      pendingImportFollowUpRef.current = null
+      setTimeout(() => followUp(), 0)
+    }
+  }, [importErrorDialog])
 
   useEffect(() => {
     if (typeof window === "undefined") return
     setHideNoDataDialog(localStorage.getItem("scheduleMaker.hideNoDataDialog") === "true")
     setHideNoActiveDialog(localStorage.getItem("scheduleMaker.hideNoActiveDialog") === "true")
+    const storedNotice = localStorage.getItem(STALE_IMPORT_NOTICE_STORAGE_KEY)
+    if (storedNotice) {
+      setStaleImportNotice(storedNotice)
+    }
   }, [])
 
   const noActiveCourses = activeCourses.length === 0
@@ -479,6 +546,12 @@ export default function ScheduleMaker() {
       setNoDataDialogDismissed(false)
     }
   }, [hasRealCourseData])
+
+  useEffect(() => {
+    if (hasRealCourseData) {
+      persistStaleImportNotice(null)
+    }
+  }, [hasRealCourseData, persistStaleImportNotice])
 
   useEffect(() => {
     setIsClient(true)
@@ -890,6 +963,193 @@ export default function ScheduleMaker() {
       delete newCustomizations[key]
       return newCustomizations
     })
+  }
+
+  const buildSelectedCourseExportPayload = (): SelectedCourseExportPayload => {
+    const courses: ExportedSelectedCourse[] = selectedCourses.map((course) => {
+      const key = `${course.courseCode}-${course.section}`
+      const customization = customizations[key] || {}
+      return {
+        courseCode: course.courseCode,
+        section: course.section,
+        meetingDays: course.meetingDays,
+        meetingTime: course.meetingTime,
+        room: course.room,
+        customTitle: customization.customTitle || null,
+        customColor: customization.color || null,
+      }
+    })
+
+    return {
+      version: SELECTED_COURSE_EXPORT_VERSION,
+      generatedAt: new Date().toISOString(),
+      courses,
+    }
+  }
+
+  const handleExportSelectedCourses = () => {
+    if (selectedCourses.length === 0) {
+      setImportStatus({ type: "warning", message: "Add at least one course before exporting selections." })
+      return
+    }
+
+    try {
+      const payload = buildSelectedCourseExportPayload()
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `selected-courses-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+      setImportStatus({ type: "success", message: "Exported selected courses." })
+    } catch (err) {
+      console.error("Failed to export selected courses:", err)
+      setImportStatus({ type: "error", message: "Failed to export selected courses." })
+    }
+  }
+
+  const triggerImportSelectedCourses = () => {
+    if (selectedCourses.length === 0) {
+      setImportErrorDialog({
+        title: "Selected courses empty",
+        message:
+          "We recommend importing saved selections only after you've added at least one course so it's easier to verify matches. We'll open the file picker once you dismiss this reminder.",
+        onAcknowledge: () => importFileInputRef.current?.click(),
+      })
+      return
+    }
+    importFileInputRef.current?.click()
+  }
+
+  const handleImportSelectedCourses: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    try {
+      if (!file.name.toLowerCase().endsWith(".json")) {
+        throw new Error("Unsupported file type. Please upload a JSON export from Schedule Maker.")
+      }
+
+      if (availableCourses.length === 0) {
+        throw new Error("No extracted course data available. Refresh data before importing selections.")
+      }
+
+      const text = await file.text()
+      const parsed = JSON.parse(text)
+      const candidateCourses: ExportedSelectedCourse[] = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.courses)
+          ? parsed.courses
+          : []
+
+      if (candidateCourses.length === 0) {
+        throw new Error("No course entries found in the imported file.")
+      }
+
+      let applied = 0
+      let skippedMissing = 0
+      let skippedInvalid = 0
+      let updatedDetails = 0
+      const customizationUpdates: Record<string, CourseCustomization> = {}
+      const seenKeys = new Set<string>()
+
+      candidateCourses.forEach((entry) => {
+        const courseCode = typeof entry?.courseCode === "string" ? entry.courseCode.trim() : ""
+        const section = typeof entry?.section === "string" ? entry.section.trim() : ""
+        if (!courseCode || !section) {
+          skippedInvalid += 1
+          return
+        }
+
+        const lookup = availableCourses.find(
+          (course) =>
+            course.courseCode.trim().toUpperCase() === courseCode.toUpperCase() &&
+            course.section.trim().toUpperCase() === section.toUpperCase(),
+        )
+
+        if (!lookup) {
+          skippedMissing += 1
+          return
+        }
+
+        const key = `${lookup.courseCode}-${lookup.section}`
+        if (!seenKeys.has(key)) {
+          addCourse(lookup)
+          seenKeys.add(key)
+          applied += 1
+        }
+
+        const sanitizedTitle = typeof entry.customTitle === "string" ? entry.customTitle : undefined
+        const sanitizedColor = typeof entry.customColor === "string" ? entry.customColor : undefined
+        if (sanitizedTitle !== undefined || sanitizedColor !== undefined) {
+          customizationUpdates[key] = {
+            ...customizationUpdates[key],
+            ...(customizations[key] || {}),
+            ...(sanitizedTitle !== undefined ? { customTitle: sanitizedTitle } : {}),
+            ...(sanitizedColor !== undefined ? { color: sanitizedColor } : {}),
+          }
+        }
+
+        const changedDetails =
+          (entry.meetingDays && entry.meetingDays !== lookup.meetingDays) ||
+          (entry.meetingTime && entry.meetingTime !== lookup.meetingTime) ||
+          (entry.room && entry.room !== lookup.room)
+        if (changedDetails) {
+          updatedDetails += 1
+        }
+      })
+
+      if (Object.keys(customizationUpdates).length > 0) {
+        setCustomizations((prev) => ({
+          ...prev,
+          ...customizationUpdates,
+        }))
+      }
+
+      if (applied === 0 && skippedMissing === 0 && skippedInvalid === 0) {
+        throw new Error("No valid course entries found in the imported file.")
+      }
+
+      const parts: string[] = []
+      if (applied > 0) parts.push(`Imported ${applied} course${applied === 1 ? "" : "s"}.`)
+      if (updatedDetails > 0)
+        parts.push(`${updatedDetails} course${updatedDetails === 1 ? "" : "s"} had updated schedule details.`)
+      if (skippedMissing > 0)
+        parts.push(`${skippedMissing} entr${skippedMissing === 1 ? "y was" : "ies were"} not found in the latest extraction.`)
+      if (skippedInvalid > 0)
+        parts.push(`${skippedInvalid} entr${skippedInvalid === 1 ? "y was" : "ies were"} invalid.`)
+
+      let statusType:
+        | "success"
+        | "warning"
+        | "error" = skippedMissing > 0 || skippedInvalid > 0 ? (applied > 0 ? "warning" : "error") : "success"
+
+      if (!hasRealCourseData) {
+        const staleMessage =
+          "Latest extracted data is unavailable, so slot counts and schedules might have changed. Refresh with the extension when possible."
+        parts.push(staleMessage)
+        persistStaleImportNotice(staleMessage)
+        if (statusType === "success") {
+          statusType = "warning"
+        }
+      } else {
+        persistStaleImportNotice(null)
+      }
+
+      setImportStatus({ type: statusType, message: parts.join(" ") })
+    } catch (err: any) {
+      console.error("Failed to import selected courses:", err)
+      const message = err?.message || "Failed to import selected courses."
+      setImportStatus({ type: "error", message })
+      setImportErrorDialog({ title: "Import error", message })
+    } finally {
+      if (event.target) {
+        event.target.value = ""
+      }
+    }
   }
 
   // New ICS file generator
@@ -2366,13 +2626,70 @@ const renderScheduleView = () => {
 
             {/* Selected Courses Tab */}
             <TabsContent value="selected">
+              <Dialog open={Boolean(importErrorDialog)} onOpenChange={(isOpen) => !isOpen && closeImportDialog()}>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>{importErrorDialog?.title || "Import error"}</DialogTitle>
+                    <DialogDescription>
+                      Make sure you upload the JSON file exported from Schedule Maker so we can restore your selections safely.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <p className="text-sm text-slate-600 dark:text-slate-300">{importErrorDialog?.message}</p>
+                  <DialogFooter>
+                    <Button onClick={closeImportDialog}>Got it</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+              <input
+                type="file"
+                accept="application/json"
+                ref={importFileInputRef}
+                className="hidden"
+                onChange={handleImportSelectedCourses}
+              />
+              {importStatus && (
+                <Alert
+                  className="mb-4"
+                  variant={importStatus.type === "error" ? "destructive" : "default"}
+                >
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>
+                    {importStatus.type === "success"
+                      ? "Transfer complete"
+                      : importStatus.type === "warning"
+                        ? "Transfer finished with notices"
+                        : "Transfer issue"}
+                  </AlertTitle>
+                  <AlertDescription>{importStatus.message}</AlertDescription>
+                </Alert>
+              )}
+              {staleImportNotice && (
+                <Alert className="mb-4 border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/20 dark:text-amber-50">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Extracted data missing</AlertTitle>
+                  <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <span>{staleImportNotice}</span>
+                    <Button variant="outline" size="sm" onClick={dismissStaleImportNotice}>
+                      Dismiss
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
               {selectedCourses.length === 0 ? (
                 <div className="bg-blue-100 dark:bg-blue-900/30 border border-blue-400 dark:border-blue-700 text-blue-700 dark:text-blue-400 px-4 py-3 rounded mb-4">
                   <p>No courses selected yet. Add courses from the Available Courses tab to build your schedule.</p>
+                  <div className="mt-3 flex gap-2">
+                    <Button variant="outline" size="sm" onClick={triggerImportSelectedCourses}>
+                      Import selection
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={handleExportSelectedCourses} disabled>
+                      Export selection
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <>
-                  <div className="mb-4 flex justify-between">
+                  <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                     <div className="flex items-center space-x-2">
                       <Button
                         variant="outline"
@@ -2380,6 +2697,14 @@ const renderScheduleView = () => {
                         className="flex items-center gap-2"
                       >
                         {selectedViewMode === "card" ? "Table View" : "Card View"}
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={triggerImportSelectedCourses}>
+                        Import selection
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={handleExportSelectedCourses}>
+                        Export selection
                       </Button>
                     </div>
                   </div>
