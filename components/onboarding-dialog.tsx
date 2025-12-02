@@ -420,8 +420,8 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       setCreditLimitError("Credits can't be negative.")
       return
     }
-    if (creditLimitMax < creditLimitMin) {
-      setCreditLimitError("Maximum credits must be greater than or equal to the minimum.")
+    if (creditLimitMax <= creditLimitMin) {
+      setCreditLimitError("Maximum credits must be greater than the minimum.")
       return
     }
     persistCreditLimits(creditLimitMin, creditLimitMax)
