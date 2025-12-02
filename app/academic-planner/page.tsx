@@ -37,7 +37,7 @@ import Link from "next/link"
 import { useTheme } from "next-themes"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { initialCourses } from "@/lib/course-data"
+import { initialCourses, curriculumCodes } from "@/lib/course-data"
 import { loadCourseStatuses, loadTrackerPreferences, TRACKER_PREFERENCES_KEY } from "@/lib/course-storage"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -124,6 +124,12 @@ interface ConflictInfo {
 
 const PERIOD_CONFIRM_PREFIX = "planner.period.confirmed"
 const PERIOD_REGULAR_PREFIX = "planner.period.regular"
+const CREDIT_LIMITS_STORAGE_KEY = "planner.creditLimits"
+const DEFAULT_CURRICULUM_CODE_SET = new Set(
+  (curriculumCodes ?? [])
+    .map((code) => (typeof code === "string" ? code.toUpperCase() : ""))
+    .filter((code) => Boolean(code)),
+)
 
 // Import data interface
 interface ImportedPlanData {
@@ -230,6 +236,8 @@ export default function AcademicPlanner() {
   const graduationSummaryRef = useRef<HTMLDivElement | null>(null)
   const [topContentVisible, setTopContentVisible] = useState(true)
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
+  const [minCreditsPerTerm, setMinCreditsPerTerm] = useState(RECOMMENDED_UNITS_MIN)
+  const [maxCreditsPerTerm, setMaxCreditsPerTerm] = useState(RECOMMENDED_UNITS_MAX)
   // Track if we've already shown the regular-student curriculum notice
   const [regularNoticeShown, setRegularNoticeShown] = useState(false)
   const [regularNoticeTerm, setRegularNoticeTerm] = useState<{ year: number; term: string } | null>(null)
@@ -241,6 +249,14 @@ export default function AcademicPlanner() {
   const [periodDialogKey, setPeriodDialogKey] = useState<string | null>(null)
   const [regularPeriodDialogOpen, setRegularPeriodDialogOpen] = useState(false)
   const [regularPeriodInfo, setRegularPeriodInfo] = useState<{ year: number; term: string; courses: Course[] } | null>(null)
+  const hasCustomCurriculum = useMemo(
+    () => courses.some((course) => !DEFAULT_CURRICULUM_CODE_SET.has((course.code || "").toUpperCase())),
+    [courses],
+  )
+  const shouldPromptCreditConfirmation =
+    hasCustomCurriculum &&
+    minCreditsPerTerm === RECOMMENDED_UNITS_MIN &&
+    maxCreditsPerTerm === RECOMMENDED_UNITS_MAX
 
   // Load persisted settings
   useEffect(() => {
@@ -259,6 +275,35 @@ export default function AcademicPlanner() {
   useEffect(() => {
     try { localStorage.setItem("planner.locks", JSON.stringify(lockedPlacements)) } catch {}
   }, [lockedPlacements])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = window.localStorage.getItem(CREDIT_LIMITS_STORAGE_KEY)
+      if (!stored) return
+      const parsed = JSON.parse(stored)
+      if (typeof parsed?.min === "number" && Number.isFinite(parsed.min)) {
+        setMinCreditsPerTerm(Math.max(0, parsed.min))
+      }
+      if (typeof parsed?.max === "number" && Number.isFinite(parsed.max)) {
+        setMaxCreditsPerTerm(Math.max(0, parsed.max))
+      }
+    } catch (err) {
+      console.error("Error loading credit limits:", err)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(
+        CREDIT_LIMITS_STORAGE_KEY,
+        JSON.stringify({ min: minCreditsPerTerm, max: maxCreditsPerTerm }),
+      )
+    } catch (err) {
+      console.error("Error saving credit limits:", err)
+    }
+  }, [minCreditsPerTerm, maxCreditsPerTerm])
 
   // Load saved course statuses and available sections on component mount
   useEffect(() => {
@@ -817,6 +862,29 @@ export default function AcademicPlanner() {
     return `S.Y ${start}-${start + 1}`
   }
 
+  const sanitizeCreditValue = (value: number) => {
+    if (!Number.isFinite(value)) return 0
+    return Math.max(0, value)
+  }
+
+  const handleMinCreditsChange = (value: number) => {
+    const sanitized = sanitizeCreditValue(value)
+    setMinCreditsPerTerm(sanitized)
+    if (sanitized > maxCreditsPerTerm) {
+      setMaxCreditsPerTerm(sanitized)
+    }
+  }
+
+  const handleMaxCreditsChange = (value: number) => {
+    const sanitized = sanitizeCreditValue(value)
+    setMaxCreditsPerTerm(Math.max(sanitized, minCreditsPerTerm))
+  }
+
+  const resetCreditLimitPreferences = () => {
+    setMinCreditsPerTerm(RECOMMENDED_UNITS_MIN)
+    setMaxCreditsPerTerm(RECOMMENDED_UNITS_MAX)
+  }
+
   // Helper to get the previous term
   const getPreviousTerm = (year: number, term: string): { year: number; term: string } => {
     if (term === "Term 3") return { year, term: "Term 2" }
@@ -871,22 +939,22 @@ export default function AcademicPlanner() {
     graduationPlan.forEach((semester) => {
       // Check credit limits (configurable)
       const totalCredits = semester.courses.reduce((sum, course) => sum + course.credits, 0)
-      const hardMax = RECOMMENDED_UNITS_MAX + ALLOW_OVERFLOW_UNITS
+      const hardMax = maxCreditsPerTerm + ALLOW_OVERFLOW_UNITS
       if (totalCredits > hardMax) {
         newConflicts.push({
           type: "credit_limit",
           severity: "error",
-          message: `${formatAcademicYear(semester.year)} ${semester.term} exceeds the maximum permitted load: ${totalCredits} credits (limit: ${RECOMMENDED_UNITS_MAX} + ${ALLOW_OVERFLOW_UNITS} overflow).`,
+          message: `${formatAcademicYear(semester.year)} ${semester.term} exceeds the maximum permitted load: ${totalCredits} credits (limit: ${maxCreditsPerTerm} + ${ALLOW_OVERFLOW_UNITS} overflow).`,
           affectedCourses: semester.courses.map((c) => c.id),
         })
-      } else if (totalCredits > RECOMMENDED_UNITS_MAX) {
+      } else if (totalCredits > maxCreditsPerTerm) {
         newConflicts.push({
           type: "credit_limit",
           severity: "warning",
-          message: `${formatAcademicYear(semester.year)} ${semester.term} exceeds the recommended maximum load: ${totalCredits} credits (recommended max: ${RECOMMENDED_UNITS_MAX}).`,
+          message: `${formatAcademicYear(semester.year)} ${semester.term} exceeds your maximum target load: ${totalCredits} credits (target max: ${maxCreditsPerTerm}).`,
           affectedCourses: semester.courses.map((c) => c.id),
         })
-      } else if (totalCredits < RECOMMENDED_UNITS_MIN) {
+      } else if (totalCredits < minCreditsPerTerm) {
         // Defer below-min warnings for a single aggregated message later, excluding internship-only terms
         const isInternshipOnly = semester.courses.length > 0 && semester.courses.every((c) => isInternshipCourse(c))
         if (!isInternshipOnly) {
@@ -988,7 +1056,7 @@ export default function AcademicPlanner() {
       newConflicts.push({
         type: "credit_limit",
         severity: "warning",
-        message: `Some terms are below the recommended minimum load of ${RECOMMENDED_UNITS_MIN} credits: ${labels}. Consider rebalancing your plan.`,
+        message: `Some terms fall below your minimum target of ${minCreditsPerTerm} credits: ${labels}. Consider rebalancing your plan.`,
         affectedCourses: affected,
       })
     }
@@ -1912,7 +1980,7 @@ export default function AcademicPlanner() {
     let currentPlanTerm = currentTerm
     let currentSemesterCourses: PlanCourse[] = []
     let currentSemesterCredits = 0
-    const HARD_MAX_CREDITS = RECOMMENDED_UNITS_MAX + ALLOW_OVERFLOW_UNITS
+    const HARD_MAX_CREDITS = maxCreditsPerTerm + ALLOW_OVERFLOW_UNITS
 
     // Reserved internship terms (determine from curriculum)
     // Reserved terms disabled; internships will be scheduled dynamically after regular courses
@@ -2185,7 +2253,7 @@ export default function AcademicPlanner() {
 
     const tryFillToMin = () => {
       let added = 0
-      if (currentSemesterCredits >= RECOMMENDED_UNITS_MIN) return added
+      if (currentSemesterCredits >= minCreditsPerTerm) return added
       const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
       const termOrder = ["Term 1", "Term 2", "Term 3"]
       const candidates = [...remainingRegularCourses].sort((a, b) => {
@@ -2210,7 +2278,7 @@ export default function AcademicPlanner() {
       })
 
       for (const course of candidates) {
-        if (currentSemesterCredits >= RECOMMENDED_UNITS_MIN) break
+        if (currentSemesterCredits >= minCreditsPerTerm) break
         if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) continue
         if (currentSemesterCredits + course.credits > HARD_MAX_CREDITS) continue
         currentSemesterCourses.push(course)
@@ -2251,7 +2319,7 @@ export default function AcademicPlanner() {
     // Try to pack up to the recommended max via small search (singles and pairs)
     const tryPackToMax = () => {
       let packed = 0
-      const softCapacity = Math.max(0, RECOMMENDED_UNITS_MAX - currentSemesterCredits)
+      const softCapacity = Math.max(0, maxCreditsPerTerm - currentSemesterCredits)
       const hardCapacity = Math.max(0, HARD_MAX_CREDITS - currentSemesterCredits)
       if (hardCapacity <= 0) return packed
 
@@ -2303,7 +2371,7 @@ export default function AcademicPlanner() {
         packed++
       }
 
-      const remainingSoft = Math.max(0, RECOMMENDED_UNITS_MAX - currentSemesterCredits)
+      const remainingSoft = Math.max(0, maxCreditsPerTerm - currentSemesterCredits)
       const remainingHard = Math.max(0, HARD_MAX_CREDITS - currentSemesterCredits)
       if (remainingHard <= 0) return packed
 
@@ -2397,13 +2465,13 @@ export default function AcademicPlanner() {
       }
 
       // Try to reach the recommended minimum load using eligible remaining courses
-      if (currentSemesterCredits < RECOMMENDED_UNITS_MIN) {
+      if (currentSemesterCredits < minCreditsPerTerm) {
         const newlyAdded = tryFillToMin()
         coursesScheduledThisIteration += newlyAdded
       }
 
       // After min is satisfied, try to pack toward the recommended max with small search
-      if (currentSemesterCredits >= RECOMMENDED_UNITS_MIN && currentSemesterCredits < RECOMMENDED_UNITS_MAX) {
+      if (currentSemesterCredits >= minCreditsPerTerm && currentSemesterCredits < maxCreditsPerTerm) {
         const packed = tryPackToMax()
         coursesScheduledThisIteration += packed
       }
@@ -3038,6 +3106,49 @@ export default function AcademicPlanner() {
                   )}
                 </div>
               </div>
+              {shouldPromptCreditConfirmation && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-4 text-sm dark:border-amber-500/40 dark:bg-amber-500/10">
+                  <div>
+                    <p className="font-semibold text-amber-900 dark:text-amber-100">Confirm your unit range</p>
+                    <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">
+                      Imported curricula can use different credit loads. Set the min/max units you follow from the Student Portal or OSES so overload warnings stay accurate.
+                    </p>
+                  </div>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-medium text-amber-900 dark:text-amber-100" htmlFor="period-min-credits">
+                        Minimum units per term
+                      </label>
+                      <Input
+                        id="period-min-credits"
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        value={minCreditsPerTerm}
+                        onChange={(e) => handleMinCreditsChange(parseFloat(e.target.value))}
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-amber-900 dark:text-amber-100" htmlFor="period-max-credits">
+                        Maximum units per term
+                      </label>
+                      <Input
+                        id="period-max-credits"
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        value={maxCreditsPerTerm}
+                        onChange={(e) => handleMaxCreditsChange(parseFloat(e.target.value))}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs text-amber-800 dark:text-amber-200">
+                    We save this locally, so you only need to confirm it once.
+                  </p>
+                </div>
+              )}
             </div>
             <DialogFooter
               className={cn(
@@ -3405,6 +3516,59 @@ export default function AcademicPlanner() {
                 </div>
               </CardContent>
             </Card>
+
+              {/* Credit Load Preferences */}
+              <Card className="mb-6">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Info className="h-5 w-5" />
+                    Credit Load Preferences
+                  </CardTitle>
+                  <CardDescription>Adjust the per-term credit targets used for warnings and scheduling hints.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Minimum credits per term</label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        value={minCreditsPerTerm}
+                        onChange={(e) => handleMinCreditsChange(parseFloat(e.target.value))}
+                      />
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        Internship-only terms ignore this floor, but other terms will warn when they fall below it.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Maximum credits per term</label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        value={maxCreditsPerTerm}
+                        onChange={(e) => handleMaxCreditsChange(parseFloat(e.target.value))}
+                      />
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        We still block extreme overloads once you exceed {maxCreditsPerTerm + ALLOW_OVERFLOW_UNITS} credits ({maxCreditsPerTerm} target + {ALLOW_OVERFLOW_UNITS} overflow).
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-gray-600 dark:text-gray-400">
+                    <p className="flex-1">These preferences save locally so different programs can tailor their limits.</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2"
+                      onClick={resetCreditLimitPreferences}
+                    >
+                      <Undo className="h-4 w-4" />
+                      Reset to defaults
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
 
             {/* Action Buttons */}
             <div ref={setPlanActionsRef} className="mb-6">
@@ -3864,7 +4028,7 @@ export default function AcademicPlanner() {
                             </Badge>
                             <Badge
                               className={`${
-                                (semesterCredits > RECOMMENDED_UNITS_MAX || (semesterCredits < RECOMMENDED_UNITS_MIN && !hasInternship))
+                                (semesterCredits > maxCreditsPerTerm || (semesterCredits < minCreditsPerTerm && !hasInternship))
                                   ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
                                   : "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
                               }`}

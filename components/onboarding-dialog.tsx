@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react"
 import Image from "next/image"
 import { useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
@@ -9,10 +9,12 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { parseCurriculumHtml } from "@/lib/curriculum-import"
 import { registerExternalCourses } from "@/lib/course-data"
 import { saveCourseStatuses } from "@/lib/course-storage"
+import { RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX } from "@/lib/config"
 import {
   ArrowRight,
   BookOpen,
@@ -69,6 +71,8 @@ type Slide = {
   description: string
   icon: ReactNode
 }
+
+const CREDIT_LIMITS_STORAGE_KEY = "planner.creditLimits"
 
 const slideAccentClasses: Partial<Record<SlideId, string>> = {
   "course-tracker": "text-blue-600 dark:text-blue-300",
@@ -189,6 +193,27 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const [cpeSkipPromptOpen, setCpeSkipPromptOpen] = useState(false)
   const [cpeSkipPromptContext, setCpeSkipPromptContext] = useState<"missing-upload" | "confirm">("missing-upload")
   const [generalSkipPromptOpen, setGeneralSkipPromptOpen] = useState(false)
+  const [creditLimitDialogOpen, setCreditLimitDialogOpen] = useState(false)
+  const [creditLimitMin, setCreditLimitMin] = useState(RECOMMENDED_UNITS_MIN)
+  const [creditLimitMax, setCreditLimitMax] = useState(RECOMMENDED_UNITS_MAX)
+  const [creditLimitError, setCreditLimitError] = useState<string | null>(null)
+
+  const syncCreditLimitsFromStorage = useCallback(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = window.localStorage.getItem(CREDIT_LIMITS_STORAGE_KEY)
+      if (!stored) return
+      const parsed = JSON.parse(stored)
+      if (typeof parsed?.min === "number" && Number.isFinite(parsed.min)) {
+        setCreditLimitMin(Math.max(0, parsed.min))
+      }
+      if (typeof parsed?.max === "number" && Number.isFinite(parsed.max)) {
+        setCreditLimitMax(Math.max(0, parsed.max))
+      }
+    } catch (error) {
+      console.error("Failed to load credit limits:", error)
+    }
+  }, [])
 
   useEffect(() => {
     const monitor = () => setIsMobileLayout(window.innerWidth < 640)
@@ -196,6 +221,10 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
     window.addEventListener("resize", monitor)
     return () => window.removeEventListener("resize", monitor)
   }, [])
+
+  useEffect(() => {
+    syncCreditLimitsFromStorage()
+  }, [syncCreditLimitsFromStorage])
 
   useEffect(() => {
     if (open) {
@@ -206,11 +235,14 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       setCurriculumImportMessage(null)
       setShowCurriculumHow(false)
       setHasCustomCurriculum(false)
+      setCreditLimitDialogOpen(false)
+      setCreditLimitError(null)
+      syncCreditLimitsFromStorage()
       if (curriculumFileInputRef.current) {
         curriculumFileInputRef.current.value = ""
       }
     }
-  }, [open])
+  }, [open, syncCreditLimitsFromStorage])
 
   const activeSlide = slides[currentIndex]
   const progressValue = useMemo(() => ((currentIndex + 1) / slides.length) * 100, [currentIndex])
@@ -298,6 +330,8 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         setCurriculumImportState("success")
         setCurriculumImportMessage("Curriculum imported! Open Course Tracker to see it applied.")
         setHasCustomCurriculum(true)
+        setCreditLimitError(null)
+        setCreditLimitDialogOpen(true)
       } catch (error) {
         console.error(error)
         setCurriculumImportState("error")
@@ -363,6 +397,44 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const handleCpeSkipContinue = () => {
     setCpeSkipPromptOpen(false)
     finishOnboarding({ source: "skip" })
+  }
+
+  const persistCreditLimits = (minValue: number, maxValue: number) => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(
+        CREDIT_LIMITS_STORAGE_KEY,
+        JSON.stringify({ min: minValue, max: maxValue }),
+      )
+    } catch (error) {
+      console.error("Failed to save credit limits:", error)
+    }
+  }
+
+  const handleCreditLimitSave = () => {
+    if (!Number.isFinite(creditLimitMin) || !Number.isFinite(creditLimitMax)) {
+      setCreditLimitError("Enter numeric values for both fields.")
+      return
+    }
+    if (creditLimitMin < 0 || creditLimitMax < 0) {
+      setCreditLimitError("Credits can't be negative.")
+      return
+    }
+    if (creditLimitMax < creditLimitMin) {
+      setCreditLimitError("Maximum credits must be greater than or equal to the minimum.")
+      return
+    }
+    persistCreditLimits(creditLimitMin, creditLimitMax)
+    setCreditLimitDialogOpen(false)
+    setCreditLimitError(null)
+    setCurriculumImportMessage((prev) =>
+      prev ? `${prev} Saved your per-term credit limits.` : "Saved your per-term credit limits.",
+    )
+  }
+
+  const handleCreditLimitSkip = () => {
+    setCreditLimitDialogOpen(false)
+    setCreditLimitError(null)
   }
 
 
@@ -948,6 +1020,63 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
               onClick={handleCpeSkipContinue}
             >
               {cpeSkipPromptContext === "missing-upload" ? "Continue without upload" : "Skip tour anyway"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={creditLimitDialogOpen} onOpenChange={(nextOpen) => (!nextOpen ? handleCreditLimitSkip() : null)}>
+        <DialogContent className="sm:max-w-md" onInteractOutside={(event) => event.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Set your program's unit limits</DialogTitle>
+            <DialogDescription>
+              Check your Course Registration / OSES page for the minimum and maximum credits allowed per term. We'll use
+              those numbers in Academic Planner so high-unit programs don't see false overload warnings.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Minimum credits per term</label>
+              <Input
+                type="number"
+                min="0"
+                step="0.5"
+                value={creditLimitMin}
+                onChange={(event) => {
+                  const nextValue = Number.parseFloat(event.target.value)
+                  setCreditLimitMin(Number.isNaN(nextValue) ? 0 : Math.max(0, nextValue))
+                }}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">Internship-only terms ignore this floor automatically.</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Maximum credits per term</label>
+              <Input
+                type="number"
+                min="0"
+                step="0.5"
+                value={creditLimitMax}
+                onChange={(event) => {
+                  const nextValue = Number.parseFloat(event.target.value)
+                  setCreditLimitMax(Number.isNaN(nextValue) ? 0 : Math.max(0, nextValue))
+                }}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                We still block extreme overloads, but this cap lets Planner warn you earlier when you're above your comfort
+                zone.
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              You can tweak these anytime via Credit Load Preferences inside Academic Planner.
+            </p>
+            {creditLimitError && <p className="text-sm text-rose-600 dark:text-rose-300">{creditLimitError}</p>}
+          </div>
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button variant="ghost" className="w-full sm:w-auto" onClick={handleCreditLimitSkip}>
+              Skip for now
+            </Button>
+            <Button className="w-full sm:w-auto" onClick={handleCreditLimitSave}>
+              Save limits
             </Button>
           </DialogFooter>
         </DialogContent>

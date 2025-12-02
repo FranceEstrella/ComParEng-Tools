@@ -39,25 +39,41 @@ self.addEventListener("fetch", (event) => {
   }
 
   const url = new URL(request.url)
-  const isApiRequest = url.pathname.startsWith("/api/") || request.headers.get("Accept")?.includes("application/json")
+  const acceptHeader = request.headers.get("Accept") || ""
+  const isApiRequest = url.pathname.startsWith("/api/") || acceptHeader.includes("application/json")
+  const isNavigationRequest =
+    request.mode === "navigate" ||
+    (acceptHeader.includes("text/html") && !url.pathname.startsWith("/_next"))
 
   if (isApiRequest) {
     event.respondWith(fetch(request).catch(() => caches.match(request)))
     return
   }
 
+  if (isNavigationRequest) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          const copy = response.clone()
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {})
+          return response
+        })
+        .catch(() => caches.match(request).then((cached) => cached || caches.match("/")))
+    )
+    return
+  }
+
   event.respondWith(
     caches.match(request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse
-      }
-      return fetch(request)
+      const fetchPromise = fetch(request)
         .then((response) => {
           const responseClone = response.clone()
           caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone)).catch(() => {})
           return response
         })
         .catch(() => cachedResponse)
+
+      return cachedResponse || fetchPromise
     })
   )
 })
