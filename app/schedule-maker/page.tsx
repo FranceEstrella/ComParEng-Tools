@@ -51,9 +51,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Switch } from "@/components/ui/switch"
 import { HexColorPicker } from "react-colorful"
-import { toPng } from "html-to-image"
 import React from "react"
-import { createEvents } from "ics"
 import html2canvas from "html2canvas"
 import { format } from "date-fns"
 
@@ -413,6 +411,9 @@ export default function ScheduleMaker() {
   const [hasRealCourseData, setHasRealCourseData] = useState(false)
   const [hasFetchedOnce, setHasFetchedOnce] = useState(false)
   const [noDataDialogDismissed, setNoDataDialogDismissed] = useState(false)
+  const [noActiveDialogOpen, setNoActiveDialogOpen] = useState(false)
+  const [hideNoActiveDialog, setHideNoActiveDialog] = useState(false)
+  const [noActiveDialogDismissed, setNoActiveDialogDismissed] = useState(false)
   const [viewMode, setViewMode] = useState<"card" | "table">("card")
   const [selectedViewMode, setSelectedViewMode] = useState<"card" | "table">("card")
   const scheduleRef = useRef<HTMLDivElement>(null)
@@ -437,6 +438,7 @@ export default function ScheduleMaker() {
   useEffect(() => {
     if (typeof window === "undefined") return
     setHideNoDataDialog(localStorage.getItem("scheduleMaker.hideNoDataDialog") === "true")
+    setHideNoActiveDialog(localStorage.getItem("scheduleMaker.hideNoActiveDialog") === "true")
   }, [])
 
   const noActiveCourses = activeCourses.length === 0
@@ -447,9 +449,24 @@ export default function ScheduleMaker() {
       !hideNoDataDialog &&
       !noDataDialogPaused &&
       !noDataDialogDismissed &&
-      (missingExtractedData || noActiveCourses)
+      missingExtractedData
     setNoDataDialogOpen(shouldShow)
-  }, [hasFetchedOnce, hideNoDataDialog, noDataDialogPaused, hasRealCourseData, noDataDialogDismissed, noActiveCourses])
+  }, [hasFetchedOnce, hideNoDataDialog, noDataDialogPaused, hasRealCourseData, noDataDialogDismissed])
+
+  useEffect(() => {
+    const shouldShowNoActive =
+      hasFetchedOnce &&
+      hasRealCourseData &&
+      noActiveCourses &&
+      !hideNoActiveDialog &&
+      !noActiveDialogDismissed
+
+    setNoActiveDialogOpen(shouldShowNoActive)
+
+    if (!noActiveCourses) {
+      setNoActiveDialogDismissed(false)
+    }
+  }, [hasFetchedOnce, hasRealCourseData, noActiveCourses, hideNoActiveDialog, noActiveDialogDismissed])
 
   useEffect(() => {
     if (!awaitingDataDialogOpen) {
@@ -876,99 +893,110 @@ export default function ScheduleMaker() {
   }
 
   // New ICS file generator
- const downloadICSFile = () => {
-  if (selectedCourses.length === 0) return
+  const downloadICSFile = () => {
+    if (selectedCourses.length === 0) return
 
-  const daysToWeekday = (day: DayToken) => {
-    switch (day) {
-      case "M":
-        return { weekday: 1, code: "MO" }
-      case "Tu":
-        return { weekday: 2, code: "TU" }
-      case "W":
-        return { weekday: 3, code: "WE" }
-      case "Th":
-        return { weekday: 4, code: "TH" }
-      case "F":
-        return { weekday: 5, code: "FR" }
-      case "S":
-        return { weekday: 6, code: "SA" }
-      default:
-        return { weekday: 1, code: "MO" }
+    const pad = (value: number) => String(value).padStart(2, "0")
+    const escapeText = (value: string) =>
+      value
+        .replace(/\\/g, "\\\\")
+        .replace(/\n/g, "\\n")
+        .replace(/,/g, "\\,")
+        .replace(/;/g, "\\;")
+
+    const daysToWeekday = (day: DayToken) => {
+      switch (day) {
+        case "M":
+          return { weekday: 1, code: "MO" }
+        case "Tu":
+          return { weekday: 2, code: "TU" }
+        case "W":
+          return { weekday: 3, code: "WE" }
+        case "Th":
+          return { weekday: 4, code: "TH" }
+        case "F":
+          return { weekday: 5, code: "FR" }
+        case "S":
+          return { weekday: 6, code: "SA" }
+        default:
+          return { weekday: 1, code: "MO" }
+      }
     }
+
+    const getNextDateForWeekday = (baseDate: Date, targetWeekday: number) => {
+      const date = new Date(baseDate)
+      const currentWeekday = date.getDay() === 0 ? 7 : date.getDay()
+      const delta = (targetWeekday + 7 - currentWeekday) % 7
+      date.setDate(date.getDate() + delta)
+      return date
+    }
+
+    const formatDateTime = (date: Date, timeLabel: string) => {
+      const [hourRaw, minuteRaw] = timeLabel.split(":").map(Number)
+      const hours = Number.isFinite(hourRaw) ? hourRaw : 0
+      const minutes = Number.isFinite(minuteRaw) ? minuteRaw : 0
+      const target = new Date(date)
+      target.setHours(hours, minutes, 0, 0)
+      return `${target.getFullYear()}${pad(target.getMonth() + 1)}${pad(target.getDate())}T${pad(target.getHours())}${pad(target.getMinutes())}00`
+    }
+
+    const timezone = "Asia/Manila"
+    const dtStamp = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z"
+
+    const events = selectedCourses.map((course, index) => {
+      const startDateObj = new Date(startDate)
+      const dayInfo = course.parsedDays.map(daysToWeekday)
+      const firstDay = dayInfo[0] || { weekday: 1, code: "MO" }
+      const eventDate = getNextDateForWeekday(startDateObj, firstDay.weekday)
+      const byDay = dayInfo.map((d) => d.code).join(",") || firstDay.code
+
+      const customizationKey = `${course.courseCode}-${course.section}`
+      const summary =
+        customizations[customizationKey]?.customTitle || `${course.courseCode} - ${course.name}`
+      const description = `Section: ${course.section}\nRoom: ${course.displayRoom}`
+      const uid = `${course.courseCode}-${course.section}-${index}@compareng-tools`
+
+      return [
+        "BEGIN:VEVENT",
+        `UID:${uid}`,
+        `DTSTAMP:${dtStamp}`,
+        `SUMMARY:${escapeText(summary)}`,
+        `DESCRIPTION:${escapeText(description)}`,
+        `LOCATION:${escapeText(course.displayRoom || "TBA")}`,
+        `DTSTART;TZID=${timezone}:${formatDateTime(eventDate, course.timeStart)}`,
+        `DTEND;TZID=${timezone}:${formatDateTime(eventDate, course.timeEnd)}`,
+        `RRULE:FREQ=WEEKLY;BYDAY=${byDay};COUNT=15`,
+        "BEGIN:VALARM",
+        "TRIGGER:-PT1H",
+        "ACTION:DISPLAY",
+        "DESCRIPTION:Reminder",
+        "END:VALARM",
+        "END:VEVENT",
+      ].join("\r\n")
+    })
+
+    const calendarContent = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "CALSCALE:GREGORIAN",
+      "METHOD:PUBLISH",
+      "PRODID:-//ComParEng Tools//Schedule Maker//EN",
+      `X-WR-CALNAME:${escapeText(scheduleTitle || "Weekly Schedule")}`,
+      `X-WR-TIMEZONE:${timezone}`,
+      ...events,
+      "END:VCALENDAR",
+    ].join("\r\n")
+
+    const blob = new Blob([calendarContent], { type: "text/calendar" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `schedule-${new Date().toISOString().slice(0, 10)}.ics`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
   }
-
-  const getNextDateForWeekday = (baseDate: Date, targetWeekday: number) => {
-    const date = new Date(baseDate)
-    const currentWeekday = date.getDay() === 0 ? 7 : date.getDay()
-    const delta = (targetWeekday + 7 - currentWeekday) % 7
-    date.setDate(date.getDate() + delta)
-    return date
-  }
-
-  const timezone = "Asia/Manila"
-  const events = selectedCourses.map((course) => {
-    const startDateObj = new Date(startDate)
-    const dayInfo = course.parsedDays.map(daysToWeekday)
-    const firstDay = dayInfo[0] || { weekday: 1, code: "MO" }
-    const eventDate = getNextDateForWeekday(startDateObj, firstDay.weekday)
-
-    const [startHour, startMinute] = course.timeStart.split(":").map(Number)
-    const [endHour, endMinute] = course.timeEnd.split(":").map(Number)
-
-    return {
-      title:
-        customizations[`${course.courseCode}-${course.section}`]?.customTitle ||
-        `${course.courseCode} - ${course.name}`,
-      description: `Section: ${course.section}\nRoom: ${course.displayRoom}`,
-      location: course.displayRoom,
-      start: [
-        eventDate.getFullYear(),
-        eventDate.getMonth() + 1,
-        eventDate.getDate(),
-        startHour,
-        startMinute,
-      ] as [number, number, number, number, number],
-      end: [
-        eventDate.getFullYear(),
-        eventDate.getMonth() + 1,
-        eventDate.getDate(),
-        endHour,
-        endMinute,
-      ] as [number, number, number, number, number],
-      startInputType: "local",
-      endInputType: "local",
-      startOutputType: "local",
-      endOutputType: "local",
-      timezone,
-      recurrenceRule: `FREQ=WEEKLY;BYDAY=${dayInfo.map((d) => d.code).join(",")};COUNT=15`,
-      alarms: [
-        {
-          action: "display",
-          description: "Reminder",
-          trigger: { hours: 1, minutes: 0, before: true },
-        },
-      ],
-    }
-  })
-
-  // cast to any to satisfy library typings in this project context
-  createEvents(events as any, (error: any, value: string) => {
-    if (error) {
-      console.error('Error generating ICS file:', error);
-      return;
-    }
-
-    const blob = new Blob([value], { type: 'text/calendar' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'my-schedule.ics';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  });
-};
 
   // Dynamically group courses based on user preference
   const groupCourses = (courses: CourseSection[]): GroupedCourseSet[] => {
@@ -1061,6 +1089,10 @@ export default function ScheduleMaker() {
     window.open("https://solar.feutech.edu.ph/course/offerings", "_blank")
   }
 
+  const openCourseTracker = () => {
+    window.open("/course-tracker", "_blank")
+  }
+
   const handleStudentPortalLaunch = () => {
     openStudentPortal()
     setAwaitingDataDialogOpen(true)
@@ -1088,6 +1120,29 @@ export default function ScheduleMaker() {
     }
     setNoDataDialogOpen(false)
     setNoDataDialogDismissed(true)
+  }
+
+  const handleNoActiveDialogToggle = (checked: boolean) => {
+    setHideNoActiveDialog(checked)
+    if (typeof window !== "undefined") {
+      localStorage.setItem("scheduleMaker.hideNoActiveDialog", checked ? "true" : "false")
+    }
+    if (checked) {
+      setNoActiveDialogOpen(false)
+      setNoActiveDialogDismissed(true)
+    } else {
+      setNoActiveDialogDismissed(false)
+    }
+  }
+
+  const handleNoActiveDialogOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setNoActiveDialogDismissed(false)
+      setNoActiveDialogOpen(true)
+      return
+    }
+    setNoActiveDialogOpen(false)
+    setNoActiveDialogDismissed(true)
   }
 
   // Check if a time slot falls within a course's time range
@@ -1664,18 +1719,11 @@ const renderScheduleView = () => {
           </DialogHeader>
           <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
             <p>
-              {noActiveCourses
-                ? "You haven't marked any courses as Active in the Course Tracker yet. Mark at least one course so we know which sections to prioritize here."
-                : "We haven't received any extracted offerings yet. Launch the Student Portal so the extension can listen for the Course Offerings table and push it here automatically."}
+              We haven&apos;t received any extracted offerings yet. Launch the Student Portal so the extension can listen for the Course Offerings table and push it here automatically.
             </p>
             <p className="rounded-md border border-amber-400/40 bg-amber-50/70 p-3 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
               Make sure the extension is installed and active <span className="font-semibold">before</span> visiting the Course Offerings page. Otherwise the capture will be empty.
             </p>
-            {noActiveCourses && (
-              <p className="rounded-md border border-blue-300/50 bg-blue-50/80 p-3 text-blue-900 dark:border-blue-400/30 dark:bg-blue-400/10 dark:text-blue-50">
-                Tip: open Course Tracker, mark your in-progress classes as <span className="font-semibold">Active</span>, then return here to filter sections for them automatically.
-              </p>
-            )}
             <div className="flex items-center justify-between gap-4 rounded-md border border-slate-200/70 bg-slate-50/60 p-3 dark:border-white/10 dark:bg-white/5">
               <div>
                 <p className="text-sm font-medium">Don&apos;t show again</p>
@@ -1695,6 +1743,49 @@ const renderScheduleView = () => {
             >
               <ExternalLink className="h-4 w-4" />
               Open Student Portal
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={noActiveDialogOpen} onOpenChange={handleNoActiveDialogOpenChange}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>No active courses selected</DialogTitle>
+            <DialogDescription>
+              Mark at least one course as Active in Course Tracker so we can focus on the sections you actually plan to enroll in.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
+            <p>
+              Right now every course in Course Tracker is still marked as <span className="font-semibold">Planned</span> or <span className="font-semibold">Completed</span>. Switch the ones you&apos;re enrolling in to <span className="font-semibold">Active</span> so this page can auto-filter the matching sections and highlight open slots.
+            </p>
+            <p className="rounded-md border border-blue-300/50 bg-blue-50/80 p-3 text-blue-900 dark:border-blue-400/30 dark:bg-blue-400/10 dark:text-blue-50">
+              Tip: You can quickly mark courses from the Quick Actions menu inside Course Tracker, then return here to refresh the data.
+            </p>
+            <div className="flex items-center justify-between gap-4 rounded-md border border-slate-200/70 bg-slate-50/60 p-3 dark:border-white/10 dark:bg-white/5">
+              <div>
+                <p className="text-sm font-medium">Don&apos;t show again</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Hide this reminder while you work without active courses.</p>
+              </div>
+              <Switch
+                checked={hideNoActiveDialog}
+                onCheckedChange={(value) => handleNoActiveDialogToggle(Boolean(value))}
+                aria-label="Don&apos;t show no-active reminder again"
+              />
+            </div>
+          </div>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button className="w-full sm:w-auto gap-2" onClick={openCourseTracker}>
+              <BookOpen className="h-4 w-4" />
+              Open Course Tracker
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full sm:w-auto"
+              onClick={() => handleNoActiveDialogOpenChange(false)}
+            >
+              Maybe later
             </Button>
           </DialogFooter>
         </DialogContent>
