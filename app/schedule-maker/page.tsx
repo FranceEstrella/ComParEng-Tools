@@ -1758,7 +1758,7 @@ const renderScheduleView = () => {
           </DialogHeader>
           <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
             <p>
-              Right now every course in Course Tracker is still marked as <span className="font-semibold">Planned</span> or <span className="font-semibold">Completed</span>. Switch the ones you&apos;re enrolling in to <span className="font-semibold">Active</span> so this page can auto-filter the matching sections and highlight open slots.
+              Right now every course in Course Tracker is still marked as <span className="font-semibold">Pending</span> or <span className="font-semibold">Passed</span>. Switch the ones you&apos;re enrolling in to <span className="font-semibold">Active</span> so this page can auto-filter the matching sections and highlight open slots.
             </p>
             <p className="rounded-md border border-blue-300/50 bg-blue-50/80 p-3 text-blue-900 dark:border-blue-400/30 dark:bg-blue-400/10 dark:text-blue-50">
               Tip: You can quickly mark courses from the Quick Actions menu inside Course Tracker, then return here to refresh the data.
