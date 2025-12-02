@@ -1341,12 +1341,14 @@ export default function ScheduleMaker() {
 
   useEffect(() => {
     if (!isClient) return
+
+    const intervalMs = hasRealCourseData ? 60 * 1000 : 1 * 1000
     const interval = setInterval(() => {
       fetchData({ silent: true })
-    }, 60 * 1000)
+    }, intervalMs)
 
     return () => clearInterval(interval)
-  }, [isClient, fetchData])
+  }, [isClient, fetchData, hasRealCourseData])
 
   useEffect(() => {
     if (typeof window === "undefined") return
