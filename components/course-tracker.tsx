@@ -1419,12 +1419,12 @@ const AcademicTimeline = ({
 
       {/* Academic Planner Link */}
       <div className="mt-4">
-        <Link href="/academic-planner">
-          <Button variant="outline" className="flex items-center gap-2 bg-transparent">
+        <Button asChild variant="outline" className="flex items-center gap-2 bg-transparent">
+          <Link href="/academic-planner">
             <Calendar className="h-4 w-4" />
             Open Academic Planner
-          </Button>
-        </Link>
+          </Link>
+        </Button>
       </div>
     </div>
     </div>
