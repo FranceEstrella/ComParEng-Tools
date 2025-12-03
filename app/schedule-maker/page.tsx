@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   ArrowLeft,
@@ -20,15 +21,13 @@ import {
   Check,
   Calendar,
   Download,
-  Palette,
   Edit,
   Sun,
   Moon,
+  Palette,
 } from "lucide-react"
 import Link from "next/link"
 import { useTheme } from "next-themes"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   Dialog,
   DialogContent,
@@ -50,6 +49,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Switch } from "@/components/ui/switch"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { HexColorPicker } from "react-colorful"
 import React from "react"
 import html2canvas from "html2canvas"
@@ -75,6 +75,25 @@ const TIME_SLOTS = [
   "16:00", "16:30", "17:00", "17:30", "18:00", "18:30",
   "19:00", "19:30", "20:00", "20:30", "21:00"
 ]
+
+const getFullDayName = (day: DayToken): string => {
+  switch (day) {
+    case "M":
+      return "Monday"
+    case "Tu":
+      return "Tuesday"
+    case "W":
+      return "Wednesday"
+    case "Th":
+      return "Thursday"
+    case "F":
+      return "Friday"
+    case "S":
+      return "Saturday"
+    default:
+      return day
+  }
+}
 
 const GROUP_BY_OPTIONS = [
   { value: "department", label: "Department" },
@@ -226,73 +245,63 @@ const computeCourseSetHash = (courses: CourseSection[]) => {
 // Sample data for available courses - used as fallback
 const sampleAvailableCourses = [
   {
-    courseCode: "COE0001C",
-    section: "TE31",
-    classSize: "40",
-    remainingSlots: "15",
-    meetingDays: "MW",
-    meetingTime: "10:00:00-11:30:00",
-    room: "Room 301",
+    courseCode: "CPE0011",
+    section: "TE21",
+    classSize: "",
+    remainingSlots: "",
+    meetingDays: "F / T",
+    meetingTime: "07:00:00-08:50:00 / 07:00:00-08:50:00",
+    room: "ONLINE / ONLINE",
     hasSlots: true,
   },
   {
-    courseCode: "COE0003",
-    section: "TC21",
-    classSize: "35",
-    remainingSlots: "5",
-    meetingDays: "TuTh",
-    meetingTime: "13:00:00-14:30:00",
-    room: "Room 201",
+    courseCode: "CPE0011L",
+    section: "TE21",
+    classSize: "",
+    remainingSlots: "",
+    meetingDays: "W",
+    meetingTime: "09:00:00-11:50:00",
+    room: "F904",
     hasSlots: true,
   },
   {
-    courseCode: "GED0001",
-    section: "TE01",
-    classSize: "45",
-    remainingSlots: "0",
-    meetingDays: "F",
-    meetingTime: "08:00:00-11:00:00",
-    room: "Room 101",
-    hasSlots: false,
-  },
-  {
-    courseCode: "COE0005",
-    section: "TL21",
-    classSize: "30",
-    remainingSlots: "10",
-    meetingDays: "MW",
-    meetingTime: "13:00:00-14:30:00",
-    room: "Room 302",
+    courseCode: "CPE0033L",
+    section: "TE31A",
+    classSize: "",
+    remainingSlots: "",
+    meetingDays: "M / TH",
+    meetingTime: "07:00:00-09:50:00 / 07:00:00-09:50:00",
+    room: "E609 / E609",
     hasSlots: true,
   },
   {
-    courseCode: "GED0004",
-    section: "M132",
-    classSize: "35",
-    remainingSlots: "8",
-    meetingDays: "TuTh",
-    meetingTime: "08:00:00-09:30:00",
-    room: "Room 202",
+    courseCode: "CPE0039L",
+    section: "TE31A",
+    classSize: "",
+    remainingSlots: "",
+    meetingDays: "M",
+    meetingTime: "14:00:00-16:50:00",
+    room: "F1103",
     hasSlots: true,
   },
   {
-    courseCode: "ONLINE001",
-    section: "TE21A",
-    classSize: "50",
-    remainingSlots: "25",
-    meetingDays: "MW",
-    meetingTime: "14:00:00-15:30:00",
-    room: "Online / Online",
+    courseCode: "COE0049",
+    section: "TT31",
+    classSize: "",
+    remainingSlots: "",
+    meetingDays: "F / T",
+    meetingTime: "11:00:00-12:20:00 / 11:00:00-12:20:00",
+    room: "ONLINE / ASYNCH",
     hasSlots: true,
   },
   {
-    courseCode: "LAB001",
-    section: "TE31",
-    classSize: "20",
-    remainingSlots: "3",
-    meetingDays: "TuTh",
-    meetingTime: "15:00:00-16:30:00",
-    room: "F406 / F406",
+    courseCode: "COE0019",
+    section: "M193",
+    classSize: "",
+    remainingSlots: "",
+    meetingDays: "M / TH",
+    meetingTime: "11:00:00-12:50:00 / 11:00:00-12:50:00",
+    room: "F712 / F712",
     hasSlots: true,
   },
 ]
@@ -805,19 +814,6 @@ export default function ScheduleMaker() {
     } as SelectedCourse
   }
 
-  // Get full day name
-  const getFullDayName = (day: DayToken): string => {
-    switch (day) {
-      case "M": return "Monday"
-      case "Tu": return "Tuesday"
-      case "W": return "Wednesday"
-      case "Th": return "Thursday"
-      case "F": return "Friday"
-      case "S": return "Saturday"
-      default: return day
-    }
-  }
-
   // Enhanced conflict detection
   const hasScheduleConflict = (course: CourseSection): boolean => {
     if (!course.meetingTime || !course.meetingDays) return false
@@ -1206,36 +1202,38 @@ export default function ScheduleMaker() {
     const timezone = "Asia/Manila"
     const dtStamp = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z"
 
-    const events = selectedCourses.map((course, index) => {
-      const startDateObj = new Date(baseStartDate)
-      const dayInfo = course.parsedDays.map(daysToWeekday)
-      const firstDay = dayInfo[0] || { weekday: 1, code: "MO" }
-      const eventDate = getNextDateForWeekday(startDateObj, firstDay.weekday)
-      const byDay = dayInfo.map((d) => d.code).join(",") || firstDay.code
+    const events = selectedCourses.flatMap((course, courseIndex) => {
+      const dayInfo = course.parsedDays.length
+        ? course.parsedDays.map(daysToWeekday)
+        : [{ weekday: 1, code: "MO" }]
 
       const customizationKey = `${course.courseCode}-${course.section}`
       const summary =
         customizations[customizationKey]?.customTitle || `${course.courseCode} - ${course.name}`
       const description = `Section: ${course.section}\nRoom: ${course.displayRoom}`
-      const uid = `${course.courseCode}-${course.section}-${index}@compareng-tools`
 
-      return [
-        "BEGIN:VEVENT",
-        `UID:${uid}`,
-        `DTSTAMP:${dtStamp}`,
-        `SUMMARY:${escapeText(summary)}`,
-        `DESCRIPTION:${escapeText(description)}`,
-        `LOCATION:${escapeText(course.displayRoom || "TBA")}`,
-        `DTSTART;TZID=${timezone}:${formatDateTime(eventDate, course.timeStart)}`,
-        `DTEND;TZID=${timezone}:${formatDateTime(eventDate, course.timeEnd)}`,
-        `RRULE:FREQ=WEEKLY;BYDAY=${byDay};COUNT=15`,
-        "BEGIN:VALARM",
-        "TRIGGER:-PT1H",
-        "ACTION:DISPLAY",
-        "DESCRIPTION:Reminder",
-        "END:VALARM",
-        "END:VEVENT",
-      ].join("\r\n")
+      return dayInfo.map((day, dayIndex) => {
+        const eventDate = getNextDateForWeekday(baseStartDate, day.weekday)
+        const uid = `${course.courseCode}-${course.section}-${day.code}-${courseIndex}-${dayIndex}@compareng-tools`
+
+        return [
+          "BEGIN:VEVENT",
+          `UID:${uid}`,
+          `DTSTAMP:${dtStamp}`,
+          `SUMMARY:${escapeText(summary)}`,
+          `DESCRIPTION:${escapeText(description)}`,
+          `LOCATION:${escapeText(course.displayRoom || "TBA")}`,
+          `DTSTART;TZID=${timezone}:${formatDateTime(eventDate, course.timeStart)}`,
+          `DTEND;TZID=${timezone}:${formatDateTime(eventDate, course.timeEnd)}`,
+          `RRULE:FREQ=WEEKLY;BYDAY=${day.code};COUNT=15`,
+          "BEGIN:VALARM",
+          "TRIGGER:-PT1H",
+          "ACTION:DISPLAY",
+          "DESCRIPTION:Reminder",
+          "END:VALARM",
+          "END:VEVENT",
+        ].join("\r\n")
+      })
     })
 
     const calendarContent = [
