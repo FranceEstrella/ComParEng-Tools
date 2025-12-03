@@ -12,6 +12,38 @@ export type CurriculumCourse = {
   term: string
 }
 
+const COURSE_CODE_REGEX = /[A-Z]{2,5}\s*\d{1,5}[A-Z]?/gi
+
+const normalizeCourseCode = (value: string): string => value.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+
+const looksLikeEmptyDependency = (value: string): boolean => {
+  const trimmed = value.trim()
+  return (
+    trimmed.length === 0 ||
+    /^(?:none|n\/a|tba|tbd|not applicable|no prereq|no prerequisites|nil|--|-|—|–)$/i.test(trimmed)
+  )
+}
+
+const extractCourseCodes = (value: string | null | undefined): string[] => {
+  if (!value) return []
+  if (looksLikeEmptyDependency(value)) return []
+
+  const sanitized = value.replace(/&/g, ",").replace(/\band\b/gi, ",")
+  const matches = sanitized.toUpperCase().match(COURSE_CODE_REGEX)
+  if (!matches) return []
+
+  const seen = new Set<string>()
+  const codes: string[] = []
+  matches.forEach((match) => {
+    const normalized = normalizeCourseCode(match)
+    if (normalized.length >= 3 && !seen.has(normalized)) {
+      seen.add(normalized)
+      codes.push(normalized)
+    }
+  })
+  return codes
+}
+
 /**
  * Parse a Program Curriculum HTML file (from SOLAR) and extract courses.
  * The function is intentionally permissive by supporting tables where
@@ -31,17 +63,35 @@ export const parseCurriculumHtml = (html: string): CurriculumCourse[] => {
   let currentYear = 1
   let currentTerm: string = "Term 1"
 
-  // Try to detect header -> column index for units/credits to reliably extract credits
+  // Try to detect header -> column index for units/credits/prereqs/dependents to reliably extract values
   const headerCells = Array.from(doc.querySelectorAll("thead th, thead td"))
   let unitsColIndex: number | null = null
+  let prereqColIndex: number | null = null
+  let requiredForColIndex: number | null = null
   if (headerCells.length > 0) {
     headerCells.forEach((th, idx) => {
       const txt = (th.textContent || "").trim()
       if (/unit|credit|units|credits/i.test(txt) && unitsColIndex === null) {
         unitsColIndex = idx
       }
+      const normalized = txt.toLowerCase()
+      if (
+        prereqColIndex === null &&
+        /pre[\s-]?req|prerequisite/i.test(normalized) &&
+        !/co[\s-]?req/i.test(normalized)
+      ) {
+        prereqColIndex = idx
+      }
+      if (
+        requiredForColIndex === null &&
+        /(required\s*for|required[\s-]*for|dependent\s*courses?|dependents)/i.test(normalized)
+      ) {
+        requiredForColIndex = idx
+      }
     })
   }
+
+  const pendingRequiredForLinks: { sourceId: string; targetCodes: string[] }[] = []
 
   const rows = Array.from(tbody.querySelectorAll("tr"))
   rows.forEach((tr) => {
@@ -143,21 +193,73 @@ export const parseCurriculumHtml = (html: string): CurriculumCourse[] => {
 
       // Only add rows that look like courses (must have a code or name)
       if (code || name) {
+        const prereqText =
+          prereqColIndex !== null && prereqColIndex < tds.length ? tds[prereqColIndex].textContent : null
+        const requiredForText =
+          requiredForColIndex !== null && requiredForColIndex < tds.length ? tds[requiredForColIndex].textContent : null
+
+        const prereqCodes = extractCourseCodes(prereqText)
+        const requiredForCodes = extractCourseCodes(requiredForText)
+
         const id = code || name.slice(0, 8).replace(/\s+/g, "_")
-        courses.push({
+        const newCourse: CurriculumCourse = {
           id,
           code: code || id,
           name: name || "",
           credits: credits ?? 0,
           status: "pending",
-          prerequisites: [],
+          prerequisites: prereqCodes,
           description: null,
           year: currentYear,
           term: currentTerm,
-        })
+        }
+
+        courses.push(newCourse)
+
+        if (requiredForCodes.length > 0) {
+          pendingRequiredForLinks.push({ sourceId: newCourse.id, targetCodes: requiredForCodes })
+        }
       }
     }
   })
+
+  if (courses.length === 0) {
+    return courses
+  }
+
+  const codeToCourse = new Map<string, CurriculumCourse>()
+  courses.forEach((course) => {
+    if (course.code) {
+      codeToCourse.set(normalizeCourseCode(course.code), course)
+    }
+  })
+
+  courses.forEach((course) => {
+    const resolvedIds: string[] = []
+    const seen = new Set<string>()
+    course.prerequisites.forEach((rawCode) => {
+      const normalized = normalizeCourseCode(rawCode)
+      const referenced = codeToCourse.get(normalized)
+      if (referenced && referenced.id !== course.id && !seen.has(referenced.id)) {
+        seen.add(referenced.id)
+        resolvedIds.push(referenced.id)
+      }
+    })
+    course.prerequisites = resolvedIds
+  })
+
+  if (pendingRequiredForLinks.length > 0) {
+    pendingRequiredForLinks.forEach(({ sourceId, targetCodes }) => {
+      targetCodes.forEach((targetCode) => {
+        const targetCourse = codeToCourse.get(normalizeCourseCode(targetCode))
+        if (!targetCourse) return
+        if (targetCourse.id === sourceId) return
+        if (!targetCourse.prerequisites.includes(sourceId)) {
+          targetCourse.prerequisites = [...targetCourse.prerequisites, sourceId]
+        }
+      })
+    })
+  }
 
   return courses
 }

@@ -2,6 +2,36 @@ const fs = require('fs')
 const path = require('path')
 const { JSDOM } = require('jsdom')
 
+const COURSE_CODE_REGEX = /[A-Z]{2,5}\s*\d{1,5}[A-Z]?/gi
+
+const normalizeCourseCode = (value = '') => value.replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+
+const looksLikeEmptyDependency = (value = '') => {
+  const trimmed = value.trim()
+  return (
+    trimmed.length === 0 ||
+    /^(?:none|n\/a|tba|tbd|not applicable|no prereq|no prerequisites|nil|--|-|—|–)$/i.test(trimmed)
+  )
+}
+
+const extractCourseCodes = (value) => {
+  if (!value) return []
+  if (looksLikeEmptyDependency(value)) return []
+  const sanitized = value.replace(/&/g, ',').replace(/\band\b/gi, ',')
+  const matches = sanitized.toUpperCase().match(COURSE_CODE_REGEX)
+  if (!matches) return []
+  const seen = new Set()
+  const codes = []
+  matches.forEach((match) => {
+    const normalized = normalizeCourseCode(match)
+    if (normalized.length >= 3 && !seen.has(normalized)) {
+      seen.add(normalized)
+      codes.push(normalized)
+    }
+  })
+  return codes
+}
+
 function parseCurriculumHtml(html) {
   const dom = new JSDOM(html)
   const doc = dom.window.document
@@ -15,14 +45,25 @@ function parseCurriculumHtml(html) {
 
   const headerCells = Array.from(doc.querySelectorAll('thead th, thead td'))
   let unitsColIndex = null
+  let prereqColIndex = null
+  let requiredForColIndex = null
   if (headerCells.length > 0) {
     headerCells.forEach((th, idx) => {
       const txt = (th.textContent || '').trim()
       if (/unit|credit|units|credits/i.test(txt) && unitsColIndex === null) {
         unitsColIndex = idx
       }
+      const normalized = txt.toLowerCase()
+      if (prereqColIndex === null && /pre[\s-]?req|prerequisite/i.test(normalized) && !/co[\s-]?req/i.test(normalized)) {
+        prereqColIndex = idx
+      }
+      if (requiredForColIndex === null && /(required\s*for|required[\s-]*for|dependent\s*courses?|dependents)/i.test(normalized)) {
+        requiredForColIndex = idx
+      }
     })
   }
+
+  const pendingRequiredForLinks = []
 
   const rows = Array.from(tbody.querySelectorAll('tr'))
   rows.forEach((tr) => {
@@ -97,10 +138,58 @@ function parseCurriculumHtml(html) {
       }
 
       if (code || name) {
+        const prereqText = prereqColIndex !== null && prereqColIndex < tds.length ? tds[prereqColIndex].textContent : null
+        const requiredForText = requiredForColIndex !== null && requiredForColIndex < tds.length ? tds[requiredForColIndex].textContent : null
+
+        const prereqCodes = extractCourseCodes(prereqText)
+        const requiredForCodes = extractCourseCodes(requiredForText)
+
         const id = code || name.slice(0, 8).replace(/\s+/g, '_')
-        courses.push({ id, code: code || id, name: name || '', credits: credits ?? 0, status: 'pending', prerequisites: [], description: null, year: currentYear, term: currentTerm })
+        const newCourse = { id, code: code || id, name: name || '', credits: credits ?? 0, status: 'pending', prerequisites: prereqCodes, description: null, year: currentYear, term: currentTerm }
+
+        courses.push(newCourse)
+
+        if (requiredForCodes.length > 0) {
+          pendingRequiredForLinks.push({ sourceId: newCourse.id, targetCodes: requiredForCodes })
+        }
       }
     }
+  })
+
+  if (courses.length === 0) {
+    return courses
+  }
+
+  const codeToCourse = new Map()
+  courses.forEach((course) => {
+    if (course.code) {
+      codeToCourse.set(normalizeCourseCode(course.code), course)
+    }
+  })
+
+  courses.forEach((course) => {
+    const resolved = []
+    const seen = new Set()
+    course.prerequisites.forEach((rawCode) => {
+      const normalized = normalizeCourseCode(rawCode)
+      const referenced = codeToCourse.get(normalized)
+      if (referenced && referenced.id !== course.id && !seen.has(referenced.id)) {
+        seen.add(referenced.id)
+        resolved.push(referenced.id)
+      }
+    })
+    course.prerequisites = resolved
+  })
+
+  pendingRequiredForLinks.forEach(({ sourceId, targetCodes }) => {
+    targetCodes.forEach((targetCode) => {
+      const targetCourse = codeToCourse.get(normalizeCourseCode(targetCode))
+      if (!targetCourse) return
+      if (targetCourse.id === sourceId) return
+      if (!targetCourse.prerequisites.includes(sourceId)) {
+        targetCourse.prerequisites = [...targetCourse.prerequisites, sourceId]
+      }
+    })
   })
 
   return courses

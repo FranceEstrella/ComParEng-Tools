@@ -464,6 +464,9 @@ export default function ScheduleMaker() {
   const [importStatus, setImportStatus] = useState<null | { type: "success" | "warning" | "error"; message: string }>(null)
   const [importErrorDialog, setImportErrorDialog] = useState<ImportDialogConfig | null>(null)
   const [staleImportNotice, setStaleImportNotice] = useState<string | null>(null)
+  const [icsDialogOpen, setIcsDialogOpen] = useState(false)
+  const [icsDialogStartDate, setIcsDialogStartDate] = useState<string>("")
+  const [icsDialogError, setIcsDialogError] = useState<string | null>(null)
 
   const persistStaleImportNotice = useCallback((message: string | null) => {
     setStaleImportNotice(message)
@@ -1153,7 +1156,7 @@ export default function ScheduleMaker() {
   }
 
   // New ICS file generator
-  const downloadICSFile = () => {
+  const downloadICSFile = (baseStartDate: Date = startDate) => {
     if (selectedCourses.length === 0) return
 
     const pad = (value: number) => String(value).padStart(2, "0")
@@ -1204,7 +1207,7 @@ export default function ScheduleMaker() {
     const dtStamp = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z"
 
     const events = selectedCourses.map((course, index) => {
-      const startDateObj = new Date(startDate)
+      const startDateObj = new Date(baseStartDate)
       const dayInfo = course.parsedDays.map(daysToWeekday)
       const firstDay = dayInfo[0] || { weekday: 1, code: "MO" }
       const eventDate = getNextDateForWeekday(startDateObj, firstDay.weekday)
@@ -1256,6 +1259,34 @@ export default function ScheduleMaker() {
     link.click()
     document.body.removeChild(link)
     URL.revokeObjectURL(url)
+  }
+
+  const openIcsDialog = () => {
+    setIcsDialogStartDate(startDate.toISOString().split('T')[0])
+    setIcsDialogError(null)
+    setIcsDialogOpen(true)
+  }
+
+  const handleCloseIcsDialog = () => {
+    setIcsDialogOpen(false)
+    setIcsDialogError(null)
+  }
+
+  const handleConfirmIcsDownload = () => {
+    if (!icsDialogStartDate) {
+      setIcsDialogError('Please pick a start date.')
+      return
+    }
+
+    const chosenDate = new Date(icsDialogStartDate)
+    if (Number.isNaN(chosenDate.getTime())) {
+      setIcsDialogError('Invalid start date.')
+      return
+    }
+
+    setStartDate(chosenDate)
+    downloadICSFile(chosenDate)
+    setIcsDialogOpen(false)
   }
 
   // Dynamically group courses based on user preference
@@ -1827,7 +1858,7 @@ const renderScheduleView = () => {
           <Button
             variant="outline"
             size="sm"
-            onClick={downloadICSFile}
+            onClick={openIcsDialog}
             className="flex items-center gap-2"
           >
             <Calendar className="h-4 w-4" />
@@ -2093,6 +2124,37 @@ const renderScheduleView = () => {
                 Try again later
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={icsDialogOpen} onOpenChange={(nextOpen) => { if (!nextOpen) handleCloseIcsDialog() }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Export schedule as ICS</DialogTitle>
+            <DialogDescription>
+              Confirm the start date we should use for the recurring calendar events before downloading.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="ics-start-date">Start date</Label>
+            <Input
+              id="ics-start-date"
+              type="date"
+              value={icsDialogStartDate}
+              onChange={(event) => {
+                setIcsDialogStartDate(event.target.value)
+                setIcsDialogError(null)
+              }}
+            />
+            {icsDialogError && <p className="text-sm text-red-500">{icsDialogError}</p>}
+          </div>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button variant="outline" className="w-full sm:w-auto" onClick={handleCloseIcsDialog}>
+              Cancel
+            </Button>
+            <Button className="w-full sm:w-auto" onClick={handleConfirmIcsDownload} disabled={!icsDialogStartDate}>
+              Download ICS file
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -23,6 +23,7 @@ import {
   Save,
   Eye,
   ArrowUp,
+  ArrowRight,
   Table,
   Grid3X3,
   GraduationCap,
@@ -184,6 +185,22 @@ interface TranscriptEntry {
   grade: string
 }
 
+interface PrereqCascadeNode {
+  course: Course
+  requiredStatus: CourseStatus
+  willChange: boolean
+  nextStatus: CourseStatus | null
+  children: PrereqCascadeNode[]
+}
+
+interface PrerequisiteDialogState {
+  course: Course
+  targetStatus: CourseStatus
+  cascadeTree: PrereqCascadeNode[]
+  overrides: Record<string, CourseStatus>
+  stats: { total: number; toUpdate: number }
+}
+
 interface PendingPassDowngrade {
   courseId: string
   targetAttempt: { year: number; term: TermName; grade: string }
@@ -213,6 +230,144 @@ const PASSING_GRADE_VALUES: ReadonlyArray<string> = [
 const FAIL_GRADE_VALUES: ReadonlyArray<string> = ["0.0", "0.5", "7.0", "9.0"]
 const ACCEPTABLE_GRADE_VALUES: ReadonlyArray<string> = [...FAIL_GRADE_VALUES, ...PASSING_GRADE_VALUES]
 const DOWNGRADE_FAIL_GRADE = "0.5"
+
+const PREREQ_TARGET_STATUS: Record<CourseStatus, CourseStatus | null> = {
+  passed: "passed",
+  active: "active",
+  pending: null,
+}
+
+const shouldUpgradeStatus = (current: CourseStatus, required: CourseStatus): boolean => {
+  if (required === "passed") {
+    return current !== "passed"
+  }
+  if (required === "active") {
+    return current === "pending"
+  }
+  return false
+}
+
+const buildCascadeNodes = (
+  sourceCourse: Course,
+  requiredStatus: CourseStatus,
+  resolver: (id: string) => Course | undefined,
+  visited: Set<string>,
+): PrereqCascadeNode[] => {
+  const prereqIds = Array.isArray(sourceCourse.prerequisites) ? sourceCourse.prerequisites : []
+  const nodes: PrereqCascadeNode[] = []
+
+  prereqIds.forEach((prereqId) => {
+    if (!prereqId || visited.has(prereqId)) return
+    const prereqCourse = resolver(prereqId)
+    if (!prereqCourse) return
+
+    visited.add(prereqId)
+    const childNodes = buildCascadeNodes(prereqCourse, requiredStatus, resolver, visited)
+    visited.delete(prereqId)
+
+    const willChange = shouldUpgradeStatus(prereqCourse.status, requiredStatus)
+    const nodeShouldExist = willChange || childNodes.length > 0
+    if (!nodeShouldExist) return
+
+    nodes.push({
+      course: prereqCourse,
+      requiredStatus,
+      willChange,
+      nextStatus: willChange ? requiredStatus : null,
+      children: childNodes,
+    })
+  })
+
+  return nodes
+}
+
+const flattenCascadeOverrides = (nodes: PrereqCascadeNode[]): Record<string, CourseStatus> => {
+  const overrides: Record<string, CourseStatus> = {}
+  const walk = (node: PrereqCascadeNode) => {
+    if (node.willChange && node.nextStatus) {
+      overrides[node.course.id] = node.nextStatus
+    }
+    node.children.forEach(walk)
+  }
+  nodes.forEach(walk)
+  return overrides
+}
+
+const summarizeCascadeNodes = (nodes: PrereqCascadeNode[]) => {
+  let total = 0
+  let toUpdate = 0
+  const walk = (node: PrereqCascadeNode) => {
+    total += 1
+    if (node.willChange && node.nextStatus) {
+      toUpdate += 1
+    }
+    node.children.forEach(walk)
+  }
+  nodes.forEach(walk)
+  return { total, toUpdate }
+}
+
+const renderCascadeTree = (nodes: PrereqCascadeNode[], depth = 0): React.ReactNode => {
+  if (!nodes.length) return null
+
+  return nodes.map((node) => {
+    const { course, children, willChange, nextStatus, requiredStatus } = node
+    const key = `${course.id}-${depth}`
+    const nextStatusClasses =
+      nextStatus === "passed"
+        ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-100"
+        : "bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-100"
+
+    return (
+      <div key={key} className="space-y-2">
+        <div className="rounded-md border border-slate-200/70 bg-white/70 p-3 text-sm shadow-sm dark:border-slate-700/60 dark:bg-slate-900/30">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-medium text-slate-900 dark:text-slate-100">{course.code}</p>
+              <p className="text-xs text-muted-foreground">{course.name}</p>
+            </div>
+            <div className="flex items-center gap-1 text-xs">
+              <Badge variant="secondary">{formatStatusLabel(course.status)}</Badge>
+              {willChange && nextStatus ? (
+                <>
+                  <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+                  <Badge variant="outline" className={nextStatusClasses}>
+                    {formatStatusLabel(nextStatus)}
+                  </Badge>
+                </>
+              ) : (
+                <Badge variant="outline" className="text-muted-foreground">
+                  Already {formatStatusLabel(requiredStatus)}
+                </Badge>
+              )}
+            </div>
+          </div>
+          {!willChange && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              No change needed for this course, but its prerequisites below still need updates.
+            </p>
+          )}
+        </div>
+        {children.length > 0 && (
+          <div className="ml-4 border-l border-dashed border-slate-200 pl-4 dark:border-slate-700">
+            {renderCascadeTree(children, depth + 1)}
+          </div>
+        )}
+      </div>
+    )
+  })
+}
+
+const formatStatusLabel = (status: CourseStatus): string => {
+  switch (status) {
+    case "passed":
+      return "Passed"
+    case "active":
+      return "Active"
+    default:
+      return "Pending"
+  }
+}
 
 const GRADE_LABELS: Record<string, string> = {
   "0.0": "Excessive Absence",
@@ -1325,10 +1480,34 @@ export default function CourseTracker() {
   const [noProgressDismissed, setNoProgressDismissed] = useState(false)
   const [coursesHydrated, setCoursesHydrated] = useState(false)
   const [setupUploadStatus, setSetupUploadStatus] = useState<{ fileName: string; uploadedAt: number } | null>(null)
+  const [prereqDialogState, setPrereqDialogState] = useState<PrerequisiteDialogState | null>(null)
+  const [dependencyNoticeDismissed, setDependencyNoticeDismissed] = useState(false)
   const yearLevelOptions = useMemo(() => Array.from({ length: maxYearLevelOption }, (_, idx) => idx + 1), [maxYearLevelOption])
   const extendYearOptions = useCallback(() => {
     setMaxYearLevelOption((prev) => prev + 5)
   }, [])
+
+  const defaultCourseSignature = useMemo(() => {
+    return (initialCourses as Course[]).map((course) => course.id).sort().join("|")
+  }, [])
+
+  const currentCourseSignature = useMemo(() => {
+    return courses.map((course) => course.id).sort().join("|")
+  }, [courses])
+
+  const isCustomCurriculum = currentCourseSignature !== defaultCourseSignature
+
+  const dependencyDataAvailable = useMemo(() => {
+    if (!courses.length) return false
+    const idSet = new Set(courses.map((course) => course.id))
+    const hasAnyPrereqs = courses.some((course) => Array.isArray(course.prerequisites) && course.prerequisites.length > 0)
+    if (!hasAnyPrereqs) return false
+    return courses.every((course) =>
+      (Array.isArray(course.prerequisites) ? course.prerequisites : []).every((id) => idSet.has(id)),
+    )
+  }, [courses])
+
+  const shouldShowDependencyNotice = isCustomCurriculum && !dependencyDataAvailable && !dependencyNoticeDismissed
 
   const ensureYearOption = useCallback((value: number) => {
     if (!Number.isFinite(value)) return
@@ -1393,6 +1572,11 @@ export default function CourseTracker() {
   }, [])
 
   useEffect(() => {
+    if (typeof window === "undefined") return
+    setDependencyNoticeDismissed(localStorage.getItem("courseTracker.dependencyNoticeDismissed") === "true")
+  }, [])
+
+  useEffect(() => {
     if (!coursesHydrated) return
 
     if (markedCourseCount > 0) {
@@ -1416,6 +1600,13 @@ export default function CourseTracker() {
     if (fileInputRef.current) {
       fileInputRef.current.value = ""
       fileInputRef.current.click()
+    }
+  }
+
+  const dismissDependencyNotice = () => {
+    setDependencyNoticeDismissed(true)
+    if (typeof window !== "undefined") {
+      localStorage.setItem("courseTracker.dependencyNoticeDismissed", "true")
     }
   }
 
@@ -1620,6 +1811,21 @@ export default function CourseTracker() {
   // Find a course by its ID
   const findCourseById = (id: string): Course | undefined => {
     return courses.find((course) => course.id === id)
+  }
+
+  const getCascadePreview = (course: Course, targetStatus: CourseStatus) => {
+    const requiredStatus = PREREQ_TARGET_STATUS[targetStatus]
+    if (!requiredStatus) return null
+
+    const visited = new Set<string>([course.id])
+    const cascadeTree = buildCascadeNodes(course, requiredStatus, findCourseById, visited)
+    if (cascadeTree.length === 0) return null
+
+    const overrides = flattenCascadeOverrides(cascadeTree)
+    if (Object.keys(overrides).length === 0) return null
+
+    const stats = summarizeCascadeNodes(cascadeTree)
+    return { cascadeTree, overrides, stats, requiredStatus }
   }
 
   const updateCourseData = (courseId: string, updater: (course: Course) => Course) => {
@@ -2297,18 +2503,69 @@ export default function CourseTracker() {
   // Group the filtered courses for display
   const groupedFilteredCourses = useMemo<CoursesByYearAndTerm>(() => groupCourses(filteredCourses), [filteredCourses])
 
-  // Handle status change for a course
-  const handleStatusChange = (courseId: string, newStatus: CourseStatus) => {
+  const applyStatusChange = (
+    courseId: string,
+    newStatus: CourseStatus,
+    statusOverrides: Record<string, CourseStatus> = {},
+  ) => {
     setCourses((prevCourses) => {
-      const updatedCourses = prevCourses.map((course) =>
-        course.id === courseId ? { ...course, status: newStatus } : course,
-      )
+      const updatedCourses: Course[] = prevCourses.map((course): Course => {
+        if (course.id === courseId) {
+          return { ...course, status: newStatus }
+        }
 
-      // Save to localStorage whenever courses are updated
+        const overrideStatus = statusOverrides[course.id]
+        if (!overrideStatus) return course
+
+        // Never downgrade a completed course to active when cascading an "active" status.
+        if (course.status === "passed" && overrideStatus === "active") {
+          return course
+        }
+
+        if (course.status === overrideStatus) {
+          return course
+        }
+
+        return { ...course, status: overrideStatus }
+      })
+
       saveCourseStatuses(updatedCourses)
-
       return updatedCourses
     })
+  }
+
+  // Handle status change for a course
+  const handleStatusChange = (courseId: string, newStatus: CourseStatus) => {
+    const targetCourse = findCourseById(courseId)
+    if (!targetCourse) return
+
+    if (dependencyDataAvailable && (newStatus === "passed" || newStatus === "active")) {
+      const cascadePreview = getCascadePreview(targetCourse, newStatus)
+      if (cascadePreview) {
+        setPrereqDialogState({
+          course: targetCourse,
+          targetStatus: newStatus,
+          cascadeTree: cascadePreview.cascadeTree,
+          overrides: cascadePreview.overrides,
+          stats: cascadePreview.stats,
+        })
+        return
+      }
+    }
+
+    applyStatusChange(courseId, newStatus)
+  }
+
+  const confirmPrereqCascade = () => {
+    if (!prereqDialogState) return
+    applyStatusChange(prereqDialogState.course.id, prereqDialogState.targetStatus, prereqDialogState.overrides)
+    setPrereqDialogState(null)
+  }
+
+  const skipPrereqCascade = () => {
+    if (!prereqDialogState) return
+    applyStatusChange(prereqDialogState.course.id, prereqDialogState.targetStatus)
+    setPrereqDialogState(null)
   }
 
   // Toggle year collapsible
@@ -2529,6 +2786,81 @@ export default function CourseTracker() {
   {/* Non-CpE Student Notice */}
   <NonCpeNotice onReportIssue={() => setFeedbackDialogOpen(true)} />
   <FeedbackDialog open={feedbackDialogOpen} onOpenChange={setFeedbackDialogOpen} defaultSubject="Non-CpE curriculum import issue" />
+
+        {shouldShowDependencyNotice && (
+          <Alert className="mb-6 border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/10 dark:text-amber-100">
+            <div className="flex w-full items-start gap-3">
+              <AlertCircle className="h-5 w-5 flex-shrink-0" />
+              <div className="flex-1 text-sm">
+                <AlertTitle className="mb-1 text-base">Prerequisite details missing</AlertTitle>
+                <AlertDescription>
+                  The curriculum you imported doesn&apos;t include prerequisite/required-for data, so we&apos;re skipping the
+                  auto-update confirmation step. You can still update course statuses freely.
+                </AlertDescription>
+              </div>
+              <Button variant="ghost" size="sm" onClick={dismissDependencyNotice} className="h-7 px-2">
+                Dismiss
+              </Button>
+            </div>
+          </Alert>
+        )}
+
+        <Dialog open={Boolean(prereqDialogState)} onOpenChange={(open) => (!open ? setPrereqDialogState(null) : null)}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Resolve prerequisite chain</DialogTitle>
+              {prereqDialogState && (
+                <DialogDescription>
+                  Marking {prereqDialogState.course.code} {prereqDialogState.course.name} as
+                  {" "}
+                  <span className="font-semibold">
+                    {formatStatusLabel(prereqDialogState.targetStatus)}
+                  </span>{" "}
+                  requires updating its prerequisite courses below.
+                </DialogDescription>
+              )}
+            </DialogHeader>
+
+            {prereqDialogState && (
+              <div className="space-y-4 text-sm">
+                <div className="rounded-md border border-slate-200/70 bg-slate-50/60 p-3 dark:border-slate-700/70 dark:bg-slate-800/40">
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-medium">Auto-update summary</p>
+                        <p className="text-xs text-muted-foreground">
+                          {prereqDialogState.stats.toUpdate} of {prereqDialogState.stats.total} prerequisite course(s) will be
+                          set to {formatStatusLabel(PREREQ_TARGET_STATUS[prereqDialogState.targetStatus] ?? "pending")}.
+                        </p>
+                      </div>
+                      <Badge variant="outline" className="text-xs">
+                        {prereqDialogState.stats.toUpdate} updates
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Confirm to automatically apply these changes, or skip to only update the selected course.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="max-h-72 overflow-y-auto pr-1 space-y-3">
+                  {renderCascadeTree(prereqDialogState.cascadeTree)}
+                </div>
+              </div>
+            )}
+
+            <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button variant="secondary" className="w-full sm:w-auto" onClick={skipPrereqCascade}>
+                Skip auto-updates
+              </Button>
+              <Button className="w-full sm:w-auto" onClick={confirmPrereqCascade}>
+                {prereqDialogState?.targetStatus === "passed"
+                  ? "Mark prerequisites as Passed"
+                  : "Mark prerequisites as Active"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Save/Load Progress Controls */}
         <SaveLoadControls

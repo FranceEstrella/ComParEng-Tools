@@ -2206,7 +2206,7 @@ export default function AcademicPlanner() {
     let currentPlanTerm = currentTerm
     let currentSemesterCourses: PlanCourse[] = []
     let currentSemesterCredits = 0
-    const HARD_MAX_CREDITS = effectiveMaxCreditsWithOverflow
+    const TARGET_MAX_CREDITS = effectiveMaxCreditsPerTerm
 
     // Reserved internship terms (determine from curriculum)
     // Reserved terms disabled; internships will be scheduled dynamically after regular courses
@@ -2506,7 +2506,7 @@ export default function AcademicPlanner() {
       for (const course of candidates) {
         if (currentSemesterCredits >= minCreditsPerTerm) break
         if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) continue
-        if (currentSemesterCredits + course.credits > HARD_MAX_CREDITS) continue
+        if (currentSemesterCredits + course.credits > TARGET_MAX_CREDITS) continue
         currentSemesterCourses.push(course)
         currentSemesterCredits += course.credits
         courseScheduleMap.set(course.id, { year: currentPlanYear, term: currentPlanTerm })
@@ -2530,7 +2530,7 @@ export default function AcademicPlanner() {
       if (pair) {
         if ((isLec(course) && isLab(pair)) || (isLab(course) && isLec(pair))) {
           if (canScheduleInTermLocal(pair, currentPlanYear, currentPlanTerm)) {
-            if (currentSemesterCredits + pair.credits <= HARD_MAX_CREDITS) {
+            if (currentSemesterCredits + pair.credits <= TARGET_MAX_CREDITS) {
               currentSemesterCourses.push(pair)
               currentSemesterCredits += pair.credits
               courseScheduleMap.set(pair.id, { year: currentPlanYear, term: currentPlanTerm })
@@ -2545,9 +2545,8 @@ export default function AcademicPlanner() {
     // Try to pack up to the recommended max via small search (singles and pairs)
     const tryPackToMax = () => {
       let packed = 0
-      const softCapacity = Math.max(0, effectiveMaxCreditsPerTerm - currentSemesterCredits)
-      const hardCapacity = Math.max(0, HARD_MAX_CREDITS - currentSemesterCredits)
-      if (hardCapacity <= 0) return packed
+      const remainingCapacity = Math.max(0, TARGET_MAX_CREDITS - currentSemesterCredits)
+      if (remainingCapacity <= 0) return packed
 
       const eligible = remainingRegularCourses.filter((c) => canScheduleInTermLocal(c, currentPlanYear, currentPlanTerm))
       if (eligible.length === 0) return packed
@@ -2588,18 +2587,14 @@ export default function AcademicPlanner() {
         return best
       }
 
-      let chosen = chooseBestSingle(softCapacity)
-      if (!chosen) {
-        chosen = chooseBestSingle(hardCapacity)
-      }
+      const chosen = chooseBestSingle(remainingCapacity)
       if (chosen) {
         addCourseNow(chosen)
         packed++
       }
 
-      const remainingSoft = Math.max(0, effectiveMaxCreditsPerTerm - currentSemesterCredits)
-      const remainingHard = Math.max(0, HARD_MAX_CREDITS - currentSemesterCredits)
-      if (remainingHard <= 0) return packed
+      let remainingSoft = Math.max(0, TARGET_MAX_CREDITS - currentSemesterCredits)
+      if (remainingSoft <= 0) return packed
 
       const pool = remainingRegularCourses.filter((c) => canScheduleInTermLocal(c, currentPlanYear, currentPlanTerm))
       const poolTop = pool.sort((a, b) => b.credits - a.credits).slice(0, TOP)
@@ -2609,14 +2604,16 @@ export default function AcademicPlanner() {
           const a = poolTop[i]
           const b = poolTop[j]
           const sum = a.credits + b.credits
-          if (sum <= remainingSoft || sum <= remainingHard) {
-            if (currentSemesterCredits + a.credits <= HARD_MAX_CREDITS) {
+          if (sum <= remainingSoft) {
+            if (currentSemesterCredits + a.credits <= TARGET_MAX_CREDITS) {
               addCourseNow(a)
               packed++
+              remainingSoft = Math.max(0, TARGET_MAX_CREDITS - currentSemesterCredits)
             }
-            if (currentSemesterCredits + b.credits <= HARD_MAX_CREDITS) {
+            if (currentSemesterCredits + b.credits <= TARGET_MAX_CREDITS) {
               addCourseNow(b)
               packed++
+              remainingSoft = Math.max(0, TARGET_MAX_CREDITS - currentSemesterCredits)
             }
             pairAdded = true
           }
@@ -2647,6 +2644,7 @@ export default function AcademicPlanner() {
 
       // Try to schedule courses in the current term
       for (let i = remainingRegularCourses.length - 1; i >= 0; i--) {
+        if (currentSemesterCredits >= TARGET_MAX_CREDITS) break
         const course = remainingRegularCourses[i]
 
         // Check if this course can be scheduled in the current term
@@ -2654,34 +2652,33 @@ export default function AcademicPlanner() {
           continue // Skip this course for now
         }
 
-  // If adding this course would exceed the hard limit, start a new semester (do not add if it would exceed)
-  if (currentSemesterCredits + course.credits > HARD_MAX_CREDITS) {
+    // If adding this course would exceed the target limit, start a new semester (do not add if it would exceed)
+        if (currentSemesterCredits + course.credits > TARGET_MAX_CREDITS) {
           if (currentSemesterCourses.length > 0) {
-          // Save current semester
-          plan.push({
-            year: currentPlanYear,
-            term: currentPlanTerm,
-            courses: [...currentSemesterCourses],
-          })
+            // Save current semester
+            plan.push({
+              year: currentPlanYear,
+              term: currentPlanTerm,
+              courses: [...currentSemesterCourses],
+            })
 
-          // Move to next term
-          const next = getNextTerm(currentPlanYear, currentPlanTerm)
-          currentPlanYear = next.year
-          currentPlanTerm = next.term
-          currentSemesterCourses = []
-          currentSemesterCredits = 0
-          // skip reserved terms
-          while (reservedTermsLocal.has(`${currentPlanYear}-${currentPlanTerm}`)) {
-            const n = getNextTerm(currentPlanYear, currentPlanTerm)
-            currentPlanYear = n.year
-            currentPlanTerm = n.term
+            // Move to next term
+            const next = getNextTerm(currentPlanYear, currentPlanTerm)
+            currentPlanYear = next.year
+            currentPlanTerm = next.term
+            currentSemesterCourses = []
+            currentSemesterCredits = 0
+            // skip reserved terms
+            while (reservedTermsLocal.has(`${currentPlanYear}-${currentPlanTerm}`)) {
+              const n = getNextTerm(currentPlanYear, currentPlanTerm)
+              currentPlanYear = n.year
+              currentPlanTerm = n.term
+            }
+            // after moving to next term, try to schedule this course in the next iteration
+            continue
+          } else {
+            // course fits in empty semester (rare case where course.credits > MAX handled above)
           }
-          // after moving to next term, try to schedule this course in the next iteration
-          continue
-        } else {
-          // course fits in empty semester (rare case where course.credits > MAX handled above)
-        }
-        
         }
 
         // Add course to current semester (and try bundle with co-req)
@@ -2869,7 +2866,7 @@ export default function AcademicPlanner() {
           })
           if (!prereqOk) continue
           // Capacity check
-          if (sumCredits(target) + course.credits > HARD_MAX_CREDITS) continue
+          if (sumCredits(target) + course.credits > TARGET_MAX_CREDITS) continue
           // Move
           sem.courses.splice(k, 1)
           target.courses.push(course)
