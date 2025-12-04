@@ -28,6 +28,7 @@ import {
   Palette,
   Maximize2,
   Minimize2,
+  X,
 } from "lucide-react"
 import Link from "next/link"
 import { useTheme } from "next-themes"
@@ -57,6 +58,7 @@ import { HexColorPicker } from "react-colorful"
 import React from "react"
 import html2canvas from "html2canvas"
 import { format } from "date-fns"
+import { AnimatePresence, motion } from "framer-motion"
 
 // Time slot constants
 const DAYS = ["M", "Tu", "W", "Th", "F", "S"] as const;
@@ -147,6 +149,11 @@ const getSelectedCourseCanonicalCode = (course: SelectedCourse) => {
   return course.canonicalCode || getCanonicalCourseCode(course.courseCode)
 }
 
+const buildCourseLookupKey = (courseCode: string, section: string) => {
+  const normalizedSection = (section ?? "").trim().toUpperCase()
+  return `${getCanonicalCourseCode(courseCode)}__${normalizedSection}`
+}
+
 // Interface for course data
 interface CourseSection {
   courseCode: string
@@ -185,6 +192,25 @@ interface CourseCustomization {
   color?: string
 }
 
+const getDefaultSelectedCourseTitle = (course: SelectedCourse) => {
+  const safeName = course.name || "Unknown Course"
+  const safeSection = course.section || ""
+  return `[${course.courseCode}] ${safeName}${safeSection ? ` | ${safeSection}` : ""}`
+}
+
+const getSelectedCourseDisplayTitle = (course: SelectedCourse, customization?: CourseCustomization) => {
+  const customTitle = customization?.customTitle?.trim()
+  if (customTitle) {
+    return customTitle
+  }
+  return getDefaultSelectedCourseTitle(course)
+}
+
+const getSelectedCourseIdentifierLabel = (course: SelectedCourse) => {
+  const safeName = course.name || "Unknown Course"
+  return `${course.courseCode} - ${safeName}`
+}
+
 interface GroupedCourseSet {
   value: string
   courses: CourseSection[]
@@ -217,6 +243,16 @@ interface SelectedCourseExportPayload {
 
 const SELECTED_COURSE_EXPORT_VERSION = 1
 const STALE_IMPORT_NOTICE_STORAGE_KEY = "scheduleMaker.staleImportNotice"
+const DEFAULT_CUSTOM_COLOR = "#3b82f6"
+const HEX_COLOR_PATTERN = /^[0-9A-Fa-f]{6}$/
+
+const sanitizeHexColor = (value: string): string | null => {
+  if (!value) return null
+  const trimmed = value.trim()
+  const stripped = trimmed.startsWith("#") ? trimmed.slice(1) : trimmed
+  if (!HEX_COLOR_PATTERN.test(stripped)) return null
+  return `#${stripped.toUpperCase()}`
+}
 
 interface ImportDialogConfig {
   title: string
@@ -438,6 +474,7 @@ export default function ScheduleMaker() {
   const [activeCourses, setActiveCourses] = useState<ActiveCourse[]>([])
   const [selectedCourses, setSelectedCourses] = useState<SelectedCourse[]>([])
   const [customizations, setCustomizations] = useState<Record<string, CourseCustomization>>({})
+  const [customColorInputs, setCustomColorInputs] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
@@ -453,6 +490,8 @@ export default function ScheduleMaker() {
   const [noActiveDialogDismissed, setNoActiveDialogDismissed] = useState(false)
   const [viewMode, setViewMode] = useState<"card" | "table">("card")
   const [selectedViewMode, setSelectedViewMode] = useState<"card" | "table">("card")
+  const [selectedPanelVisible, setSelectedPanelVisible] = useState(true)
+  const [selectedPanelCollapsed, setSelectedPanelCollapsed] = useState(false)
   const scheduleRef = useRef<HTMLDivElement>(null)
   const lastAvailableHashRef = useRef<string>("")
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
@@ -468,7 +507,7 @@ export default function ScheduleMaker() {
   const [isClient, setIsClient] = useState(false)
   const [editingCourse, setEditingCourse] = useState<SelectedCourse | null>(null)
   const [tempCustomTitle, setTempCustomTitle] = useState("")
-  const [tempCustomColor, setTempCustomColor] = useState("#3b82f6")
+  const [tempCustomColor, setTempCustomColor] = useState(DEFAULT_CUSTOM_COLOR)
   const [scheduleTitle, setScheduleTitle] = useState(
     typeof window !== 'undefined' ? localStorage.getItem('scheduleTitle') || 'Weekly Schedule' : 'Weekly Schedule'
   )
@@ -580,6 +619,13 @@ export default function ScheduleMaker() {
   useEffect(() => {
     setIsClient(true)
   }, [])
+
+  useEffect(() => {
+    if (selectedCourses.length === 0) {
+      setSelectedPanelCollapsed(false)
+      setSelectedPanelVisible(true)
+    }
+  }, [selectedCourses.length])
 
   // Load data from localStorage only on the client side
   const clearScheduleSelections = useCallback(() => {
@@ -838,6 +884,82 @@ export default function ScheduleMaker() {
     } as SelectedCourse
   }
 
+  useEffect(() => {
+    if (availableCourses.length === 0) return
+
+    const lookup = new Map<string, CourseSection>()
+    availableCourses.forEach((course) => {
+      lookup.set(buildCourseLookupKey(course.courseCode, course.section), course)
+    })
+
+    setSelectedCourses((prev) => {
+      if (prev.length === 0) {
+        return prev
+      }
+
+      let changed = false
+
+      const updated = prev.map((selected) => {
+        const key = buildCourseLookupKey(selected.canonicalCode || selected.courseCode, selected.section)
+        const latest = lookup.get(key)
+        if (!latest) {
+          return selected
+        }
+
+        const canonicalCode = getCanonicalCourseCode(latest.courseCode)
+        const metadata = getCourseNameAndCredits(latest.courseCode)
+        const { start, end, startMinutes, endMinutes } = parseTimeRange(latest.meetingTime)
+        const parsedDays = parseDays(latest.meetingDays)
+        const displayTime = cleanTimeString(latest.meetingTime)
+        const displayRoom = cleanRoomString(latest.room)
+        const parsedDaysChanged =
+          selected.parsedDays.length !== parsedDays.length ||
+          selected.parsedDays.some((day, index) => day !== parsedDays[index])
+
+        const needsUpdate =
+          selected.courseCode !== latest.courseCode ||
+          selected.classSize !== latest.classSize ||
+          selected.remainingSlots !== latest.remainingSlots ||
+          selected.meetingDays !== latest.meetingDays ||
+          selected.meetingTime !== latest.meetingTime ||
+          selected.room !== latest.room ||
+          selected.hasSlots !== latest.hasSlots ||
+          selected.canonicalCode !== canonicalCode ||
+          selected.name !== metadata.name ||
+          selected.credits !== metadata.credits ||
+          selected.timeStart !== start ||
+          selected.timeEnd !== end ||
+          selected.startMinutes !== startMinutes ||
+          selected.endMinutes !== endMinutes ||
+          parsedDaysChanged ||
+          selected.displayTime !== displayTime ||
+          selected.displayRoom !== displayRoom
+
+        if (!needsUpdate) {
+          return selected
+        }
+
+        changed = true
+        return {
+          ...selected,
+          ...latest,
+          canonicalCode,
+          name: metadata.name,
+          credits: metadata.credits,
+          timeStart: start,
+          timeEnd: end,
+          startMinutes,
+          endMinutes,
+          parsedDays,
+          displayTime,
+          displayRoom,
+        }
+      })
+
+      return changed ? updated : prev
+    })
+  }, [availableCourses, setSelectedCourses])
+
   // Enhanced conflict detection
   const hasScheduleConflict = (course: CourseSection): boolean => {
     if (!course.meetingTime || !course.meetingDays) return false
@@ -901,6 +1023,42 @@ export default function ScheduleMaker() {
     const canonicalCode = getCanonicalCourseCode(course.courseCode)
     return selectedCourses.find((selected) => getSelectedCourseCanonicalCode(selected) === canonicalCode)
   }
+
+  const handleHexInputChange = useCallback((courseKey: string, value: string) => {
+    setCustomColorInputs((prev) => ({
+      ...prev,
+      [courseKey]: value,
+    }))
+  }, [])
+
+  const applyHexColorValue = useCallback(
+    (courseKey: string, value: string, fallbackColor?: string) => {
+      const sanitized = sanitizeHexColor(value)
+      if (!sanitized) {
+        if (fallbackColor) {
+          setCustomColorInputs((prev) => ({
+            ...prev,
+            [courseKey]: fallbackColor,
+          }))
+        }
+        return
+      }
+
+      setCustomColorInputs((prev) => ({
+        ...prev,
+        [courseKey]: sanitized,
+      }))
+
+      setCustomizations((prev) => ({
+        ...prev,
+        [courseKey]: {
+          ...prev[courseKey],
+          color: sanitized,
+        },
+      }))
+    },
+    [setCustomizations],
+  )
 
   const sortCourses = (courses: CourseSection[]) => {
     return [...courses].sort((a, b) => {
@@ -985,6 +1143,13 @@ export default function ScheduleMaker() {
       const newCustomizations = { ...prev }
       delete newCustomizations[key]
       return newCustomizations
+    })
+
+    setCustomColorInputs((prev) => {
+      if (!prev[key]) return prev
+      const next = { ...prev }
+      delete next[key]
+      return next
     })
   }
 
@@ -1232,8 +1397,7 @@ export default function ScheduleMaker() {
         : [{ weekday: 1, code: "MO" }]
 
       const customizationKey = `${course.courseCode}-${course.section}`
-      const summary =
-        customizations[customizationKey]?.customTitle || `${course.courseCode} - ${course.name}`
+      const summary = getSelectedCourseDisplayTitle(course, customizations[customizationKey])
       const description = `Section: ${course.section}\nRoom: ${course.displayRoom}`
 
       return dayInfo.map((day, dayIndex) => {
@@ -1841,7 +2005,7 @@ const downloadScheduleImage = async () => {
     setCustomizations(prev => ({
       ...prev,
       [key]: {
-        customTitle: tempCustomTitle || editingCourse.courseCode,
+        customTitle: tempCustomTitle || getDefaultSelectedCourseTitle(editingCourse),
         color: tempCustomColor,
       }
     }))
@@ -1851,7 +2015,7 @@ const downloadScheduleImage = async () => {
   // Get course color
   const getCourseColor = (course: SelectedCourse) => {
     const key = `${course.courseCode}-${course.section}`
-    return customizations[key]?.color || "#3b82f6" // Default blue
+    return customizations[key]?.color || DEFAULT_CUSTOM_COLOR // Default blue
   }
 
   // Editable title component
@@ -1981,8 +2145,9 @@ const renderScheduleView = () => {
             {selectedCourses.map(course => {
               const key = `${course.courseCode}-${course.section}`;
               const customization = customizations[key] || {};
-              const bgColor = customization.color || "#3b82f6";
+              const bgColor = customization.color || DEFAULT_CUSTOM_COLOR;
               const textColor = getContrastColor(bgColor);
+              const displayTitle = getSelectedCourseDisplayTitle(course, customization);
               
               // Calculate exact positions with 30-minute adjustment
               const [startHour, startMinute] = course.timeStart.split(':').map(Number);
@@ -2040,7 +2205,7 @@ const renderScheduleView = () => {
                     }}
                   >
                     <div className="font-bold text-sm leading-tight break-words">
-                      {customization.customTitle || course.courseCode}
+                      {displayTitle}
                     </div>
                     <div className="text-xs leading-tight break-words">
                       {course.displayTime}
@@ -2818,6 +2983,121 @@ const renderScheduleView = () => {
                   </>
                 )}
               </div>
+
+              <AnimatePresence>
+                {selectedCourses.length > 0 && selectedPanelVisible && (
+                  <motion.div
+                    key="selected-panel"
+                    initial={{ opacity: 0, y: 24 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 24 }}
+                    transition={{ duration: 0.25, ease: "easeInOut" }}
+                    className="fixed bottom-12 right-4 left-4 sm:left-auto sm:w-[24rem] sm:bottom-16 z-[10000]"
+                  >
+                    <div className="rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+                      <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-2 dark:border-slate-700">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                            Selected Courses ({selectedCourses.length})
+                          </p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            Total credits: {totalSelectedCredits}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setSelectedPanelCollapsed((prev) => !prev)}
+                            aria-label={selectedPanelCollapsed ? "Expand selected courses" : "Collapse selected courses"}
+                          >
+                            <ChevronDown
+                              className={`h-4 w-4 transition-transform ${selectedPanelCollapsed ? "-rotate-90" : "rotate-0"}`}
+                            />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setSelectedPanelVisible(false)}
+                            aria-label="Hide selected courses panel"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                      {!selectedPanelCollapsed && (
+                        <div className="max-h-[26rem] overflow-y-auto p-4 space-y-3">
+                          <AnimatePresence initial={false}>
+                            {selectedCourses.map((course) => {
+                            const key = `${course.courseCode}-${course.section}`
+                            const customization = customizations[key] || {}
+                            const courseColor = customization.color || DEFAULT_CUSTOM_COLOR
+                            const displayTitle = getSelectedCourseDisplayTitle(course, customization)
+                            const identifierLabel = getSelectedCourseIdentifierLabel(course)
+
+                            return (
+                                <motion.div
+                                  layout
+                                  key={key}
+                                  initial={{ opacity: 0, scale: 0.95 }}
+                                  animate={{ opacity: 1, scale: 1 }}
+                                  exit={{ opacity: 0, scale: 0.95 }}
+                                  transition={{ duration: 0.18, ease: "easeInOut" }}
+                                  className="rounded-lg border border-slate-200 p-3 shadow-sm dark:border-slate-700"
+                                  style={{ borderLeft: `4px solid ${courseColor}` }}
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div>
+                                      <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                        {displayTitle}
+                                      </p>
+                                      <p className="text-xs text-slate-500 dark:text-slate-400">{identifierLabel}</p>
+                                    </div>
+                                    <Badge variant={course.hasSlots ? "secondary" : "destructive"}>
+                                      {course.hasSlots ? `${course.remainingSlots} slots` : "Full"}
+                                    </Badge>
+                                  </div>
+                                  <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-300">
+                                    <dt className="font-semibold">Section</dt>
+                                    <dd>{course.section}</dd>
+                                    <dt className="font-semibold">Credits</dt>
+                                    <dd>{course.credits}</dd>
+                                    <dt className="font-semibold">Days</dt>
+                                    <dd>{course.meetingDays}</dd>
+                                    <dt className="font-semibold">Time</dt>
+                                    <dd>{course.displayTime}</dd>
+                                    <dt className="font-semibold">Room</dt>
+                                    <dd>{course.displayRoom}</dd>
+                                  </dl>
+                                </motion.div>
+                              )
+                            })}
+                          </AnimatePresence>
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <AnimatePresence>
+                {selectedCourses.length > 0 && !selectedPanelVisible && (
+                  <motion.div
+                    key="selected-panel-toggle"
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 16 }}
+                    transition={{ duration: 0.2, ease: "easeInOut" }}
+                    className="fixed bottom-20 right-4 sm:bottom-24 z-[10000]"
+                  >
+                    <Button type="button" size="sm" className="shadow-lg" onClick={() => setSelectedPanelVisible(true)}>
+                      Show selected courses ({selectedCourses.length})
+                    </Button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </TabsContent>
 
             {/* Selected Courses Tab */}
@@ -2886,19 +3166,7 @@ const renderScheduleView = () => {
               ) : (
                 <>
                   <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="flex items-center space-x-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => setSelectedViewMode(selectedViewMode === "card" ? "table" : "card")}
-                        className="flex items-center gap-2"
-                      >
-                        {selectedViewMode === "card" ? "Table View" : "Card View"}
-                      </Button>
-                    </div>
-                    <div className="flex flex-col gap-2 items-start lg:items-end">
-                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                        Total credits selected: {totalSelectedCredits}
-                      </span>
+                    <div className="flex flex-col gap-2 items-start lg:items-start">
                       <div className="flex flex-wrap items-center gap-2">
                         <Button variant="outline" size="sm" onClick={triggerImportSelectedCourses}>
                           Import selection
@@ -2907,6 +3175,18 @@ const renderScheduleView = () => {
                           Export selection
                         </Button>
                       </div>
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                        Total credits selected: {totalSelectedCredits}
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-2 self-start lg:self-auto">
+                      <Button
+                        variant="outline"
+                        onClick={() => setSelectedViewMode(selectedViewMode === "card" ? "table" : "card")}
+                        className="flex items-center gap-2"
+                      >
+                        {selectedViewMode === "card" ? "Table View" : "Card View"}
+                      </Button>
                     </div>
                   </div>
 
@@ -2929,6 +3209,10 @@ const renderScheduleView = () => {
                           {selectedCourses.map((course) => {
                             const key = `${course.courseCode}-${course.section}`
                             const customization = customizations[key] || {}
+                            const courseColor = customization.color || DEFAULT_CUSTOM_COLOR
+                            const colorInputValue = customColorInputs[key] ?? courseColor
+                            const displayTitle = getSelectedCourseDisplayTitle(course, customization)
+                            const inputTitleValue = customization.customTitle ?? getDefaultSelectedCourseTitle(course)
                             
                             return (
                               <TableRow key={key}>
@@ -2937,7 +3221,7 @@ const renderScheduleView = () => {
                                   <Popover>
                                     <PopoverTrigger asChild>
                                       <Button variant="ghost" size="sm" className="flex items-center gap-1">
-                                        {customization.customTitle || course.courseCode}
+                                        {displayTitle}
                                         <Edit className="h-3 w-3" />
                                       </Button>
                                     </PopoverTrigger>
@@ -2947,34 +3231,56 @@ const renderScheduleView = () => {
                                         <div>
                                           <Label>Display Name</Label>
                                           <Input
-                                            value={customization.customTitle || course.courseCode}
+                                            value={inputTitleValue}
                                             onChange={(e) => {
                                               setCustomizations(prev => ({
                                                 ...prev,
                                                 [key]: {
                                                   ...prev[key],
-                                                  customTitle: e.target.value
-                                                }
+                                                  customTitle: e.target.value,
+                                                },
                                               }))
                                             }}
                                           />
                                         </div>
                                         <div>
                                           <Label>Color</Label>
-                                          <div className="flex items-center gap-2">
+                                          <div className="flex flex-col gap-2">
                                             <HexColorPicker
-                                              color={customization.color || "#3b82f6"}
+                                              color={courseColor}
                                               onChange={(color) => {
                                                 setCustomizations(prev => ({
                                                   ...prev,
                                                   [key]: {
                                                     ...prev[key],
-                                                    color
-                                                  }
+                                                    color,
+                                                  },
+                                                }))
+                                                setCustomColorInputs(prev => ({
+                                                  ...prev,
+                                                  [key]: color,
                                                 }))
                                               }}
                                               className="w-full"
                                             />
+                                            <div className="flex items-center gap-2">
+                                              <Input
+                                                value={colorInputValue}
+                                                onChange={(e) => handleHexInputChange(key, e.currentTarget.value)}
+                                                onBlur={(e) => applyHexColorValue(key, e.currentTarget.value, courseColor)}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.preventDefault()
+                                                    applyHexColorValue(key, e.currentTarget.value, courseColor)
+                                                  }
+                                                }}
+                                                maxLength={7}
+                                                className="font-mono text-xs"
+                                                placeholder="#3B82F6"
+                                                aria-label="Hex color"
+                                              />
+                                              <span className="text-[0.7rem] text-slate-500">6-digit hex</span>
+                                            </div>
                                           </div>
                                         </div>
                                       </div>
@@ -3013,7 +3319,11 @@ const renderScheduleView = () => {
                       {selectedCourses.map((course, index) => {
                         const key = `${course.courseCode}-${course.section}`
                         const customization = customizations[key] || {}
-                        const courseColor = customization.color || "#3b82f6"
+                        const courseColor = customization.color || DEFAULT_CUSTOM_COLOR
+                        const colorInputValue = customColorInputs[key] ?? courseColor
+                        const displayTitle = getSelectedCourseDisplayTitle(course, customization)
+                        const identifierLabel = getSelectedCourseIdentifierLabel(course)
+                        const defaultTitleValue = customization.customTitle ?? getDefaultSelectedCourseTitle(course)
 
                         return (
                           <Card key={index} className="relative overflow-hidden" style={{
@@ -3023,9 +3333,9 @@ const renderScheduleView = () => {
                               <div className="flex justify-between items-start">
                                 <div>
                                   <CardTitle className="text-lg font-bold">
-                                    {customization.customTitle || course.courseCode}
+                                    {displayTitle}
                                   </CardTitle>
-                                  <p className="text-sm font-medium">{course.name}</p>
+                                  <p className="text-sm font-medium">{identifierLabel}</p>
                                 </div>
                                 <Badge variant={course.hasSlots ? "secondary" : "destructive"}>
                                   {course.hasSlots ? `${course.remainingSlots} slots` : "Full"}
@@ -3066,7 +3376,7 @@ const renderScheduleView = () => {
                                     <div>
                                       <Label>Display Name</Label>
                                       <Input
-                                        defaultValue={customization.customTitle || course.courseCode}
+                                        defaultValue={defaultTitleValue}
                                         onChange={(e) => {
                                           setCustomizations(prev => ({
                                             ...prev,
@@ -3080,7 +3390,7 @@ const renderScheduleView = () => {
                                     </div>
                                     <div>
                                       <Label>Color</Label>
-                                      <div className="flex items-center gap-2">
+                                      <div className="flex flex-col gap-2">
                                         <HexColorPicker
                                           color={courseColor}
                                           onChange={(color) => {
@@ -3091,9 +3401,31 @@ const renderScheduleView = () => {
                                                 color
                                               }
                                             }))
+                                            setCustomColorInputs(prev => ({
+                                              ...prev,
+                                              [key]: color
+                                            }))
                                           }}
                                           className="w-full"
                                         />
+                                        <div className="flex items-center gap-2">
+                                          <Input
+                                            value={colorInputValue}
+                                            onChange={(e) => handleHexInputChange(key, e.currentTarget.value)}
+                                            onBlur={(e) => applyHexColorValue(key, e.currentTarget.value, courseColor)}
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter") {
+                                                e.preventDefault()
+                                                applyHexColorValue(key, e.currentTarget.value, courseColor)
+                                              }
+                                            }}
+                                            maxLength={7}
+                                            className="font-mono text-xs"
+                                            placeholder="#3B82F6"
+                                            aria-label="Hex color"
+                                          />
+                                          <span className="text-[0.7rem] text-slate-500">6-digit hex</span>
+                                        </div>
                                       </div>
                                     </div>
                                   </div>
