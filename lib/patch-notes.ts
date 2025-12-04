@@ -7,6 +7,10 @@ export interface PatchNote {
     type: "new" | "improved" | "fixed" | "known-issue"
     description: string
   }[]
+  hotfixes?: {
+    date: string
+    items: string[]
+  }[]
 }
 
 export const patchNotes: PatchNote[] = [
@@ -40,6 +44,25 @@ export const patchNotes: PatchNote[] = [
         type: "fixed",
         description:
           "Importing saved selections now re-syncs slot counts, meeting details, and display metadata whenever fresh course extractions arrive.",
+      },
+    ],
+    hotfixes: [
+      {
+        date: "December 3, 2025",
+        items: [
+          "Added a start-date picker dialog before downloading the schedule ICS file so exports anchor to your actual first class meeting.",
+          "Fixed custom curriculum uploads not extracting prerequisites and required-for relationships.",
+          "Improved academic plan suggestions to honor dynamic preferred minimum and maximum units per term.",
+          "Added a confirmation dialog that lets you mark prerequisite chains as passed in one go when jumping ahead.",
+        ],
+      },
+      {
+        date: "December 2, 2025",
+        items: [
+          "Fixed the Save to ICS flow in Schedule Maker's calendar view so generated files include every selected course.",
+          "Added import/export for Selected Courses to make sharing or restoring a schedule from JSON effortless.",
+          "Added configurable minimum and maximum units (including onboarding prompts after curriculum uploads) so non-CpE programs avoid incorrect load warnings.",
+        ],
       },
     ],
   },

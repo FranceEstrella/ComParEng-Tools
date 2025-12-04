@@ -209,7 +209,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
               <Badge variant={c.type === "fixed" ? "secondary" : c.type === "new" ? "default" : "outline"}>
                 {c.type}
               </Badge>
-              <span className="leading-snug text-sm">{c.description}</span>
+              <span className="leading-snug whitespace-pre-line text-sm">{c.description}</span>
             </div>
           ))}
           {isCompactLayout && activeNote.changes.length > changeLimit && (
@@ -220,6 +220,25 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             </div>
           )}
         </div>
+        {activeNote.hotfixes && activeNote.hotfixes.length > 0 && (
+          <div className="mt-4 rounded-2xl border border-amber-300/70 bg-amber-50/80 p-4 text-amber-900 dark:border-amber-400/40 dark:bg-amber-500/10 dark:text-amber-50">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-amber-800 dark:text-amber-100">
+              Hotfixes
+            </p>
+            <div className="mt-3 space-y-3">
+              {activeNote.hotfixes.map((hotfix) => (
+                <div key={hotfix.date}>
+                  <p className="text-xs font-semibold text-amber-700 dark:text-amber-200">{hotfix.date}</p>
+                  <ul className="mt-1 list-disc space-y-1 pl-4 text-sm">
+                    {hotfix.items.map((item, index) => (
+                      <li key={`${hotfix.date}-${index}`}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <DialogFooter>
           <Button variant="outline" onClick={handleCloseClick}>Close</Button>
         </DialogFooter>

@@ -456,10 +456,29 @@ export default function Home() {
                           {note.changes.map((change, index) => (
                             <li key={index} className="flex items-start">
                               <span className="mr-2">•</span>
-                              <span>{change.description}</span>
+                              <span className="whitespace-pre-line">{change.description}</span>
                             </li>
                           ))}
                         </ul>
+                        {note.hotfixes?.length ? (
+                          <div className="mt-4 rounded-lg border border-amber-300/70 bg-amber-50/80 p-4 text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-50">
+                            <p className="text-sm font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-100">
+                              Hotfixes
+                            </p>
+                            <div className="mt-3 space-y-3">
+                              {note.hotfixes.map((hotfix) => (
+                                <div key={hotfix.date}>
+                                  <p className="text-xs font-semibold text-amber-700 dark:text-amber-200">{hotfix.date}</p>
+                                  <ul className="mt-1 list-disc space-y-1 pl-4 text-sm">
+                                    {hotfix.items.map((item, idx) => (
+                                      <li key={`${hotfix.date}-${idx}`}>{item}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </TabsContent>
                   ))}
