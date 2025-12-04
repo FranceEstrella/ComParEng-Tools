@@ -26,6 +26,8 @@ import {
   Sun,
   Moon,
   Palette,
+  Maximize2,
+  Minimize2,
 } from "lucide-react"
 import Link from "next/link"
 import { useTheme } from "next-themes"
@@ -486,6 +488,7 @@ export default function ScheduleMaker() {
     }))
   }, [])
 
+
   const persistStaleImportNotice = useCallback((message: string | null) => {
     setStaleImportNotice(message)
     if (typeof window === "undefined") return
@@ -810,9 +813,21 @@ export default function ScheduleMaker() {
         ? course.parsedDays
         : parseDays(course?.meetingDays ?? "")
 
+    const { name: defaultName, credits: defaultCredits } = getCourseNameAndCredits(course?.courseCode ?? canonicalCode)
+    const normalizedName =
+      typeof course?.name === "string" && course.name.trim() !== ""
+        ? course.name
+        : defaultName
+    const normalizedCredits =
+      typeof course?.credits === "number" && !Number.isNaN(course.credits)
+        ? course.credits
+        : defaultCredits
+
     return {
       ...course,
       canonicalCode,
+      name: normalizedName,
+      credits: normalizedCredits,
       timeStart,
       timeEnd,
       startMinutes,
@@ -1684,6 +1699,41 @@ export default function ScheduleMaker() {
     [filteredAndSortedCourses, groupBy],
   )
 
+  const totalSelectedCredits = React.useMemo(() => {
+    return selectedCourses.reduce((sum, course) => {
+      const creditValue = Number.isFinite(course.credits)
+        ? course.credits
+        : getCourseNameAndCredits(course.courseCode).credits || 0
+      return sum + (Number.isFinite(creditValue) ? creditValue : 0)
+    }, 0)
+  }, [selectedCourses])
+
+  const areAllGroupsCollapsed =
+    groupedCourses.length > 0 &&
+    groupedCourses.every(({ value }) => collapsedGroups[`${groupBy}-${value}`])
+
+  const shouldShowAvailableCardCredits = groupBy !== "courseCode"
+
+  const collapseAllGroups = useCallback(() => {
+    setCollapsedGroups((prev) => {
+      const next = { ...prev }
+      groupedCourses.forEach(({ value }) => {
+        next[`${groupBy}-${value}`] = true
+      })
+      return next
+    })
+  }, [groupBy, groupedCourses])
+
+  const expandAllGroups = useCallback(() => {
+    setCollapsedGroups((prev) => {
+      const next = { ...prev }
+      groupedCourses.forEach(({ value }) => {
+        next[`${groupBy}-${value}`] = false
+      })
+      return next
+    })
+  }, [groupBy, groupedCourses])
+
   const currentGroupLabel = GROUP_LABELS[groupBy]
 
   const getGroupDisplayValue = useCallback(
@@ -1694,7 +1744,9 @@ export default function ScheduleMaker() {
       const canonical = getCanonicalCourseCode(courses[0].courseCode)
       const details = getCourseDetails(canonical) || getCourseDetails(courses[0].courseCode)
       const name = details?.name
-      return name ? `${value} - ${name}` : value
+      if (!name) return value
+      const creditsLabel = typeof details?.credits === "number" ? `${details.credits} unit${details.credits === 1 ? "" : "s"}` : null
+      return creditsLabel ? `${value} - ${name} (${creditsLabel})` : `${value} - ${name}`
     },
     [groupBy],
   )
@@ -2444,14 +2496,35 @@ const renderScheduleView = () => {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {groupedCourses.map(({ value, courses }) => (
-                              <React.Fragment key={`${groupBy}-${value}`}>
-                                <TableRow className="bg-gray-100 dark:bg-gray-700">
-                                  <TableCell colSpan={8} className="font-medium">
-                                    {currentGroupLabel}: {getGroupDisplayValue(value, courses)}
-                                  </TableCell>
-                                </TableRow>
-                                {courses.map((course, index) => {
+                            {groupedCourses.map(({ value, courses }) => {
+                              const groupKey = `${groupBy}-${value}`
+                              const isCollapsed = collapsedGroups[groupKey] ?? false
+
+                              return (
+                                <React.Fragment key={groupKey}>
+                                  <TableRow className="bg-gray-100 dark:bg-gray-700">
+                                    <TableCell colSpan={8} className="font-medium p-0">
+                                      <button
+                                        type="button"
+                                        className="w-full px-4 py-2 flex items-center justify-between text-left"
+                                        onClick={() => toggleGroupCollapse(groupKey)}
+                                        aria-expanded={!isCollapsed}
+                                        aria-controls={`${groupKey}-table-rows`}
+                                      >
+                                        <span>
+                                          {currentGroupLabel}: {getGroupDisplayValue(value, courses)}
+                                        </span>
+                                        <ChevronDown
+                                          className={`h-4 w-4 transition-transform ${
+                                            isCollapsed ? "-rotate-90" : "rotate-0"
+                                          }`}
+                                        />
+                                      </button>
+                                    </TableCell>
+                                  </TableRow>
+                                  {!isCollapsed && (
+                                    <React.Fragment>
+                                      {courses.map((course, index) => {
                                   const canonicalCode = getCanonicalCourseCode(course.courseCode)
                                   const activeCourseDetails = activeCourses.find(
                                     (active) => getCanonicalCourseCode(active.code) === canonicalCode,
@@ -2471,86 +2544,112 @@ const renderScheduleView = () => {
                                   const hasSameCode = hasSameCourseCode(course) && !isAlreadySelected
                                   const existingCourse = hasSameCode ? getSelectedCourseWithSameCode(course) : null
 
-                                  return (
-                                    <TableRow key={`${course.courseCode}-${course.section}-${index}`}>
-                                      <TableCell>{departmentValue}</TableCell>
-                                      <TableCell>{course.courseCode}</TableCell>
-                                      <TableCell>{courseDetails.name}</TableCell>
-                                      <TableCell>{course.section}</TableCell>
-                                      <TableCell>
-                                        {cleanTimeString(course.meetingTime)} ({course.meetingDays})
-                                      </TableCell>
-                                      <TableCell>{cleanRoomString(course.room)}</TableCell>
-                                      <TableCell>
-                                        <Badge
-                                          variant={course.hasSlots ? "secondary" : "destructive"}
-                                          className={`px-2 py-1 text-xs font-semibold ${
-                                            course.hasSlots
-                                              ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                                              : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                                          }`}
-                                        >
-                                          {course.hasSlots ? `${course.remainingSlots}/${course.classSize}` : "Full"}
-                                        </Badge>
-                                      </TableCell>
-                                      <TableCell>
-                                        {hasSameCode ? (
-                                          <Popover>
-                                            <PopoverTrigger asChild>
-                                              <Button
-                                                size="sm"
-                                                variant="outline"
-                                                className="bg-yellow-50 border-yellow-200 text-yellow-700 hover:bg-yellow-100"
+                                        return (
+                                          <TableRow key={`${course.courseCode}-${course.section}-${index}`}>
+                                            <TableCell>{departmentValue}</TableCell>
+                                            <TableCell>{course.courseCode}</TableCell>
+                                            <TableCell>{courseDetails.name}</TableCell>
+                                            <TableCell>{course.section}</TableCell>
+                                            <TableCell>
+                                              {cleanTimeString(course.meetingTime)} ({course.meetingDays})
+                                            </TableCell>
+                                            <TableCell>{cleanRoomString(course.room)}</TableCell>
+                                            <TableCell>
+                                              <Badge
+                                                variant={course.hasSlots ? "secondary" : "destructive"}
+                                                className={`px-2 py-1 text-xs font-semibold ${
+                                                  course.hasSlots
+                                                    ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                                                    : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
+                                                }`}
                                               >
-                                                Replace Section
-                                              </Button>
-                                            </PopoverTrigger>
-                                            <PopoverContent className="w-80">
-                                              <div className="space-y-4">
-                                                <h4 className="font-medium">Replace Existing Section</h4>
-                                                <p className="text-sm">
-                                                  You already have {course.courseCode} section {existingCourse?.section}{" "}
-                                                  in your schedule. Do you want to replace it with section{" "}
-                                                  {course.section}?
-                                                </p>
-                                                <div className="flex justify-end gap-2">
-                                                  <Button size="sm" variant="outline" onClick={() => addCourse(course)}>
-                                                    <Check className="h-4 w-4 mr-1" /> Yes, Replace
-                                                  </Button>
-                                                </div>
-                                              </div>
-                                            </PopoverContent>
-                                          </Popover>
-                                        ) : (
-                                          <Button
-                                            size="sm"
-                                            variant={
-                                              isAlreadySelected ? "destructive" : isConflict ? "outline" : "default"
-                                            }
-                                            disabled={isConflict && !isAlreadySelected}
-                                            onClick={() => {
-                                              if (isAlreadySelected) {
-                                                removeCourse(course.courseCode, course.section)
-                                              } else {
-                                                addCourse(course)
-                                              }
-                                            }}
-                                          >
-                                            {isAlreadySelected ? "Remove" : "Add"}
-                                          </Button>
-                                        )}
-                                      </TableCell>
-                                    </TableRow>
-                                  )
-                                })}
-                              </React.Fragment>
-                            ))}
+                                                {course.hasSlots ? `${course.remainingSlots}/${course.classSize}` : "Full"}
+                                              </Badge>
+                                            </TableCell>
+                                            <TableCell>
+                                              {hasSameCode ? (
+                                                <Popover>
+                                                  <PopoverTrigger asChild>
+                                                    <Button
+                                                      size="sm"
+                                                      variant="outline"
+                                                      className="bg-yellow-50 border-yellow-200 text-yellow-700 hover:bg-yellow-100"
+                                                    >
+                                                      Replace Section
+                                                    </Button>
+                                                  </PopoverTrigger>
+                                                  <PopoverContent className="w-80">
+                                                    <div className="space-y-4">
+                                                      <h4 className="font-medium">Replace Existing Section</h4>
+                                                      <p className="text-sm">
+                                                        You already have {course.courseCode} section {existingCourse?.section}{" "}
+                                                        in your schedule. Do you want to replace it with section{" "}
+                                                        {course.section}?
+                                                      </p>
+                                                      <div className="flex justify-end gap-2">
+                                                        <Button size="sm" variant="outline" onClick={() => addCourse(course)}>
+                                                          <Check className="h-4 w-4 mr-1" /> Yes, Replace
+                                                        </Button>
+                                                      </div>
+                                                    </div>
+                                                  </PopoverContent>
+                                                </Popover>
+                                              ) : (
+                                                <Button
+                                                  size="sm"
+                                                  variant={
+                                                    isAlreadySelected ? "destructive" : isConflict ? "outline" : "default"
+                                                  }
+                                                  disabled={isConflict && !isAlreadySelected}
+                                                  onClick={() => {
+                                                    if (isAlreadySelected) {
+                                                      removeCourse(course.courseCode, course.section)
+                                                    } else {
+                                                      addCourse(course)
+                                                    }
+                                                  }}
+                                                >
+                                                  {isAlreadySelected ? "Remove" : "Add"}
+                                                </Button>
+                                              )}
+                                            </TableCell>
+                                          </TableRow>
+                                        )
+                                      })}
+                                    </React.Fragment>
+                                  )}
+                                </React.Fragment>
+                              )
+                            })}
                           </TableBody>
                         </Table>
                       </div>
                     )}
                     {viewMode === "card" && (
                       <div className="space-y-6">
+                        {groupedCourses.length > 0 && (
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={areAllGroupsCollapsed ? expandAllGroups : collapseAllGroups}
+                              className="flex items-center gap-2"
+                            >
+                              {areAllGroupsCollapsed ? (
+                                <>
+                                  <Maximize2 className="h-4 w-4" />
+                                  Expand all groups
+                                </>
+                              ) : (
+                                <>
+                                  <Minimize2 className="h-4 w-4" />
+                                  Collapse all groups
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        )}
                         {groupedCourses.map(({ value, courses }) => {
                           const groupKey = `${groupBy}-${value}`
                           const isCollapsed = collapsedGroups[groupKey] ?? false
@@ -2624,6 +2723,12 @@ const renderScheduleView = () => {
                                     </CardHeader>
                                     <CardContent>
                                       <div className="space-y-2 text-sm">
+                                        {shouldShowAvailableCardCredits && (
+                                          <div className="flex justify-between">
+                                            <span className="font-medium">Credits:</span>
+                                            <span>{courseDetails.credits}</span>
+                                          </div>
+                                        )}
                                         <div className="flex justify-between">
                                           <span className="font-medium">Days:</span>
                                           <span>{course.meetingDays}</span>
@@ -2779,7 +2884,7 @@ const renderScheduleView = () => {
                 </div>
               ) : (
                 <>
-                  <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="flex items-center space-x-2">
                       <Button
                         variant="outline"
@@ -2789,13 +2894,18 @@ const renderScheduleView = () => {
                         {selectedViewMode === "card" ? "Table View" : "Card View"}
                       </Button>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button variant="outline" size="sm" onClick={triggerImportSelectedCourses}>
-                        Import selection
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={handleExportSelectedCourses}>
-                        Export selection
-                      </Button>
+                    <div className="flex flex-col gap-2 items-start lg:items-end">
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                        Total credits selected: {totalSelectedCredits}
+                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={triggerImportSelectedCourses}>
+                          Import selection
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={handleExportSelectedCourses}>
+                          Export selection
+                        </Button>
+                      </div>
                     </div>
                   </div>
 
@@ -2806,6 +2916,7 @@ const renderScheduleView = () => {
                           <TableRow>
                             <TableHead>Course Code</TableHead>
                             <TableHead>Custom Title</TableHead>
+                            <TableHead>Credits</TableHead>
                             <TableHead>Section</TableHead>
                             <TableHead>Schedule</TableHead>
                             <TableHead>Room</TableHead>
@@ -2869,6 +2980,7 @@ const renderScheduleView = () => {
                                     </PopoverContent>
                                   </Popover>
                                 </TableCell>
+                                  <TableCell>{course.credits}</TableCell>
                                 <TableCell>{course.section}</TableCell>
                                 <TableCell>
                                   {course.displayTime} ({course.meetingDays})
@@ -2919,6 +3031,7 @@ const renderScheduleView = () => {
                                 </Badge>
                               </div>
                               <p className="text-sm text-gray-600 dark:text-gray-400">Section: {course.section}</p>
+                              <p className="text-sm text-gray-600 dark:text-gray-400">Credits: {course.credits}</p>
                             </CardHeader>
 
                             <CardContent>
