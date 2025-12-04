@@ -2480,6 +2480,30 @@ const renderScheduleView = () => {
                   </div>
                 ) : (
                   <>
+                    {groupedCourses.length > 0 && (
+                      <div className="flex justify-end mb-4">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={areAllGroupsCollapsed ? expandAllGroups : collapseAllGroups}
+                          className="flex items-center gap-2"
+                        >
+                          {areAllGroupsCollapsed ? (
+                            <>
+                              <Maximize2 className="h-4 w-4" />
+                              Expand all groups
+                            </>
+                          ) : (
+                            <>
+                              <Minimize2 className="h-4 w-4" />
+                              Collapse all groups
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
+
                     {viewMode === "table" && (
                       <div className="overflow-x-auto">
                         <Table>
@@ -2627,29 +2651,6 @@ const renderScheduleView = () => {
                     )}
                     {viewMode === "card" && (
                       <div className="space-y-6">
-                        {groupedCourses.length > 0 && (
-                          <div className="flex justify-end">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={areAllGroupsCollapsed ? expandAllGroups : collapseAllGroups}
-                              className="flex items-center gap-2"
-                            >
-                              {areAllGroupsCollapsed ? (
-                                <>
-                                  <Maximize2 className="h-4 w-4" />
-                                  Expand all groups
-                                </>
-                              ) : (
-                                <>
-                                  <Minimize2 className="h-4 w-4" />
-                                  Collapse all groups
-                                </>
-                              )}
-                            </Button>
-                          </div>
-                        )}
                         {groupedCourses.map(({ value, courses }) => {
                           const groupKey = `${groupBy}-${value}`
                           const isCollapsed = collapsedGroups[groupKey] ?? false
