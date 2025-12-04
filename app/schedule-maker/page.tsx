@@ -22,6 +22,7 @@ import {
   Calendar,
   Download,
   Edit,
+  ChevronDown,
   Sun,
   Moon,
   Palette,
@@ -476,6 +477,14 @@ export default function ScheduleMaker() {
   const [icsDialogOpen, setIcsDialogOpen] = useState(false)
   const [icsDialogStartDate, setIcsDialogStartDate] = useState<string>("")
   const [icsDialogError, setIcsDialogError] = useState<string | null>(null)
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
+
+  const toggleGroupCollapse = useCallback((groupKey: string) => {
+    setCollapsedGroups((prev) => ({
+      ...prev,
+      [groupKey]: !prev[groupKey],
+    }))
+  }, [])
 
   const persistStaleImportNotice = useCallback((message: string | null) => {
     setStaleImportNotice(message)
@@ -2542,12 +2551,31 @@ const renderScheduleView = () => {
                     )}
                     {viewMode === "card" && (
                       <div className="space-y-6">
-                        {groupedCourses.map(({ value, courses }) => (
-                          <div key={`${groupBy}-${value}`} className="border rounded-lg overflow-hidden">
-                            <div className="bg-gray-100 dark:bg-gray-700 px-4 py-2 font-medium">
-                              {currentGroupLabel}: {getGroupDisplayValue(value, courses)}
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+                        {groupedCourses.map(({ value, courses }) => {
+                          const groupKey = `${groupBy}-${value}`
+                          const isCollapsed = collapsedGroups[groupKey] ?? false
+
+                          return (
+                            <div key={groupKey} className="border rounded-lg overflow-hidden">
+                              <button
+                                type="button"
+                                className="w-full bg-gray-100 dark:bg-gray-700 px-4 py-2 font-medium flex items-center justify-between gap-3 text-left"
+                                onClick={() => toggleGroupCollapse(groupKey)}
+                                aria-expanded={!isCollapsed}
+                                aria-controls={`${groupKey}-courses`}
+                              >
+                                <span>
+                                  {currentGroupLabel}: {getGroupDisplayValue(value, courses)}
+                                </span>
+                                <ChevronDown
+                                  className={`h-4 w-4 transition-transform ${isCollapsed ? "-rotate-90" : "rotate-0"}`}
+                                />
+                              </button>
+                              {!isCollapsed && (
+                                <div
+                                  id={`${groupKey}-courses`}
+                                  className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4"
+                                >
                               {courses.map((course, index) => {
                                 const canonicalCode = getCanonicalCourseCode(course.courseCode)
                                 const activeCourseDetails = activeCourses.find(
@@ -2673,10 +2701,12 @@ const renderScheduleView = () => {
                                     </CardFooter>
                                   </Card>
                                 )
-                              })}
+                                  })}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     )}
                   </>
