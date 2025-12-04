@@ -51,7 +51,7 @@
     "input-otp": "latest",
     "jsdom": "latest",
     "lucide-react": "^0.454.0",
-    "next": "^16.0.1",
+    "next": "16.0.7",
     "next-themes": "latest",
     "path": "latest",
     "react": "^19",
