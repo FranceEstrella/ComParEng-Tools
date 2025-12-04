@@ -2992,7 +2992,7 @@ const renderScheduleView = () => {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 24 }}
                     transition={{ duration: 0.25, ease: "easeInOut" }}
-                    className="fixed bottom-12 right-4 left-4 sm:left-auto sm:w-[24rem] sm:bottom-16 z-[10000]"
+                    className="fixed bottom-20 right-4 left-4 sm:left-auto sm:w-[24rem] sm:bottom-24 sm:right-6 z-[10000]"
                   >
                     <div className="rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900">
                       <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-2 dark:border-slate-700">
@@ -3090,7 +3090,7 @@ const renderScheduleView = () => {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 16 }}
                     transition={{ duration: 0.2, ease: "easeInOut" }}
-                    className="fixed bottom-20 right-4 sm:bottom-24 z-[10000]"
+                    className="fixed bottom-20 right-4 sm:bottom-24 sm:right-6 z-[10000]"
                   >
                     <Button type="button" size="sm" className="shadow-lg" onClick={() => setSelectedPanelVisible(true)}>
                       Show selected courses ({selectedCourses.length})

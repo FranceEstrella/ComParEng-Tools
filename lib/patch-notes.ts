@@ -2,6 +2,7 @@ export interface PatchNote {
   version: string
   date: string
   title: string
+  silent?: boolean
   changes: {
     type: "new" | "improved" | "fixed" | "known-issue"
     description: string
@@ -9,6 +10,39 @@ export interface PatchNote {
 }
 
 export const patchNotes: PatchNote[] = [
+  {
+    version: "1.46",
+    date: "December 5, 2025",
+    title: "Schedule Maker quality rollup (silent)",
+    silent: true,
+    changes: [
+      {
+        type: "new",
+        description:
+          "A floating Selected Courses summary mirrors slot counts, credits, and collapse controls directly on the Available tab.",
+      },
+      {
+        type: "improved",
+        description:
+          "Available-course groups now support per-group collapse in both card and table views plus a single collapse-all toggle shared across layouts.",
+      },
+      {
+        type: "improved",
+        description:
+          "Credits are surfaced on every available and selected card, with running totals and consistent toolbar placement between tabs.",
+      },
+      {
+        type: "improved",
+        description:
+          "Selected-course controls gained hex color inputs and clearer default titles in the format [CODE] NAME | SECTION so custom labels remain identifiable.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Importing saved selections now re-syncs slot counts, meeting details, and display metadata whenever fresh course extractions arrive.",
+      },
+    ],
+  },
   {
     version: "1.45",
     date: "November 29, 2025",

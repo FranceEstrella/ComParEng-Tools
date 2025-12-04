@@ -23,24 +23,32 @@ type Props = {
 
 export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "What’s New" }: Props) {
   const latest = useMemo(() => orderedPatchNotes[0], [])
+  const latestNonSilent = useMemo(() => orderedPatchNotes.find((note) => !note.silent), [])
   const [open, setOpen] = useState(false)
   const [isCompactLayout, setIsCompactLayout] = useState(false)
   const [showAllChanges, setShowAllChanges] = useState(false)
   const [spotlight, setSpotlight] = useState({ x: 50, y: 50 })
   const [confettiBursts, setConfettiBursts] = useState<number[]>([])
+  const [activeVersion, setActiveVersion] = useState<string | undefined>(latest?.version)
+
+  const activeNote = useMemo(() => {
+    if (!activeVersion) return latest
+    return orderedPatchNotes.find((note) => note.version === activeVersion) || latest
+  }, [activeVersion, latest])
 
   useEffect(() => {
-    if (!autoOpenOnce || !latest) return
+    if (!autoOpenOnce || !latestNonSilent) return
     try {
       const seen = localStorage.getItem("whatsNew.seenVersion")
-      if (seen !== latest.version) {
+      if (seen !== latestNonSilent.version) {
+        setActiveVersion(latestNonSilent.version)
         setOpen(true)
-        localStorage.setItem("whatsNew.seenVersion", latest.version)
+        localStorage.setItem("whatsNew.seenVersion", latestNonSilent.version)
       }
     } catch {
       // ignore storage errors
     }
-  }, [autoOpenOnce, latest])
+  }, [autoOpenOnce, latestNonSilent])
 
   useEffect(() => {
     const updateLayout = () => {
@@ -54,11 +62,12 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
     return () => window.removeEventListener("resize", updateLayout)
   }, [])
 
-  if (!latest) return null
+  if (!activeNote) return null
 
   const changeLimit = 5
-  const visibleChanges = isCompactLayout && !showAllChanges ? latest.changes.slice(0, changeLimit) : latest.changes
-  const isMajorUpdate = latest.version === "1.45"
+  const visibleChanges =
+    isCompactLayout && !showAllChanges ? activeNote.changes.slice(0, changeLimit) : activeNote.changes
+  const isMajorUpdate = Boolean(!activeNote.silent && latestNonSilent && activeNote.version === latestNonSilent.version)
 
   const majorHighlights = [
     {
@@ -118,6 +127,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
           <Button
             variant="outline"
             className="bg-white/80 text-slate-900 border-slate-300 hover:bg-white dark:bg-white/10 dark:text-white dark:border-white/40 dark:hover:bg-white/20"
+            onClick={() => setActiveVersion(latest?.version)}
           >
             {buttonLabel}
           </Button>
@@ -154,7 +164,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
           <DialogTitle className={cn(isMajorUpdate && "flex items-center gap-2 text-emerald-200")}
           >
             {isMajorUpdate && <Sparkles className="h-5 w-5 animate-pulse" />}
-            v{latest.version} — {latest.title}
+            v{activeNote.version} — {activeNote.title}
           </DialogTitle>
           <DialogDescription className={cn(
             "text-sm",
@@ -162,7 +172,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             isCompactLayout && "mt-1 text-center"
           )}
           >
-            {latest.date}
+            {activeNote.date}
           </DialogDescription>
         </DialogHeader>
         {isMajorUpdate && (
@@ -202,10 +212,10 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
               <span className="leading-snug text-sm">{c.description}</span>
             </div>
           ))}
-          {isCompactLayout && latest.changes.length > changeLimit && (
+          {isCompactLayout && activeNote.changes.length > changeLimit && (
             <div className="pt-1">
               <Button variant="link" size="sm" className="px-0" onClick={() => setShowAllChanges((prev) => !prev)}>
-                {showAllChanges ? "Show fewer updates" : `Show all ${latest.changes.length} updates`}
+                {showAllChanges ? "Show fewer updates" : `Show all ${activeNote.changes.length} updates`}
               </Button>
             </div>
           )}

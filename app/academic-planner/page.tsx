@@ -4686,8 +4686,8 @@ export default function AcademicPlanner() {
                 className={cn(
                   "fixed z-50 transition-all duration-300 transform",
                   isMobile
-                    ? "bottom-4 left-4 right-4 flex flex-col items-stretch gap-3"
-                    : "bottom-6 right-6 flex flex-col-reverse items-end gap-4",
+                    ? "bottom-20 left-4 right-4 flex flex-col items-stretch gap-3"
+                    : "bottom-24 right-6 flex flex-col-reverse items-end gap-4",
                   floatingControlsEntering
                     ? "opacity-100 translate-y-0 scale-100 pointer-events-auto"
                     : "opacity-0 translate-y-4 scale-95 pointer-events-none"
