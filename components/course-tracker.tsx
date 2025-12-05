@@ -233,7 +233,7 @@ const DOWNGRADE_FAIL_GRADE = "0.5"
 
 const PREREQ_TARGET_STATUS: Record<CourseStatus, CourseStatus | null> = {
   passed: "passed",
-  active: "active",
+  active: "passed",
   pending: null,
 }
 
@@ -408,6 +408,16 @@ const compareYearTerm = (aYear: number, aTerm: TermName, bYear: number, bTerm: T
   return termIndex(aTerm) - termIndex(bTerm)
 }
 
+const nextYearTerm = (year: number, term: TermName): YearTermOption => {
+  const currentIndex = termIndex(term)
+  if (currentIndex === -1) return { year, term: "Term 1" }
+  const isLastTerm = currentIndex === TERM_SEQUENCE.length - 1
+  return {
+    year: isLastTerm ? year + 1 : year,
+    term: TERM_SEQUENCE[isLastTerm ? 0 : currentIndex + 1],
+  }
+}
+
 const isYearTermBeforeOrEqual = (candidate: YearTermOption, limit: YearTermOption) => {
   return compareYearTerm(candidate.year, candidate.term, limit.year, limit.term) <= 0
 }
@@ -456,10 +466,58 @@ const buildYearTermOptions = (
   course: Course,
   currentYearLevel: number,
   currentTerm: TermName,
+  allCourses?: Course[],
 ): YearTermOption[] => {
-  const hasPrerequisites = Array.isArray(course.prerequisites) && course.prerequisites.length > 0
-  const startYear = hasPrerequisites ? course.year : 1
-  const startTerm = hasPrerequisites ? sanitizeTermName(course.term as string) : "Term 1"
+  const prerequisites = Array.isArray(course.prerequisites) ? course.prerequisites : []
+  const hasPrerequisites = prerequisites.length > 0
+  let startYear = hasPrerequisites ? course.year : 1
+  let startTerm: TermName = hasPrerequisites ? sanitizeTermName(course.term as string) : "Term 1"
+
+  if (hasPrerequisites && allCourses && allCourses.length > 0) {
+    const prerequisiteCourses = prerequisites
+      .map((prereqId) => allCourses.find((candidate) => candidate.id === prereqId))
+      .filter((course): course is Course => Boolean(course))
+
+    if (prerequisiteCourses.length !== prerequisites.length) {
+      return []
+    }
+
+    const completedPrereqInfos = prerequisiteCourses
+      .map((prereqCourse) => {
+        const latestPassingAttempt = getLatestPassingAttempt(prereqCourse)
+        if (latestPassingAttempt) {
+          return { year: latestPassingAttempt.year, term: latestPassingAttempt.term } as LastTakenInfo
+        }
+
+        if (prereqCourse.status === "passed" && prereqCourse.lastTaken) {
+          const attemptForLastTaken = findAttemptForYearTerm(
+            prereqCourse,
+            prereqCourse.lastTaken.year,
+            prereqCourse.lastTaken.term,
+          )
+          if (!attemptForLastTaken || isPassingGrade(attemptForLastTaken.grade)) {
+            return prereqCourse.lastTaken
+          }
+        }
+
+        return null
+      })
+      .filter((info): info is LastTakenInfo => Boolean(info))
+
+    if (completedPrereqInfos.length === prerequisites.length) {
+      const latestPrereqCompletion = completedPrereqInfos.sort((a, b) =>
+        compareYearTerm(b.year, b.term, a.year, a.term),
+      )[0]
+      if (latestPrereqCompletion) {
+        const unlockPoint = nextYearTerm(latestPrereqCompletion.year, latestPrereqCompletion.term)
+        startYear = unlockPoint.year
+        startTerm = unlockPoint.term
+      }
+    } else {
+      return []
+    }
+  }
+
   if (currentYearLevel < startYear) return []
 
   const limitOption: YearTermOption = { year: currentYearLevel, term: currentTerm }
@@ -1737,7 +1795,7 @@ export default function CourseTracker() {
       let hasChanges = false
       const nextCourses = prevCourses.map((course) => {
         if (!course.lastTaken) return course
-        const options = buildYearTermOptions(course, currentYearLevel, currentTerm)
+        const options = buildYearTermOptions(course, currentYearLevel, currentTerm, prevCourses)
         const stillValid = options.some(
           (opt) => opt.year === course.lastTaken?.year && opt.term === course.lastTaken?.term,
         )
@@ -1829,9 +1887,9 @@ export default function CourseTracker() {
     return { cascadeTree, overrides, stats, requiredStatus }
   }
 
-  const updateCourseData = (courseId: string, updater: (course: Course) => Course) => {
+  const updateCourseData = (courseId: string, updater: (course: Course, allCourses: Course[]) => Course) => {
     setCourses((prevCourses) => {
-      const updatedCourses = prevCourses.map((course) => (course.id === courseId ? updater(course) : course))
+      const updatedCourses = prevCourses.map((course) => (course.id === courseId ? updater(course, prevCourses) : course))
       saveCourseStatuses(updatedCourses)
       return updatedCourses
     })
@@ -1843,7 +1901,7 @@ export default function CourseTracker() {
     options?: { updateLastTaken?: boolean },
   ) => {
     if (!isAcceptableGrade(payload.grade)) return
-    updateCourseData(courseId, (prevCourse) => {
+    updateCourseData(courseId, (prevCourse, _allCourses) => {
       const attempts = getGradeAttempts(prevCourse)
       const existingIndex = attempts.findIndex(
         (attempt) => attempt.year === payload.year && attempt.term === payload.term,
@@ -1888,7 +1946,7 @@ export default function CourseTracker() {
   }
 
   const removeGradeAttempt = (courseId: string, year: number, term: TermName) => {
-    updateCourseData(courseId, (prevCourse) => {
+    updateCourseData(courseId, (prevCourse, _allCourses) => {
       const attempts = getGradeAttempts(prevCourse)
       const nextAttempts = attempts.filter((attempt) => !(attempt.year === year && attempt.term === term))
       if (nextAttempts.length === attempts.length) return prevCourse
@@ -1901,14 +1959,14 @@ export default function CourseTracker() {
 
   const handleLastTakenYearSelect = (courseId: string, value: string) => {
     if (value === "unset") {
-      updateCourseData(courseId, (prevCourse) => ({ ...prevCourse, lastTaken: null }))
+      updateCourseData(courseId, (prevCourse, _allCourses) => ({ ...prevCourse, lastTaken: null }))
       return
     }
     const parsedYear = Number.parseInt(value, 10)
     if (Number.isNaN(parsedYear)) return
 
-    updateCourseData(courseId, (prevCourse) => {
-      const options = buildYearTermOptions(prevCourse, currentYearLevel, currentTerm)
+    updateCourseData(courseId, (prevCourse, allCourses) => {
+      const options = buildYearTermOptions(prevCourse, currentYearLevel, currentTerm, allCourses)
       const yearTerms = options.filter((option) => option.year === parsedYear)
       if (yearTerms.length === 0) {
         return { ...prevCourse, lastTaken: null }
@@ -1927,9 +1985,9 @@ export default function CourseTracker() {
   }
 
   const handleLastTakenTermSelect = (courseId: string, termValue: TermName) => {
-    updateCourseData(courseId, (prevCourse) => {
+    updateCourseData(courseId, (prevCourse, allCourses) => {
       if (!prevCourse.lastTaken) return prevCourse
-      const options = buildYearTermOptions(prevCourse, currentYearLevel, currentTerm)
+      const options = buildYearTermOptions(prevCourse, currentYearLevel, currentTerm, allCourses)
       const isAllowed = options.some(
         (option) => option.year === prevCourse.lastTaken?.year && option.term === termValue,
       )
@@ -1986,7 +2044,7 @@ export default function CourseTracker() {
   const openGradeModal = (courseId: string) => {
     const course = findCourseById(courseId)
     if (!course) return
-    const options = buildYearTermOptions(course, currentYearLevel, currentTerm)
+    const options = buildYearTermOptions(course, currentYearLevel, currentTerm, courses)
     const fallbackYear = course.lastTaken?.year ?? options[0]?.year ?? null
     const fallbackTerm =
       course.lastTaken?.term ?? options.find((option) => option.year === fallbackYear)?.term ?? options[0]?.term ?? null
@@ -2017,7 +2075,7 @@ export default function CourseTracker() {
     if (Number.isNaN(parsedYear)) return
     const course = findCourseById(gradeModalCourseId)
     if (!course) return
-    const options = buildYearTermOptions(course, currentYearLevel, currentTerm)
+    const options = buildYearTermOptions(course, currentYearLevel, currentTerm, courses)
     const yearTerms = options.filter((option) => option.year === parsedYear)
     if (yearTerms.length === 0) return
 
@@ -2030,7 +2088,7 @@ export default function CourseTracker() {
     if (!gradeModalCourseId) return
     const course = findCourseById(gradeModalCourseId)
     if (!course) return
-    const options = buildYearTermOptions(course, currentYearLevel, currentTerm)
+    const options = buildYearTermOptions(course, currentYearLevel, currentTerm, courses)
 
     setGradeModalForm((prev) => {
       if (!prev.year) return prev
@@ -2122,7 +2180,7 @@ export default function CourseTracker() {
     const futureRemovalKeySet = new Set(futureRemovals.map((attempt) => `${attempt.year}-${attempt.term}`))
     const targetKey = `${targetAttempt.year}-${targetAttempt.term}`
 
-    updateCourseData(courseId, (prevCourse) => {
+    updateCourseData(courseId, (prevCourse, _allCourses) => {
       if (prevCourse.id !== courseId) return prevCourse
       const timestamp = new Date().toISOString()
       const attempts = getGradeAttempts(prevCourse)
@@ -2186,7 +2244,7 @@ export default function CourseTracker() {
   const gradeModalCourse = gradeModalCourseId ? findCourseById(gradeModalCourseId) : null
   const gradeModalLatestPassingAttempt = gradeModalCourse ? getLatestPassingAttempt(gradeModalCourse) : null
   const gradeModalOptions = gradeModalCourse
-    ? buildYearTermOptions(gradeModalCourse, currentYearLevel, currentTerm).filter((option) => {
+    ? buildYearTermOptions(gradeModalCourse, currentYearLevel, currentTerm, courses).filter((option) => {
         if (!gradeModalLatestPassingAttempt) return true
         return (
           compareYearTerm(option.year, option.term, gradeModalLatestPassingAttempt.year, gradeModalLatestPassingAttempt.term) <= 0
@@ -2503,6 +2561,12 @@ export default function CourseTracker() {
 
   // Group the filtered courses for display
   const groupedFilteredCourses = useMemo<CoursesByYearAndTerm>(() => groupCourses(filteredCourses), [filteredCourses])
+
+  const prereqDialogActionLabel = prereqDialogState
+    ? `Mark prerequisites as ${formatStatusLabel(
+        PREREQ_TARGET_STATUS[prereqDialogState.targetStatus] ?? "pending",
+      )}`
+    : "Confirm updates"
 
   const applyStatusChange = (
     courseId: string,
@@ -2855,9 +2919,7 @@ export default function CourseTracker() {
                 Skip auto-updates
               </Button>
               <Button className="w-full sm:w-auto" onClick={confirmPrereqCascade}>
-                {prereqDialogState?.targetStatus === "passed"
-                  ? "Mark prerequisites as Passed"
-                  : "Mark prerequisites as Active"}
+                {prereqDialogActionLabel}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -3285,7 +3347,12 @@ export default function CourseTracker() {
                                   const prereqCourses = course.prerequisites
                                     .map((id) => findCourseById(id))
                                     .filter((c): c is Course => c !== undefined)
-                                  const allowedYearTermOptions = buildYearTermOptions(course, currentYearLevel, currentTerm)
+                                  const allowedYearTermOptions = buildYearTermOptions(
+                                    course,
+                                    currentYearLevel,
+                                    currentTerm,
+                                    courses,
+                                  )
                                   const yearOptions = Array.from(new Set(allowedYearTermOptions.map((option) => option.year)))
                                   const lastTaken = course.lastTaken ?? null
                                   const termOptionsForYear = lastTaken
