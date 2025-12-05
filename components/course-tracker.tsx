@@ -1538,6 +1538,7 @@ export default function CourseTracker() {
   const [hasSeenSetupDialog, setHasSeenSetupDialog] = useState(false)
   const [noProgressDismissed, setNoProgressDismissed] = useState(false)
   const [coursesHydrated, setCoursesHydrated] = useState(false)
+  const [preferencesHydrated, setPreferencesHydrated] = useState(false)
   const [setupUploadStatus, setSetupUploadStatus] = useState<{ fileName: string; uploadedAt: number } | null>(null)
   const [prereqDialogState, setPrereqDialogState] = useState<PrerequisiteDialogState | null>(null)
   const [dependencyNoticeDismissed, setDependencyNoticeDismissed] = useState(false)
@@ -1606,22 +1607,29 @@ export default function CourseTracker() {
 
   useEffect(() => {
     const prefs = loadTrackerPreferences()
-    if (!prefs) return
 
-    if (typeof prefs.startYear === "number" && prefs.startYear >= 2000 && prefs.startYear <= 2100) {
-      setStartYear(prefs.startYear)
-      setSetupStartYearInput(String(prefs.startYear))
+    if (prefs) {
+      if (typeof prefs.startYear === "number" && prefs.startYear >= 2000 && prefs.startYear <= 2100) {
+        setStartYear(prefs.startYear)
+        setSetupStartYearInput(String(prefs.startYear))
+      }
+      if (
+        typeof prefs.currentYearLevel === "number" &&
+        Number.isFinite(prefs.currentYearLevel) &&
+        prefs.currentYearLevel >= 1
+      ) {
+        const sanitizedLevel = Math.floor(prefs.currentYearLevel)
+        ensureYearOption(sanitizedLevel)
+        setCurrentYearLevel(sanitizedLevel)
+        setSetupYearLevel(sanitizedLevel)
+      }
+      if (prefs.currentTerm && TERM_SEQUENCE.includes(prefs.currentTerm as TermName)) {
+        setCurrentTerm(prefs.currentTerm as TermName)
+        setSetupTerm(prefs.currentTerm as TermName)
+      }
     }
-    if (typeof prefs.currentYearLevel === "number" && Number.isFinite(prefs.currentYearLevel) && prefs.currentYearLevel >= 1) {
-      const sanitizedLevel = Math.floor(prefs.currentYearLevel)
-      ensureYearOption(sanitizedLevel)
-      setCurrentYearLevel(sanitizedLevel)
-      setSetupYearLevel(sanitizedLevel)
-    }
-    if (prefs.currentTerm && TERM_SEQUENCE.includes(prefs.currentTerm as TermName)) {
-      setCurrentTerm(prefs.currentTerm as TermName)
-      setSetupTerm(prefs.currentTerm as TermName)
-    }
+
+    setPreferencesHydrated(true)
   }, [ensureYearOption])
 
   useEffect(() => {
@@ -1791,6 +1799,8 @@ export default function CourseTracker() {
   }, [stickyOffset])
 
   useEffect(() => {
+    if (!coursesHydrated || !preferencesHydrated) return
+
     setCourses((prevCourses) => {
       let hasChanges = false
       const nextCourses = prevCourses.map((course) => {
@@ -1809,7 +1819,7 @@ export default function CourseTracker() {
       }
       return prevCourses
     })
-  }, [currentYearLevel, currentTerm])
+  }, [currentYearLevel, currentTerm, coursesHydrated, preferencesHydrated])
 
   // Pre-calculate dependent courses using useMemo for efficiency
   const dependentCoursesMap = useMemo(() => calculateDependentCoursesMap(courses), [courses])
