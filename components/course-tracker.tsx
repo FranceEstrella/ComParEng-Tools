@@ -457,8 +457,9 @@ const buildYearTermOptions = (
   currentYearLevel: number,
   currentTerm: TermName,
 ): YearTermOption[] => {
-  const startYear = course.year
-  const startTerm = sanitizeTermName(course.term as string)
+  const hasPrerequisites = Array.isArray(course.prerequisites) && course.prerequisites.length > 0
+  const startYear = hasPrerequisites ? course.year : 1
+  const startTerm = hasPrerequisites ? sanitizeTermName(course.term as string) : "Term 1"
   if (currentYearLevel < startYear) return []
 
   const limitOption: YearTermOption = { year: currentYearLevel, term: currentTerm }
