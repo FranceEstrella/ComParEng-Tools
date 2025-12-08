@@ -199,6 +199,19 @@ interface PrerequisiteDialogState {
   cascadeTree: PrereqCascadeNode[]
   overrides: Record<string, CourseStatus>
   stats: { total: number; toUpdate: number }
+  dependentRollbacks: Record<string, CourseStatus>
+}
+
+interface DependentRollbackPreview {
+  course: Course
+  nextStatus: CourseStatus
+}
+
+interface DependentRollbackDialogState {
+  course: Course
+  targetStatus: CourseStatus
+  overrides: Record<string, CourseStatus>
+  affectedCourses: DependentRollbackPreview[]
 }
 
 interface PendingPassDowngrade {
@@ -305,6 +318,53 @@ const summarizeCascadeNodes = (nodes: PrereqCascadeNode[]) => {
   }
   nodes.forEach(walk)
   return { total, toUpdate }
+}
+
+const buildDependentDowngradeOverrides = (
+  course: Course,
+  newStatus: CourseStatus,
+  dependentMap: DependentCoursesMap,
+  resolver: (id: string) => Course | undefined,
+): Record<string, CourseStatus> => {
+  if (newStatus === "passed") return {}
+  if (course.status !== "passed") return {}
+  if (dependentMap.size === 0) return {}
+
+  const overrides: Record<string, CourseStatus> = {}
+  const queue: string[] = [course.id]
+  const processed = new Set<string>()
+  const affected = new Set<string>([course.id])
+
+  while (queue.length > 0) {
+    const currentId = queue.shift()!
+    if (processed.has(currentId)) continue
+    processed.add(currentId)
+
+    const dependents = dependentMap.get(currentId) ?? []
+    dependents.forEach((dependentCourse) => {
+      const prereqIds = Array.isArray(dependentCourse.prerequisites) ? dependentCourse.prerequisites : []
+      const prerequisitesSatisfied = prereqIds.every((prereqId) => {
+        if (affected.has(prereqId)) return false
+        const prereqCourse = resolver(prereqId)
+        if (!prereqCourse) return false
+        return prereqCourse.status === "passed"
+      })
+
+      if (!prerequisitesSatisfied) {
+        if (dependentCourse.status !== "pending") {
+          overrides[dependentCourse.id] = "pending"
+        }
+        if (!affected.has(dependentCourse.id)) {
+          affected.add(dependentCourse.id)
+        }
+        if (!processed.has(dependentCourse.id)) {
+          queue.push(dependentCourse.id)
+        }
+      }
+    })
+  }
+
+  return overrides
 }
 
 const renderCascadeTree = (nodes: PrereqCascadeNode[], depth = 0): React.ReactNode => {
@@ -1509,6 +1569,9 @@ export default function CourseTracker() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const progressCardRef = useRef<HTMLDivElement>(null)
+  const [showJumpButton, setShowJumpButton] = useState(false)
+  const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
+  const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
   const [isProgressSticky, setIsProgressSticky] = useState(false)
   const [stickyOffset, setStickyOffset] = useState(16)
   const [gradeModalCourseId, setGradeModalCourseId] = useState<string | null>(null)
@@ -1541,10 +1604,16 @@ export default function CourseTracker() {
   const [preferencesHydrated, setPreferencesHydrated] = useState(false)
   const [setupUploadStatus, setSetupUploadStatus] = useState<{ fileName: string; uploadedAt: number } | null>(null)
   const [prereqDialogState, setPrereqDialogState] = useState<PrerequisiteDialogState | null>(null)
+  const [dependentRollbackDialogState, setDependentRollbackDialogState] = useState<DependentRollbackDialogState | null>(null)
   const [dependencyNoticeDismissed, setDependencyNoticeDismissed] = useState(false)
   const yearLevelOptions = useMemo(() => Array.from({ length: maxYearLevelOption }, (_, idx) => idx + 1), [maxYearLevelOption])
   const extendYearOptions = useCallback(() => {
     setMaxYearLevelOption((prev) => prev + 5)
+  }, [])
+
+  const scrollToPageTop = useCallback(() => {
+    if (typeof window === "undefined") return
+    window.scrollTo({ top: 0, behavior: "smooth" })
   }, [])
 
   const defaultCourseSignature = useMemo(() => {
@@ -1797,6 +1866,32 @@ export default function CourseTracker() {
     window.addEventListener("scroll", handleScroll, { passive: true } as AddEventListenerOptions)
     return () => window.removeEventListener("scroll", handleScroll)
   }, [stickyOffset])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const updateVisibilityStates = () => {
+      setShowJumpButton(window.scrollY > 400)
+
+      if (!bottomNavigationRef.current) {
+        setIsBottomNavVisible(false)
+        return
+      }
+
+      const rect = bottomNavigationRef.current.getBoundingClientRect()
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+      setIsBottomNavVisible(rect.top < viewportHeight && rect.bottom >= 0)
+    }
+
+    updateVisibilityStates()
+    window.addEventListener("scroll", updateVisibilityStates)
+    window.addEventListener("resize", updateVisibilityStates)
+
+    return () => {
+      window.removeEventListener("scroll", updateVisibilityStates)
+      window.removeEventListener("resize", updateVisibilityStates)
+    }
+  }, [])
 
   useEffect(() => {
     if (!coursesHydrated || !preferencesHydrated) return
@@ -2614,6 +2709,38 @@ export default function CourseTracker() {
     const targetCourse = findCourseById(courseId)
     if (!targetCourse) return
 
+    const dependentDowngrades =
+      dependencyDataAvailable &&
+      dependentCoursesMap.size > 0 &&
+      targetCourse.status === "passed" &&
+      newStatus !== "passed"
+        ? buildDependentDowngradeOverrides(targetCourse, newStatus, dependentCoursesMap, findCourseById)
+        : {}
+    const hasDependentDowngrades = Object.keys(dependentDowngrades).length > 0
+    let immediateDependentOverrides: Record<string, CourseStatus> | undefined = undefined
+
+    if (hasDependentDowngrades) {
+      const affectedCourses = Object.entries(dependentDowngrades)
+        .map(([id, status]) => {
+          const dependentCourse = findCourseById(id)
+          if (!dependentCourse) return null
+          return { course: dependentCourse, nextStatus: status }
+        })
+        .filter((entry): entry is DependentRollbackPreview => Boolean(entry))
+
+      if (affectedCourses.length > 0) {
+        setDependentRollbackDialogState({
+          course: targetCourse,
+          targetStatus: newStatus,
+          overrides: dependentDowngrades,
+          affectedCourses,
+        })
+        return
+      }
+
+      immediateDependentOverrides = dependentDowngrades
+    }
+
     if (dependencyDataAvailable && (newStatus === "passed" || newStatus === "active")) {
       const cascadePreview = getCascadePreview(targetCourse, newStatus)
       if (cascadePreview) {
@@ -2623,24 +2750,56 @@ export default function CourseTracker() {
           cascadeTree: cascadePreview.cascadeTree,
           overrides: cascadePreview.overrides,
           stats: cascadePreview.stats,
+          dependentRollbacks: dependentDowngrades,
         })
         return
       }
     }
 
-    applyStatusChange(courseId, newStatus)
+    applyStatusChange(courseId, newStatus, immediateDependentOverrides)
   }
 
   const confirmPrereqCascade = () => {
     if (!prereqDialogState) return
-    applyStatusChange(prereqDialogState.course.id, prereqDialogState.targetStatus, prereqDialogState.overrides)
+    const downgradeEntries = prereqDialogState.dependentRollbacks
+    const hasDowngrades = Object.keys(downgradeEntries || {}).length > 0
+    const combinedOverrides = hasDowngrades
+      ? { ...downgradeEntries, ...prereqDialogState.overrides }
+      : prereqDialogState.overrides
+    applyStatusChange(prereqDialogState.course.id, prereqDialogState.targetStatus, combinedOverrides)
     setPrereqDialogState(null)
   }
 
   const skipPrereqCascade = () => {
     if (!prereqDialogState) return
-    applyStatusChange(prereqDialogState.course.id, prereqDialogState.targetStatus)
+    const downgradeEntries = prereqDialogState.dependentRollbacks
+    const hasDowngrades = Object.keys(downgradeEntries || {}).length > 0
+    applyStatusChange(
+      prereqDialogState.course.id,
+      prereqDialogState.targetStatus,
+      hasDowngrades ? downgradeEntries : undefined,
+    )
     setPrereqDialogState(null)
+  }
+
+  const cancelDependentRollback = () => {
+    setDependentRollbackDialogState(null)
+  }
+
+  const confirmDependentRollback = () => {
+    if (!dependentRollbackDialogState) return
+    applyStatusChange(
+      dependentRollbackDialogState.course.id,
+      dependentRollbackDialogState.targetStatus,
+      dependentRollbackDialogState.overrides,
+    )
+    setDependentRollbackDialogState(null)
+  }
+
+  const skipDependentRollbackUpdates = () => {
+    if (!dependentRollbackDialogState) return
+    applyStatusChange(dependentRollbackDialogState.course.id, dependentRollbackDialogState.targetStatus)
+    setDependentRollbackDialogState(null)
   }
 
   // Toggle year collapsible
@@ -2930,6 +3089,85 @@ export default function CourseTracker() {
               </Button>
               <Button className="w-full sm:w-auto" onClick={confirmPrereqCascade}>
                 {prereqDialogActionLabel}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(dependentRollbackDialogState)}
+          onOpenChange={(open) => {
+            if (!open) {
+              cancelDependentRollback()
+            }
+          }}
+        >
+          <DialogContent className="max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Dependent courses need attention</DialogTitle>
+              {dependentRollbackDialogState && (
+                <DialogDescription>
+                  Changing {dependentRollbackDialogState.course.code} to {" "}
+                  <span className="font-semibold">{formatStatusLabel(dependentRollbackDialogState.targetStatus)}</span> will
+                  reset {dependentRollbackDialogState.affectedCourses.length} required course
+                  {dependentRollbackDialogState.affectedCourses.length === 1 ? "" : "s"} back to Pending because their
+                  prerequisites will no longer be satisfied.
+                </DialogDescription>
+              )}
+            </DialogHeader>
+
+            {dependentRollbackDialogState && (
+              <div className="space-y-4 text-sm">
+                <div className="rounded-md border border-amber-300 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+                  <p className="text-xs uppercase tracking-wide">Summary</p>
+                  <p className="text-sm">
+                    {dependentRollbackDialogState.affectedCourses.length} course
+                    {dependentRollbackDialogState.affectedCourses.length === 1 ? "" : "s"} will revert to the statuses
+                    listed below to keep prerequisites accurate. Credited subjects? Use "Only This Course" to skip them.
+                  </p>
+                </div>
+
+                <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
+                  {dependentRollbackDialogState.affectedCourses.map(({ course, nextStatus }) => (
+                    <div
+                      key={course.id}
+                      className="rounded-md border border-slate-200/70 bg-white/80 p-3 shadow-sm dark:border-slate-700/70 dark:bg-slate-900/30"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-medium text-slate-900 dark:text-slate-100">{course.code}</p>
+                          <p className="text-xs text-muted-foreground">{course.name}</p>
+                        </div>
+                        <div className="flex items-center gap-1 text-xs">
+                          <Badge variant="secondary">{formatStatusLabel(course.status)}</Badge>
+                          <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+                          <Badge variant="outline" className="bg-yellow-50 text-yellow-800 dark:bg-yellow-400/10 dark:text-yellow-200">
+                            {formatStatusLabel(nextStatus)}
+                          </Badge>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Requires {dependentRollbackDialogState.course.code} to remain passed. If it is set to
+                        {" "}
+                        {formatStatusLabel(dependentRollbackDialogState.targetStatus)}, this course must return to
+                        {" "}
+                        {formatStatusLabel(nextStatus)}.
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <DialogFooter className="flex flex-col gap-2">
+              <Button variant="outline" className="w-full" onClick={cancelDependentRollback}>
+                Cancel
+              </Button>
+              <Button variant="secondary" className="w-full" onClick={skipDependentRollbackUpdates}>
+                Only this course
+              </Button>
+              <Button className="w-full" onClick={confirmDependentRollback}>
+                Update all listed
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -4121,8 +4359,33 @@ export default function CourseTracker() {
           </DialogContent>
         </Dialog>
 
+        <AnimatePresence>
+          {showJumpButton && !isBottomNavVisible && (
+            <motion.div
+              key="course-tracker-floating-back-to-top"
+              initial={{ opacity: 0, y: 12, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.95 }}
+              transition={{ duration: 0.2, ease: "easeInOut" }}
+              className="pointer-events-none fixed bottom-4 right-32 z-[10000] sm:bottom-6 sm:right-40"
+            >
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="pointer-events-auto shadow-lg shadow-slate-500/30"
+                onClick={scrollToPageTop}
+                aria-label="Back to top"
+              >
+                <ArrowUp className="h-4 w-4" />
+                Back to top
+              </Button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Navigation Buttons (Bottom) */}
-        <div className="mt-10 mb-6">
+        <div className="mt-10 mb-6" ref={bottomNavigationRef}>
           <QuickNavigation showBackToTop />
         </div>
 

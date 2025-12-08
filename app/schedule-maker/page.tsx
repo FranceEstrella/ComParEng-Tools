@@ -492,7 +492,11 @@ export default function ScheduleMaker() {
   const [selectedViewMode, setSelectedViewMode] = useState<"card" | "table">("card")
   const [selectedPanelVisible, setSelectedPanelVisible] = useState(true)
   const [selectedPanelCollapsed, setSelectedPanelCollapsed] = useState(false)
+  const [activeTab, setActiveTab] = useState<"available" | "selected" | "schedule">("available")
+  const [showJumpButton, setShowJumpButton] = useState(false)
+  const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
   const scheduleRef = useRef<HTMLDivElement>(null)
+  const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
   const lastAvailableHashRef = useRef<string>("")
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
   const pendingImportFollowUpRef = useRef<(() => void) | null>(null)
@@ -519,6 +523,11 @@ export default function ScheduleMaker() {
   const [icsDialogStartDate, setIcsDialogStartDate] = useState<string>("")
   const [icsDialogError, setIcsDialogError] = useState<string | null>(null)
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
+
+  const scrollToPageTop = useCallback(() => {
+    if (typeof window === "undefined") return
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }, [])
 
   const toggleGroupCollapse = useCallback((groupKey: string) => {
     setCollapsedGroups((prev) => ({
@@ -618,6 +627,32 @@ export default function ScheduleMaker() {
 
   useEffect(() => {
     setIsClient(true)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const updateVisibilityStates = () => {
+      setShowJumpButton(window.scrollY > 400)
+
+      if (!bottomNavigationRef.current) {
+        setIsBottomNavVisible(false)
+        return
+      }
+
+      const rect = bottomNavigationRef.current.getBoundingClientRect()
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+      setIsBottomNavVisible(rect.top < viewportHeight && rect.bottom >= 0)
+    }
+
+    updateVisibilityStates()
+    window.addEventListener("scroll", updateVisibilityStates)
+    window.addEventListener("resize", updateVisibilityStates)
+
+    return () => {
+      window.removeEventListener("scroll", updateVisibilityStates)
+      window.removeEventListener("resize", updateVisibilityStates)
+    }
   }, [])
 
   useEffect(() => {
@@ -2487,7 +2522,7 @@ const renderScheduleView = () => {
             <p className="text-gray-600 dark:text-gray-400">Loading available courses...</p>
           </div>
         ) : (
-          <Tabs defaultValue="available" className="w-full">
+          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="w-full">
             <TabsList className="mb-4 w-full h-auto flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-2">
               <TabsTrigger value="available" className="flex-1 min-w-[10rem] whitespace-normal">
                 Available Courses
@@ -3100,6 +3135,31 @@ const renderScheduleView = () => {
               </AnimatePresence>
             </TabsContent>
 
+            <AnimatePresence>
+              {activeTab === "available" && showJumpButton && !isBottomNavVisible && (
+                <motion.div
+                  key="available-floating-back-to-top"
+                  initial={{ opacity: 0, y: 12, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 12, scale: 0.95 }}
+                  transition={{ duration: 0.2, ease: "easeInOut" }}
+                  className="pointer-events-none fixed bottom-4 right-32 z-[10000] sm:bottom-6 sm:right-40"
+                >
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="pointer-events-auto shadow-lg shadow-slate-500/30"
+                    onClick={scrollToPageTop}
+                    aria-label="Back to top"
+                  >
+                    <ArrowUp className="h-4 w-4" />
+                    Back to top
+                  </Button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Selected Courses Tab */}
             <TabsContent value="selected">
               <Dialog open={Boolean(importErrorDialog)} onOpenChange={(isOpen) => !isOpen && closeImportDialog()}>
@@ -3463,8 +3523,8 @@ const renderScheduleView = () => {
           </Tabs>
         )}
 
-        <div className="mt-12">
-          <QuickNavigation />
+        <div className="mt-12" ref={bottomNavigationRef}>
+          <QuickNavigation showBackToTop />
         </div>
       </div>
     </div>

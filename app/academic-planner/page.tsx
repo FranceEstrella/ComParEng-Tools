@@ -3,6 +3,7 @@
 import type React from "react"
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
+import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -52,6 +53,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Input } from "@/components/ui/input"
 import { RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX, ALLOW_OVERFLOW_UNITS, PRIORITY_WEIGHTS } from "@/lib/config"
 import NonCpeNotice from "@/components/non-cpe-notice"
@@ -100,6 +102,24 @@ interface PlanCourse extends Course {
   recommendedSection?: CourseSection
 }
 
+interface DependentAdjustment {
+  courseId: string
+  code: string
+  name: string
+  fromYear: number
+  fromTerm: string
+  toYear: number
+  toTerm: string
+}
+
+interface LinkedPairMove {
+  courseId: string
+  code: string
+  name: string
+  fromYear: number
+  fromTerm: string
+}
+
 // Move history interface
 interface MoveHistoryEntry {
   id: string
@@ -131,6 +151,78 @@ const DEFAULT_CURRICULUM_CODE_SET = new Set(
     .map((code) => (typeof code === "string" ? code.toUpperCase() : ""))
     .filter((code) => Boolean(code)),
 )
+
+const TERM_ORDER = ["Term 1", "Term 2", "Term 3"] as const
+
+const normalizeTermLabel = (term: string): string => {
+  const trimmed = term?.toString().trim() ?? ""
+  if (trimmed.length === 0) return TERM_ORDER[0]
+
+  const collapsed = trimmed.replace(/\s+/g, " ")
+  const lower = collapsed.toLowerCase()
+
+  const aliasMap: Record<string, string> = {
+    "term 1": "Term 1",
+    term1: "Term 1",
+    "trimester 1": "Term 1",
+    "1st term": "Term 1",
+    "first term": "Term 1",
+    "term i": "Term 1",
+    "1": "Term 1",
+    "term 2": "Term 2",
+    term2: "Term 2",
+    "trimester 2": "Term 2",
+    "2nd term": "Term 2",
+    "second term": "Term 2",
+    "term ii": "Term 2",
+    "2": "Term 2",
+    "term 3": "Term 3",
+    term3: "Term 3",
+    "trimester 3": "Term 3",
+    "3rd term": "Term 3",
+    "third term": "Term 3",
+    "term iii": "Term 3",
+    "3": "Term 3",
+  }
+
+  if (aliasMap[lower]) return aliasMap[lower]
+
+  const compact = lower.replace(/[^a-z0-9]/g, "")
+  if (aliasMap[compact]) return aliasMap[compact]
+
+  const containsTermKeyword = /(term|trim)/.test(lower)
+  const digitMatch = lower.match(/([123])/)
+  if (digitMatch && (containsTermKeyword || lower.length <= 3)) {
+    const digit = Number.parseInt(digitMatch[1], 10)
+    if (digit >= 1 && digit <= TERM_ORDER.length) {
+      return `Term ${digit}`
+    }
+  }
+
+  const ordinalWords: Record<string, string> = {
+    first: "Term 1",
+    second: "Term 2",
+    third: "Term 3",
+  }
+  for (const [word, label] of Object.entries(ordinalWords)) {
+    if (lower.includes(word)) {
+      return label
+    }
+  }
+
+  return collapsed
+}
+
+const getTermIndex = (term: string): number => TERM_ORDER.indexOf(normalizeTermLabel(term))
+
+const termsMatch = (termA: string, termB: string): boolean => normalizeTermLabel(termA) === normalizeTermLabel(termB)
+
+const getNextTerm = (year: number, term: string): { year: number; term: string } => {
+  const normalized = normalizeTermLabel(term)
+  if (normalized === "Term 1") return { year, term: "Term 2" }
+  if (normalized === "Term 2") return { year, term: "Term 3" }
+  return { year: year + 1, term: "Term 1" }
+}
 
 // Import data interface
 interface ImportedPlanData {
@@ -216,6 +308,16 @@ export default function AcademicPlanner() {
   const [swapCourse2, setSwapCourse2] = useState<string>("")
   const [moveHistory, setMoveHistory] = useState<MoveHistoryEntry[]>([])
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false)
+  const [pendingPrereqShift, setPendingPrereqShift] = useState<
+    {
+      courseId: string
+      targetYear: number
+      targetTerm: string
+      adjustments: DependentAdjustment[]
+      pair?: LinkedPairMove | null
+    } | null
+  >(null)
+  const [moveSelectResetCounter, setMoveSelectResetCounter] = useState(0)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [overloadDialogOpen, setOverloadDialogOpen] = useState(false)
@@ -254,6 +356,17 @@ export default function AcademicPlanner() {
   const [creditSaveMessage, setCreditSaveMessage] = useState<string | null>(null)
   const [creditLimitError, setCreditLimitError] = useState<string | null>(null)
   const [confirmButtonShaking, setConfirmButtonShaking] = useState(false)
+  const [showJumpButton, setShowJumpButton] = useState(false)
+  const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
+  const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
+  const resetMoveSelects = useCallback(() => {
+    setMoveSelectResetCounter((prev) => prev + 1)
+  }, [])
+
+  const scrollToPageTop = useCallback(() => {
+    if (typeof window === "undefined") return
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }, [])
   // Track if we've already shown the regular-student curriculum notice
   const [regularNoticeShown, setRegularNoticeShown] = useState(false)
   const [regularNoticeTerm, setRegularNoticeTerm] = useState<{ year: number; term: string } | null>(null)
@@ -276,11 +389,54 @@ export default function AcademicPlanner() {
   const effectiveMaxCreditsPerTerm = isMaxCreditsAtOrBelowMin ? RECOMMENDED_UNITS_MAX : maxCreditsPerTerm
   const effectiveMaxCreditsWithOverflow = effectiveMaxCreditsPerTerm + ALLOW_OVERFLOW_UNITS
 
+  const dependentCoursesMap = useMemo(() => {
+    const map = new Map<string, Course[]>()
+    courses.forEach((courseItem) => {
+      const prereqs = Array.isArray((courseItem as any).prerequisites) ? courseItem.prerequisites : []
+      prereqs.forEach((prereqId) => {
+        if (!map.has(prereqId)) {
+          map.set(prereqId, [])
+        }
+        const linked = map.get(prereqId)!
+        if (!linked.some((dependentCourse) => dependentCourse.id === courseItem.id)) {
+          linked.push(courseItem)
+        }
+      })
+    })
+    return map
+  }, [courses])
+
   useEffect(() => {
     if (!shouldPromptCreditConfirmation) {
       setCreditLimitError(null)
     }
   }, [shouldPromptCreditConfirmation])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const updateVisibilityStates = () => {
+      setShowJumpButton(window.scrollY > 400)
+
+      if (!bottomNavigationRef.current) {
+        setIsBottomNavVisible(false)
+        return
+      }
+
+      const rect = bottomNavigationRef.current.getBoundingClientRect()
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+      setIsBottomNavVisible(rect.top < viewportHeight && rect.bottom >= 0)
+    }
+
+    updateVisibilityStates()
+    window.addEventListener("scroll", updateVisibilityStates)
+    window.addEventListener("resize", updateVisibilityStates)
+
+    return () => {
+      window.removeEventListener("scroll", updateVisibilityStates)
+      window.removeEventListener("resize", updateVisibilityStates)
+    }
+  }, [])
 
   // Load persisted settings
   useEffect(() => {
@@ -288,7 +444,21 @@ export default function AcademicPlanner() {
       const p = localStorage.getItem("planner.priorities")
       const l = localStorage.getItem("planner.locks")
       if (p) setCoursePriorities(JSON.parse(p))
-      if (l) setLockedPlacements(JSON.parse(l))
+      if (l) {
+        const parsedLocks = JSON.parse(l)
+        if (parsedLocks && typeof parsedLocks === "object") {
+          const normalizedLocks: Record<string, { year: number; term: string }> = {}
+          for (const [courseId, lock] of Object.entries(parsedLocks)) {
+            if (lock && typeof lock === "object" && typeof (lock as any).year === "number") {
+              normalizedLocks[courseId] = {
+                year: (lock as any).year,
+                term: normalizeTermLabel((lock as any).term as string),
+              }
+            }
+          }
+          setLockedPlacements(normalizedLocks)
+        }
+      }
     } catch {}
   }, [])
 
@@ -354,7 +524,10 @@ export default function AcademicPlanner() {
                 : (base as any).description ?? null,
             credits: Number.isFinite(c.credits) ? c.credits : (base as any).credits ?? 0,
             year: Number.isFinite(c.year) ? c.year : (base as any).year ?? new Date().getFullYear(),
-            term: typeof c.term === "string" ? c.term : (base as any).term ?? "Term 1",
+            term:
+              typeof c.term === "string"
+                ? normalizeTermLabel(c.term)
+                : (typeof (base as any).term === "string" ? normalizeTermLabel((base as any).term) : "Term 1"),
             status: (c.status as CourseStatus) ?? (base as any).status ?? "pending",
           } as Course
         })
@@ -463,9 +636,9 @@ export default function AcademicPlanner() {
       }
 
       if (typeof prefs.currentTerm === "string") {
-        const validTerms = ["Term 1", "Term 2", "Term 3"]
-        if (validTerms.includes(prefs.currentTerm)) {
-          setCurrentTerm(prefs.currentTerm)
+        const normalizedPrefTerm = normalizeTermLabel(prefs.currentTerm)
+        if (TERM_ORDER.includes(normalizedPrefTerm as (typeof TERM_ORDER)[number])) {
+          setCurrentTerm(normalizedPrefTerm)
         }
       }
     }
@@ -504,14 +677,14 @@ export default function AcademicPlanner() {
   const activeCourseHash = useMemo(() => JSON.stringify(activeCourses.map((course) => course.id).sort()), [activeCourses])
 
   const currentTermPlanCourses = useMemo(() => {
-    const semester = graduationPlan.find((plan) => plan.year === currentYear && plan.term === currentTerm)
+    const semester = graduationPlan.find((plan) => plan.year === currentYear && termsMatch(plan.term, currentTerm))
     if (semester) return semester.courses
 
     const curriculumYear = currentYear - startYear + 1
     return courses.filter((course) => {
       if (!Number.isFinite(course.year)) return false
       const courseCalendarYear = startYear + (course.year - 1)
-      return courseCalendarYear === currentYear && course.term === currentTerm
+      return courseCalendarYear === currentYear && termsMatch(course.term, currentTerm)
     })
   }, [graduationPlan, currentYear, currentTerm, courses, startYear])
 
@@ -566,7 +739,7 @@ export default function AcademicPlanner() {
         const curriculumYear = currentYear - startYear + 1
         if (!Number.isFinite(curriculumYear) || curriculumYear < 1) return null
         const curriculumCourses = (initialCourses as unknown as Course[]).filter(
-          (course) => course.year === curriculumYear && course.term === currentTerm,
+          (course) => course.year === curriculumYear && termsMatch(course.term, currentTerm),
         )
         if (!curriculumCourses.length) return null
         if (curriculumCourses.length !== currentTermPlanCourses.length) return null
@@ -606,7 +779,7 @@ export default function AcademicPlanner() {
 
       // Find curriculum's courses for that curriculum year and term from initialCourses
       const curriculumCourses = (initialCourses as any[]).filter(
-        (c: any) => c.year === curriculumYear && c.term === semester.term,
+        (c: any) => c.year === curriculumYear && termsMatch(c.term, semester.term),
       )
 
       if (!curriculumCourses || curriculumCourses.length === 0) continue
@@ -618,7 +791,7 @@ export default function AcademicPlanner() {
       const allIncluded = [...curriculumIds].every((id) => semesterIds.has(id))
       if (!allIncluded) continue
 
-      setRegularNoticeTerm({ year: semester.year, term: semester.term })
+      setRegularNoticeTerm({ year: semester.year, term: normalizeTermLabel(semester.term) })
       setRegularNoticeOpen(true)
       setRegularNoticeShown(true)
       break
@@ -871,13 +1044,6 @@ export default function AcademicPlanner() {
     return days
   }
 
-  // Helper to get the next term
-  const getNextTerm = (year: number, term: string): { year: number; term: string } => {
-    if (term === "Term 1") return { year, term: "Term 2" }
-    if (term === "Term 2") return { year, term: "Term 3" }
-    return { year: year + 1, term: "Term 1" }
-  }
-
   // Format a year into academic year string: accepts either a calendar year (e.g. 2025)
   // or a curriculum-relative year (1..n). If the value looks like a small curriculum year
   // we convert it to a calendar year using `startYear`.
@@ -992,9 +1158,136 @@ export default function AcademicPlanner() {
 
   // Helper to get the previous term
   const getPreviousTerm = (year: number, term: string): { year: number; term: string } => {
-    if (term === "Term 3") return { year, term: "Term 2" }
-    if (term === "Term 2") return { year, term: "Term 1" }
+    const normalized = normalizeTermLabel(term)
+    if (normalized === "Term 3") return { year, term: "Term 2" }
+    if (normalized === "Term 2") return { year, term: "Term 1" }
     return { year: year - 1, term: "Term 3" }
+  }
+
+  const isCurrentSemester = (year: number, term: string) => year === currentYear && termsMatch(term, currentTerm)
+
+  const compareSemesters = (aYear: number, aTerm: string, bYear: number, bTerm: string): number => {
+    if (aYear !== bYear) return aYear - bYear
+    const aIndex = getTermIndex(aTerm)
+    const bIndex = getTermIndex(bTerm)
+    if (aIndex === -1 || bIndex === -1) {
+      return normalizeTermLabel(aTerm).localeCompare(normalizeTermLabel(bTerm))
+    }
+    return aIndex - bIndex
+  }
+
+  const getCourseLocationInPlan = (courseId: string): { year: number; term: string } | null => {
+    for (const semester of graduationPlan) {
+      if (semester.courses.some((course) => course.id === courseId)) {
+        return { year: semester.year, term: semester.term }
+      }
+    }
+    return null
+  }
+
+  const getPlanCourseEntry = (courseId: string): { course: PlanCourse; year: number; term: string } | null => {
+    for (const semester of graduationPlan) {
+      const course = semester.courses.find((c) => c.id === courseId)
+      if (course) {
+        return { course, year: semester.year, term: semester.term }
+      }
+    }
+    return null
+  }
+
+  const looksLikeLabCourse = (course?: Course | PlanCourse | null): boolean => {
+    if (!course) return false
+    const normalizedName = (course.name || "").toUpperCase()
+    return course.id.endsWith("L") || normalizedName.includes("(LAB") || normalizedName.includes("LABORATORY")
+  }
+
+  const looksLikeLectureCourse = (course?: Course | PlanCourse | null): boolean => {
+    if (!course) return false
+    if (course.id.endsWith("L")) return false
+    const normalizedName = (course.name || "").toUpperCase()
+    if (normalizedName.includes("(LEC") || normalizedName.includes("LECTURE")) {
+      return true
+    }
+    return courses.some((candidate) => candidate.id === `${course.id}L`)
+  }
+
+  const getPairedCourseId = (course?: Course | PlanCourse | null): string | null => {
+    if (!course) return null
+    if (looksLikeLabCourse(course)) {
+      if (course.id.endsWith("L")) {
+        const baseId = course.id.slice(0, -1)
+        if (courses.some((candidate) => candidate.id === baseId)) {
+          return baseId
+        }
+      }
+      return null
+    }
+    if (looksLikeLectureCourse(course)) {
+      const labId = `${course.id}L`
+      if (courses.some((candidate) => candidate.id === labId)) {
+        return labId
+      }
+    }
+    return null
+  }
+
+  const getLinkedPairMoveInfo = (
+    courseId: string,
+    targetYear: number,
+    targetTerm: string,
+  ): LinkedPairMove | null => {
+    const entry = getPlanCourseEntry(courseId)
+    if (!entry) return null
+    const pairId = getPairedCourseId(entry.course)
+    if (!pairId) return null
+    const pairEntry = getPlanCourseEntry(pairId)
+    if (!pairEntry) return null
+    if (pairEntry.year === targetYear && termsMatch(pairEntry.term, targetTerm)) return null
+
+    const pairCourse = findCourseById(pairId) ?? pairEntry.course
+    return {
+      courseId: pairId,
+      code: pairCourse.code,
+      name: pairCourse.name,
+      fromYear: pairEntry.year,
+      fromTerm: pairEntry.term,
+    }
+  }
+
+  const getDependentAdjustments = (courseId: string, targetYear: number, targetTerm: string): DependentAdjustment[] => {
+    const dependents: DependentAdjustment[] = []
+
+    graduationPlan.forEach((semester) => {
+      semester.courses.forEach((course) => {
+        const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+        if (prereqs.includes(courseId) && !isAtLeastOneTermAfter(semester.year, semester.term, targetYear, targetTerm)) {
+          dependents.push({
+            courseId: course.id,
+            code: course.code,
+            name: course.name,
+            fromYear: semester.year,
+            fromTerm: normalizeTermLabel(semester.term),
+            toYear: semester.year,
+            toTerm: semester.term,
+          })
+        }
+      })
+    })
+
+    if (dependents.length === 0) return []
+
+    dependents.sort((a, b) => compareSemesters(a.fromYear, a.fromTerm, b.fromYear, b.fromTerm))
+
+    let cursor = getNextTerm(targetYear, targetTerm)
+    return dependents.map((dependent) => {
+      const planned = {
+        ...dependent,
+        toYear: cursor.year,
+        toTerm: cursor.term,
+      }
+      cursor = getNextTerm(cursor.year, cursor.term)
+      return planned
+    })
   }
 
   // Helper to check if one term is at least one term after another
@@ -1006,8 +1299,10 @@ export default function AcademicPlanner() {
   ): boolean => {
     if (laterYear > earlierYear) return true
     if (laterYear === earlierYear) {
-      const termOrder = ["Term 1", "Term 2", "Term 3"]
-      return termOrder.indexOf(laterTerm) > termOrder.indexOf(earlierTerm)
+      const laterIndex = getTermIndex(laterTerm)
+      const earlierIndex = getTermIndex(earlierTerm)
+      if (laterIndex === -1 || earlierIndex === -1) return false
+      return laterIndex > earlierIndex
     }
     return false
   }
@@ -1094,7 +1389,7 @@ export default function AcademicPlanner() {
         const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
         prereqs.forEach((prereqId) => {
           const prereqCourse = findCourseById(prereqId)
-          if (prereqCourse && prereqCourse.status === "pending") {
+          if (prereqCourse && prereqCourse.status !== "passed") {
             // Find if prerequisite is scheduled
             let prereqScheduled = false
             let prereqTerm = ""
@@ -1126,30 +1421,32 @@ export default function AcademicPlanner() {
         })
       })
 
-      // Check schedule conflicts (same time slots)
-      const scheduleMap = new Map<string, PlanCourse[]>()
-      semester.courses.forEach((course) => {
-        if (course.recommendedSection) {
-          const timeKey = `${course.recommendedSection.meetingDays}-${course.recommendedSection.meetingTime}`
-          if (!scheduleMap.has(timeKey)) {
-            scheduleMap.set(timeKey, [])
+      // Check schedule conflicts (same time slots) only for the current term where section data is reliable
+      if (isCurrentSemester(semester.year, semester.term)) {
+        const scheduleMap = new Map<string, PlanCourse[]>()
+        semester.courses.forEach((course) => {
+          if (course.recommendedSection) {
+            const timeKey = `${course.recommendedSection.meetingDays}-${course.recommendedSection.meetingTime}`
+            if (!scheduleMap.has(timeKey)) {
+              scheduleMap.set(timeKey, [])
+            }
+            scheduleMap.get(timeKey)!.push(course)
           }
-          scheduleMap.get(timeKey)!.push(course)
-        }
-      })
+        })
 
-      scheduleMap.forEach((coursesAtTime, timeKey) => {
-        if (coursesAtTime.length > 1 && timeKey !== "-TBD") {
-          newConflicts.push({
-            type: "schedule",
-            severity: "error",
-            message: `Schedule conflict in ${formatAcademicYear(semester.year)} ${semester.term}: ${coursesAtTime
-              .map((c) => c.code)
-              .join(", ")} have overlapping time slots`,
-            affectedCourses: coursesAtTime.map((c) => c.id),
-          })
-        }
-      })
+        scheduleMap.forEach((coursesAtTime, timeKey) => {
+          if (coursesAtTime.length > 1 && timeKey !== "-TBD") {
+            newConflicts.push({
+              type: "schedule",
+              severity: "error",
+              message: `Schedule conflict in ${formatAcademicYear(semester.year)} ${semester.term}: ${coursesAtTime
+                .map((c) => c.code)
+                .join(", ")} have overlapping time slots`,
+              affectedCourses: coursesAtTime.map((c) => c.id),
+            })
+          }
+        })
+      }
     })
 
     // Aggregate below-min load semesters into one warning to avoid repetition
@@ -1176,13 +1473,12 @@ export default function AcademicPlanner() {
 
     for (let yearOffset = 0; yearOffset < maxYears; yearOffset++) {
       const year = currentYear + yearOffset
-      const termOptions = ["Term 1", "Term 2", "Term 3"]
 
-      for (const term of termOptions) {
+      for (const term of TERM_ORDER) {
         // Skip terms that are in the past
         if (year === currentYear) {
-          const currentTermIndex = termOptions.indexOf(currentTerm)
-          const termIndex = termOptions.indexOf(term)
+          const currentTermIndex = getTermIndex(currentTerm)
+          const termIndex = getTermIndex(term)
           if (termIndex < currentTermIndex) continue
         } else if (year < currentYear) {
           continue
@@ -1225,7 +1521,7 @@ export default function AcademicPlanner() {
     for (let i = 1; i < coursesToMove.length; i++) {
       const courseTerms = getAvailableTermsForMove(coursesToMove[i])
       commonTerms = commonTerms.filter((term) =>
-        courseTerms.some((ct) => ct.year === term.year && ct.term === term.term),
+        courseTerms.some((ct) => ct.year === term.year && termsMatch(ct.term, term.term)),
       )
     }
 
@@ -1254,9 +1550,10 @@ export default function AcademicPlanner() {
     // Reverse the changes based on move type
     switch (lastMove.type) {
       case "single":
-        // For single moves, swap the from and to positions
-        const change = lastMove.changes[0]
-        moveCourseToTermSilent(change.courseId, change.fromYear, change.fromTerm)
+        // For single moves, some entries may include linked labs/labs or dependents; restore each change
+        lastMove.changes.forEach((change) => {
+          moveCourseToTermSilent(change.courseId, change.fromYear, change.fromTerm)
+        })
         break
 
       case "bulk":
@@ -1299,7 +1596,7 @@ export default function AcademicPlanner() {
 
       // Check if target semester already exists
       const targetSemesterIndex = updatedPlan.findIndex(
-        (semester) => semester.year === targetYear && semester.term === targetTerm,
+        (semester) => semester.year === targetYear && termsMatch(semester.term, targetTerm),
       )
 
       if (targetSemesterIndex !== -1) {
@@ -1309,7 +1606,7 @@ export default function AcademicPlanner() {
         // Create new semester
         const newSemester: SemesterPlan = {
           year: targetYear,
-          term: targetTerm,
+          term: normalizeTermLabel(targetTerm),
           courses: [courseToMove],
         }
 
@@ -1319,9 +1616,7 @@ export default function AcademicPlanner() {
           const semester = updatedPlan[i]
           if (
             semester.year > targetYear ||
-            (semester.year === targetYear &&
-              ["Term 1", "Term 2", "Term 3"].indexOf(semester.term) >
-                ["Term 1", "Term 2", "Term 3"].indexOf(targetTerm))
+            (semester.year === targetYear && getTermIndex(semester.term) > getTermIndex(targetTerm))
           ) {
             insertIndex = i
             break
@@ -1333,8 +1628,7 @@ export default function AcademicPlanner() {
       // Sort semesters chronologically
       updatedPlan.sort((a, b) => {
         if (a.year !== b.year) return a.year - b.year
-        const termOrder = ["Term 1", "Term 2", "Term 3"]
-        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+        return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
       return updatedPlan
@@ -1434,6 +1728,92 @@ export default function AcademicPlanner() {
     }
   }
 
+  const handleCourseMoveRequest = (courseId: string, targetYear: number, targetTerm: string) => {
+    const adjustments = getDependentAdjustments(courseId, targetYear, targetTerm)
+    const pairMove = getLinkedPairMoveInfo(courseId, targetYear, targetTerm)
+
+    if (adjustments.length === 0 && !pairMove) {
+      moveCourseToTerm(courseId, targetYear, targetTerm)
+      resetMoveSelects()
+      return
+    }
+
+    setPendingPrereqShift({ courseId, targetYear, targetTerm, adjustments, pair: pairMove ?? null })
+  }
+
+  const confirmPrereqShiftMove = () => {
+    if (!pendingPrereqShift) return
+
+    const { courseId, targetYear, targetTerm, adjustments, pair } = pendingPrereqShift
+    const origin = getCourseLocationInPlan(courseId)
+    if (!origin) {
+      setPendingPrereqShift(null)
+      resetMoveSelects()
+      return
+    }
+
+    const changes: MoveHistoryEntry["changes"] = []
+
+    moveCourseToTermSilent(courseId, targetYear, targetTerm)
+    changes.push({
+      courseId,
+      fromYear: origin.year,
+      fromTerm: origin.term,
+      toYear: targetYear,
+      toTerm: targetTerm,
+    })
+
+    if (pair) {
+      moveCourseToTermSilent(pair.courseId, targetYear, targetTerm)
+      changes.push({
+        courseId: pair.courseId,
+        fromYear: pair.fromYear,
+        fromTerm: pair.fromTerm,
+        toYear: targetYear,
+        toTerm: targetTerm,
+      })
+    }
+
+    adjustments.forEach((adjustment) => {
+      moveCourseToTermSilent(adjustment.courseId, adjustment.toYear, adjustment.toTerm)
+      changes.push({
+        courseId: adjustment.courseId,
+        fromYear: adjustment.fromYear,
+        fromTerm: adjustment.fromTerm,
+        toYear: adjustment.toYear,
+        toTerm: adjustment.toTerm,
+      })
+    })
+
+    const movedCourse = findCourseById(courseId)
+    const summaryBits: string[] = []
+    if (pair) {
+      summaryBits.push(`${pair.code} lab/lec partner`)
+    }
+    if (adjustments.length === 1) {
+      summaryBits.push(adjustments[0].code)
+    } else if (adjustments.length > 1) {
+      summaryBits.push(`${adjustments.length} dependent courses`)
+    }
+
+    const baseDescription = `${movedCourse?.code || "Course"} moved to ${formatAcademicYear(targetYear)} ${targetTerm}`
+    const description = summaryBits.length > 0 ? `${baseDescription}; also moved ${summaryBits.join(" and ")}` : baseDescription
+
+    addToMoveHistory({
+      type: "single",
+      description,
+      changes,
+    })
+
+    setPendingPrereqShift(null)
+    resetMoveSelects()
+  }
+
+  const cancelPrereqShiftMove = () => {
+    setPendingPrereqShift(null)
+    resetMoveSelects()
+  }
+
   // Move multiple courses to the same term
   const moveMultipleCoursesToTerm = (courseIds: string[], targetYear: number, targetTerm: string) => {
     const changes: MoveHistoryEntry["changes"] = []
@@ -1443,7 +1823,7 @@ export default function AcademicPlanner() {
     for (const semester of graduationPlan) {
       for (const course of semester.courses) {
         if (courseIds.includes(course.id)) {
-          courseLocations.set(course.id, { year: semester.year, term: semester.term })
+          courseLocations.set(course.id, { year: semester.year, term: normalizeTermLabel(semester.term) })
         }
       }
     }
@@ -1481,7 +1861,7 @@ export default function AcademicPlanner() {
 
       // Check if target semester already exists
       const targetSemesterIndex = updatedPlan.findIndex(
-        (semester) => semester.year === targetYear && semester.term === targetTerm,
+        (semester) => semester.year === targetYear && termsMatch(semester.term, targetTerm),
       )
 
       if (targetSemesterIndex !== -1) {
@@ -1491,7 +1871,7 @@ export default function AcademicPlanner() {
         // Create new semester
         const newSemester: SemesterPlan = {
           year: targetYear,
-          term: targetTerm,
+          term: normalizeTermLabel(targetTerm),
           courses: coursesToMove,
         }
 
@@ -1501,9 +1881,7 @@ export default function AcademicPlanner() {
           const semester = updatedPlan[i]
           if (
             semester.year > targetYear ||
-            (semester.year === targetYear &&
-              ["Term 1", "Term 2", "Term 3"].indexOf(semester.term) >
-                ["Term 1", "Term 2", "Term 3"].indexOf(targetTerm))
+            (semester.year === targetYear && getTermIndex(semester.term) > getTermIndex(targetTerm))
           ) {
             insertIndex = i
             break
@@ -1515,8 +1893,7 @@ export default function AcademicPlanner() {
       // Sort semesters chronologically
       updatedPlan.sort((a, b) => {
         if (a.year !== b.year) return a.year - b.year
-        const termOrder = ["Term 1", "Term 2", "Term 3"]
-        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+        return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
       return updatedPlan
@@ -1617,20 +1994,27 @@ export default function AcademicPlanner() {
 
   // Export graduation plan
   const exportPlan = (format: "json" | "csv" | "txt") => {
-    const planData = graduationPlan.map((semester) => ({
-      year: semester.year,
-      term: semester.term,
-      courses: semester.courses.map((course) => ({
-        code: course.code,
-        name: course.name,
-        credits: course.credits,
-        section: course.recommendedSection?.section || "TBD",
-        schedule: course.recommendedSection
-          ? `${course.recommendedSection.meetingDays} ${course.recommendedSection.meetingTime}`
-          : "TBD",
-        room: course.recommendedSection?.room || "TBD",
-      })),
-    }))
+    const planData = graduationPlan.map((semester) => {
+      const semesterIsCurrent = isCurrentSemester(semester.year, semester.term)
+
+      return {
+        year: semester.year,
+        term: semester.term,
+        courses: semester.courses.map((course) => {
+          const sectionDetails = semesterIsCurrent ? course.recommendedSection : undefined
+          return {
+            code: course.code,
+            name: course.name,
+            credits: course.credits,
+            section: sectionDetails?.section || "TBD",
+            schedule: sectionDetails
+              ? `${sectionDetails.meetingDays} ${sectionDetails.meetingTime}`
+              : "TBD",
+            room: sectionDetails?.room || "TBD",
+          }
+        }),
+      }
+    })
 
     const creditPreferenceSnapshot = {
       minCreditsPerTerm,
@@ -1729,7 +2113,7 @@ export default function AcademicPlanner() {
     const mapSemesters = (data: any[]): ImportedPlanData[] => {
       return data.map((semester: any) => ({
         year: Number(semester.year),
-        term: semester.term,
+        term: normalizeTermLabel(semester.term),
         courses: (Array.isArray(semester.courses) ? semester.courses : []).map((course: any) => ({
           code: course.code,
           name: course.name,
@@ -1994,7 +2378,7 @@ export default function AcademicPlanner() {
         if (semesterCourses.length > 0) {
           newPlan.push({
             year: semesterData.year,
-            term: semesterData.term,
+            term: normalizeTermLabel(semesterData.term),
             courses: semesterCourses,
           })
         }
@@ -2003,8 +2387,7 @@ export default function AcademicPlanner() {
       // Sort semesters chronologically
       newPlan.sort((a, b) => {
         if (a.year !== b.year) return a.year - b.year
-        const termOrder = ["Term 1", "Term 2", "Term 3"]
-        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+        return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
       // Update graduation plan
@@ -2113,9 +2496,8 @@ export default function AcademicPlanner() {
     })
 
     const finalizePlan = (semesters: SemesterPlan[]) => {
-      const order = ["Term 1", "Term 2", "Term 3"]
       const ordered = [...semesters].sort((a, b) =>
-        a.year === b.year ? order.indexOf(a.term) - order.indexOf(b.term) : a.year - b.year,
+        a.year === b.year ? getTermIndex(a.term) - getTermIndex(b.term) : a.year - b.year,
       )
 
       const newOpenSemesters: { [key: string]: boolean } = {}
@@ -2140,12 +2522,11 @@ export default function AcademicPlanner() {
     if (!anyProgress) {
       // Group by year and term using the course.year/course.term from initial data
       const grouped = new Map<string, SemesterPlan>()
-      const termOrder = ["Term 1", "Term 2", "Term 3"]
 
       // sort courses by year then term to preserve curriculum order
       const sorted = [...courses].sort((a, b) => {
         if (a.year !== b.year) return a.year - b.year
-        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+        return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
       for (const c of sorted) {
@@ -2234,7 +2615,6 @@ export default function AcademicPlanner() {
     })
 
     const detectRegularStudent = () => {
-      const termOrder = ["Term 1", "Term 2", "Term 3"]
       const passedList = courses.filter((c) => c.status === "passed")
       if (passedList.length === 0) {
         return {
@@ -2254,7 +2634,7 @@ export default function AcademicPlanner() {
 
       passedList.forEach((pc) => {
         const calendarYear = pc.year + startYear - 1
-        const termIndex = termOrder.indexOf(pc.term)
+        const termIndex = getTermIndex(pc.term)
         if (calendarYear > latestYear || (calendarYear === latestYear && termIndex > latestTermIndex)) {
           latestYear = calendarYear
           latestTermIndex = termIndex
@@ -2274,7 +2654,7 @@ export default function AcademicPlanner() {
         }
       }
 
-      const latestTerm = termOrder[latestTermIndex]
+      const latestTerm = TERM_ORDER[latestTermIndex] || "Term 1"
       const latestCurriculumYear = latestYear - startYear + 1
       const curriculumCoursesForLatest = (initialCourses as any[]).filter(
         (c: any) => c.year === latestCurriculumYear && c.term === latestTerm,
@@ -2310,7 +2690,7 @@ export default function AcademicPlanner() {
       }
 
       const next = getNextTerm(latestYear, latestTerm)
-      const nextCurriculumYear = latestCurriculumYear + (latestTerm === "Term 3" ? 1 : 0)
+      const nextCurriculumYear = latestCurriculumYear + (termsMatch(latestTerm, "Term 3") ? 1 : 0)
 
       return {
         isRegular: true,
@@ -2325,10 +2705,9 @@ export default function AcademicPlanner() {
     }
 
     const buildRegularCurriculumPlan = (info: ReturnType<typeof detectRegularStudent>): SemesterPlan[] => {
-      const termOrder = ["Term 1", "Term 2", "Term 3"]
       const sortedCurriculum = [...(initialCourses as any[])].sort((a: any, b: any) => {
         if (a.year !== b.year) return a.year - b.year
-        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+        return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
       const planByKey = new Map<string, SemesterPlan>()
@@ -2341,8 +2720,9 @@ export default function AcademicPlanner() {
         const calendarYear = startYear + (curriculumCourse.year - 1)
         if (calendarYear < info.nextYear) return
         if (calendarYear === info.nextYear) {
-          const currTermIndex = termOrder.indexOf(curriculumCourse.term)
-          if (currTermIndex < termOrder.indexOf(info.nextTerm)) return
+          const currTermIndex = getTermIndex(curriculumCourse.term)
+          const nextTermIndex = getTermIndex(info.nextTerm)
+          if (nextTermIndex !== -1 && currTermIndex < nextTermIndex) return
         }
 
         const key = `${calendarYear}-${curriculumCourse.term}`
@@ -2369,9 +2749,9 @@ export default function AcademicPlanner() {
     const lockedIds = new Set(Object.keys(lockedPlacements))
     if (lockedIds.size > 0) {
       const addLockedToPlan = (pc: PlanCourse, y: number, t: string) => {
-        const idx = plan.findIndex((s) => s.year === y && s.term === t)
+        const idx = plan.findIndex((s) => s.year === y && termsMatch(s.term, t))
         if (idx === -1) {
-          plan.push({ year: y, term: t, courses: [pc] })
+          plan.push({ year: y, term: normalizeTermLabel(t), courses: [pc] })
         } else {
           plan[idx].courses.push(pc)
         }
@@ -2382,7 +2762,7 @@ export default function AcademicPlanner() {
           if (lock) {
             const pc = toEnhance(c)
             addLockedToPlan(pc, lock.year, lock.term)
-            courseScheduleMap.set(c.id, { year: lock.year, term: lock.term })
+            courseScheduleMap.set(c.id, { year: lock.year, term: normalizeTermLabel(lock.term) })
           }
         }
       })
@@ -2463,8 +2843,7 @@ export default function AcademicPlanner() {
 
       // Finally: by original year and term
       if (a.year !== b.year) return a.year - b.year
-      const termOrder = ["Term 1", "Term 2", "Term 3"]
-      return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+      return getTermIndex(a.term) - getTermIndex(b.term)
     })
 
   // Helper: identify lab/lec pairing
@@ -2481,7 +2860,6 @@ export default function AcademicPlanner() {
       let added = 0
       if (currentSemesterCredits >= minCreditsPerTerm) return added
       const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
-      const termOrder = ["Term 1", "Term 2", "Term 3"]
       const candidates = [...remainingRegularCourses].sort((a, b) => {
         if (a.status === "failed" && b.status !== "failed") return -1
         if (a.status !== "failed" && b.status === "failed") return 1
@@ -2500,7 +2878,7 @@ export default function AcademicPlanner() {
         if (!a.needsPetition && b.needsPetition) return -1
         if (a.needsPetition && !b.needsPetition) return 1
         if (a.year !== b.year) return a.year - b.year
-        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+        return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
       for (const course of candidates) {
@@ -2552,7 +2930,6 @@ export default function AcademicPlanner() {
       if (eligible.length === 0) return packed
 
       const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
-      const termOrder = ["Term 1", "Term 2", "Term 3"]
       const sorted = [...eligible].sort((a, b) => {
         if (a.status === "failed" && b.status !== "failed") return -1
         if (a.status !== "failed" && b.status === "failed") return 1
@@ -2567,7 +2944,7 @@ export default function AcademicPlanner() {
         if (!a.needsPetition && b.needsPetition) return -1
         if (a.needsPetition && !b.needsPetition) return 1
         if (a.year !== b.year) return a.year - b.year
-        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+        return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
       const TOP = 8
@@ -2738,13 +3115,12 @@ export default function AcademicPlanner() {
   // Now schedule internship courses into the earliest feasible academic year:
   // Find the latest term that contains a non-internship course. If that term is Term 1, place
   // internships in Term 2 and Term 3 of the same year; otherwise, place them in the next year's Term 2 and Term 3.
-    const termOrderArr = ["Term 1", "Term 2", "Term 3"]
     let latestYear = currentYear
     let latestTermIdx = 0
     for (const sem of plan) {
       const hasRegular = sem.courses.some((c) => !isInternshipCourse(c))
       if (!hasRegular) continue
-      const idx = termOrderArr.indexOf(sem.term)
+      const idx = getTermIndex(sem.term)
       if (sem.year > latestYear || (sem.year === latestYear && idx > latestTermIdx)) {
         latestYear = sem.year
         latestTermIdx = idx
@@ -2754,17 +3130,18 @@ export default function AcademicPlanner() {
 
     // Helper to find or create a semester in the plan and return it
     const findOrCreateSemester = (year: number, term: string): SemesterPlan => {
-      let idx = plan.findIndex((s) => s.year === year && s.term === term)
+      let idx = plan.findIndex((s) => s.year === year && termsMatch(s.term, term))
       if (idx !== -1) return plan[idx]
 
-      const newSemester: SemesterPlan = { year, term, courses: [] }
+      const newSemester: SemesterPlan = { year, term: normalizeTermLabel(term), courses: [] }
       // Insert chronologically
       let insertIndex = plan.length
       for (let i = 0; i < plan.length; i++) {
         const semester = plan[i]
         if (
           semester.year > year ||
-          (semester.year === year && ["Term 1", "Term 2", "Term 3"].indexOf(semester.term) > ["Term 1", "Term 2", "Term 3"].indexOf(term))
+          (semester.year === year &&
+            getTermIndex(semester.term) > getTermIndex(term))
         ) {
           insertIndex = i
           break
@@ -2789,15 +3166,15 @@ export default function AcademicPlanner() {
     const placeInternship = (course: PlanCourse | undefined, year: number, term: string) => {
       if (!course) return
       // If the semester already exists in plan, append; otherwise create it
-      const existingIndex = plan.findIndex((s) => s.year === year && s.term === term)
+      const existingIndex = plan.findIndex((s) => s.year === year && termsMatch(s.term, term))
       if (existingIndex !== -1) {
         // Ensure only internships are in this semester
         plan[existingIndex].courses = plan[existingIndex].courses.filter((c) => isInternshipCourse(c))
         plan[existingIndex].courses.push(course)
       } else {
-        plan.push({ year, term, courses: [course] })
+        plan.push({ year, term: normalizeTermLabel(term), courses: [course] })
       }
-      courseScheduleMap.set(course.id, { year, term })
+      courseScheduleMap.set(course.id, { year, term: normalizeTermLabel(term) })
       console.log(`Scheduled internship ${course.code} in ${year} ${term}`)
     }
 
@@ -2821,7 +3198,7 @@ export default function AcademicPlanner() {
       plan.map((s) => `${formatAcademicYear(s.year)} ${s.term}: ${s.courses.length} courses (${s.courses.map((c) => c.code).join(", ")})`),
     )
     // Backfill/Merge pass: try to move later regular courses into earlier semesters to reduce trailing tiny terms
-    const termOrderIdx = (t: string) => ["Term 1", "Term 2", "Term 3"].indexOf(t)
+    const termOrderIdx = (t: string) => getTermIndex(t)
     const hasInternOnly = (sem: SemesterPlan) => sem.courses.length > 0 && sem.courses.every((c) => isInternshipCourse(c))
     const sumCredits = (sem: SemesterPlan) => sem.courses.reduce((s, c) => s + c.credits, 0)
 
@@ -2835,7 +3212,7 @@ export default function AcademicPlanner() {
         // Respect explicit locks
         if (lockedPlacements[course.id]) {
           const lock = lockedPlacements[course.id]
-          if (!(lock.year === sem.year && lock.term === sem.term)) {
+          if (!(lock.year === sem.year && termsMatch(lock.term, sem.term))) {
             // The course is locked elsewhere; skip moving here
             continue
           }
@@ -2918,12 +3295,13 @@ export default function AcademicPlanner() {
   }
   const toggleCourseLock = (courseId: string, year: number, term: string) => {
     setLockedPlacements((prev) => {
+      const normalizedTerm = normalizeTermLabel(term)
       const existing = prev[courseId]
-      if (existing && existing.year === year && existing.term === term) {
+      if (existing && existing.year === year && termsMatch(existing.term, normalizedTerm)) {
         const { [courseId]: _omit, ...rest } = prev
         return rest
       }
-      return { ...prev, [courseId]: { year, term } }
+      return { ...prev, [courseId]: { year, term: normalizedTerm } }
     })
   }
 
@@ -3047,7 +3425,7 @@ export default function AcademicPlanner() {
   // Prevent adding non-internship courses into reserved internship terms by default
   const _maxCurrYear_forAdd = Math.max(...courses.map((c) => c.year))
   const internshipTargetYear = startYear + (_maxCurrYear_forAdd - 1)
-  const isReserved = targetYear === internshipTargetYear && (targetTerm === "Term 2" || targetTerm === "Term 3")
+  const isReserved = targetYear === internshipTargetYear && (termsMatch(targetTerm, "Term 2") || termsMatch(targetTerm, "Term 3"))
 
   // If it's a reserved term and the course is not an internship, open confirmation modal
   if (isReserved && !isInternshipCourse(course)) {
@@ -3058,7 +3436,7 @@ export default function AcademicPlanner() {
 
   // If adding to current term and course may need petition, confirm
   const needsPetition = !hasAvailableSections(course.code)
-  if (needsPetition && targetYear === currentYear && targetTerm === currentTerm) {
+  if (needsPetition && targetYear === currentYear && termsMatch(targetTerm, currentTerm)) {
     setPendingAdd({ courseId, targetYear, targetTerm, reason: "petition" })
     setOverloadDialogOpen(true)
     return
@@ -3089,7 +3467,7 @@ export default function AcademicPlanner() {
     setGraduationPlan((prevPlan) => {
       // Check if target semester already exists
       const targetSemesterIndex = prevPlan.findIndex(
-        (semester) => semester.year === targetYear && semester.term === targetTerm,
+        (semester) => semester.year === targetYear && termsMatch(semester.term, targetTerm),
       )
 
       const updatedPlan = [...prevPlan]
@@ -3104,7 +3482,7 @@ export default function AcademicPlanner() {
         // Create new semester
         const newSemester: SemesterPlan = {
           year: targetYear,
-          term: targetTerm,
+          term: normalizeTermLabel(targetTerm),
           courses: [planCourse],
         }
 
@@ -3114,9 +3492,7 @@ export default function AcademicPlanner() {
           const semester = updatedPlan[i]
           if (
             semester.year > targetYear ||
-            (semester.year === targetYear &&
-              ["Term 1", "Term 2", "Term 3"].indexOf(semester.term) >
-                ["Term 1", "Term 2", "Term 3"].indexOf(targetTerm))
+            (semester.year === targetYear && getTermIndex(semester.term) > getTermIndex(targetTerm))
           ) {
             insertIndex = i
             break
@@ -3128,8 +3504,7 @@ export default function AcademicPlanner() {
       // Sort semesters chronologically
       updatedPlan.sort((a, b) => {
         if (a.year !== b.year) return a.year - b.year
-        const termOrder = ["Term 1", "Term 2", "Term 3"]
-        return termOrder.indexOf(a.term) - termOrder.indexOf(b.term)
+        return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
       return updatedPlan
@@ -3179,6 +3554,60 @@ export default function AcademicPlanner() {
     return `${days}\n${formatTime(meetingTime)}`
   }
 
+  const renderCourseListBadges = (list: Course[], emptyLabel: string) => {
+    if (!list || list.length === 0) {
+      return <span className="text-sm text-muted-foreground">{emptyLabel}</span>
+    }
+
+    const MAX_ROWS_PER_COLUMN = 2
+    const columns: Course[][] = []
+    for (let i = 0; i < list.length; i += MAX_ROWS_PER_COLUMN) {
+      columns.push(list.slice(i, i + MAX_ROWS_PER_COLUMN))
+    }
+
+    return (
+      <div className="flex flex-wrap gap-2">
+        {columns.map((columnCourses, columnIndex) => (
+          <div key={`column-${columnIndex}`} className="flex flex-col gap-1">
+            {columnCourses.map((linkedCourse) => {
+              const description = linkedCourse.description?.trim()
+              const courseName = linkedCourse.name?.trim() || linkedCourse.code
+              const tooltip = description ? `${courseName} — ${description}` : courseName
+
+              return (
+                <Popover key={linkedCourse.id}>
+                  <PopoverTrigger asChild>
+                    <Badge
+                      variant="outline"
+                      className="text-xs cursor-pointer"
+                      title={tooltip}
+                      aria-label={tooltip}
+                    >
+                      {linkedCourse.code}
+                    </Badge>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    side="top"
+                    align="start"
+                    className="w-64 space-y-1 text-xs"
+                  >
+                    <p className="text-sm font-semibold">{linkedCourse.code}</p>
+                    {courseName && courseName !== linkedCourse.code && (
+                      <p className="text-sm">{courseName}</p>
+                    )}
+                    {description && (
+                      <p className="text-xs text-muted-foreground leading-snug">{description}</p>
+                    )}
+                  </PopoverContent>
+                </Popover>
+              )
+            })}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   const renderPlanActionControls = (showJump: boolean) => (
     <div className="flex items-center gap-1">
       {showJump && (
@@ -3203,6 +3632,10 @@ export default function AcademicPlanner() {
       </Button>
     </div>
   )
+
+  const pendingPrereqShiftCourse = pendingPrereqShift ? findCourseById(pendingPrereqShift.courseId) : null
+  const pendingPrereqShiftPair = pendingPrereqShift?.pair ?? null
+  const pendingPrereqShiftHasDependents = (pendingPrereqShift?.adjustments.length ?? 0) > 0
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
@@ -3543,6 +3976,96 @@ export default function AcademicPlanner() {
             )}
             <DialogFooter>
               <Button onClick={() => setConflictDialogOpen(false)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={Boolean(pendingPrereqShift)}
+          onOpenChange={(open) => {
+            if (!open) {
+              cancelPrereqShiftMove()
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Move linked courses?</DialogTitle>
+              <DialogDescription>
+                Moving {pendingPrereqShiftCourse?.code ?? "this course"} to {pendingPrereqShift
+                  ? `${formatAcademicYear(pendingPrereqShift.targetYear)} ${pendingPrereqShift.targetTerm}`
+                  : "the selected term"} also keeps its lab/lecture partner and prerequisite-locked courses aligned.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 text-sm">
+              {pendingPrereqShiftPair && pendingPrereqShift && (
+                <div className="rounded-md border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
+                  <p className="text-sm font-medium">Lab + lecture stay together</p>
+                  <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+                    <div>
+                      <p className="text-sm font-semibold">{pendingPrereqShiftPair.code}</p>
+                      <p className="text-muted-foreground">{pendingPrereqShiftPair.name}</p>
+                    </div>
+                    <div className="flex items-center gap-2 text-right text-muted-foreground">
+                      <span>
+                        {formatAcademicYear(pendingPrereqShiftPair.fromYear)} {pendingPrereqShiftPair.fromTerm}
+                      </span>
+                      <ArrowRight className="h-3 w-3" />
+                      <span className="font-semibold">
+                        {formatAcademicYear(pendingPrereqShift.targetYear)} {pendingPrereqShift.targetTerm}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    We'll move this paired component to the same term so the lecture and lab stay synchronized.
+                  </p>
+                </div>
+              )}
+
+              {pendingPrereqShiftHasDependents ? (
+                <>
+                  <p>
+                    The following courses rely on {pendingPrereqShiftCourse?.code ?? "this course"} and will be moved to later
+                    terms to keep prerequisites satisfied:
+                  </p>
+                  <ul className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {pendingPrereqShift?.adjustments.map((adjustment) => (
+                      <li
+                        key={adjustment.courseId}
+                        className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-white p-3 text-xs dark:border-slate-700 dark:bg-slate-900"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold">{adjustment.code}</p>
+                          <p className="text-muted-foreground">{adjustment.name}</p>
+                        </div>
+                        <div className="flex items-center gap-2 text-right text-muted-foreground">
+                          <span>
+                            {formatAcademicYear(adjustment.fromYear)} {adjustment.fromTerm}
+                          </span>
+                          <ArrowRight className="h-3 w-3" />
+                          <span className="font-semibold">
+                            {formatAcademicYear(adjustment.toYear)} {adjustment.toTerm}
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-xs text-muted-foreground">
+                    You can fine-tune their placements after this automatic adjustment.
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No prerequisite dependents need rescheduling. We'll simply keep the linked components together.
+                </p>
+              )}
+            </div>
+            <DialogFooter className="flex-col gap-2 sm:flex-row">
+              <Button variant="outline" className="w-full sm:w-auto" onClick={cancelPrereqShiftMove}>
+                Cancel
+              </Button>
+              <Button className="w-full sm:w-auto" onClick={confirmPrereqShiftMove}>
+                Move Courses
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -4300,6 +4823,7 @@ export default function AcademicPlanner() {
                   {graduationPlan.map((semester, index) => {
                     const semesterKey = `${semester.year}-${semester.term}`
                     const isOpen = openSemesters[semesterKey]
+                    const semesterIsCurrent = isCurrentSemester(semester.year, semester.term)
                     const coursesNeedingPetition = semester.courses.filter((course) => course.needsPetition)
                     const semesterCoursesSelected = semester.courses.filter((course) => selectedCourses.has(course.id))
                     const allSemesterCoursesSelected = semesterCoursesSelected.length === semester.courses.length
@@ -4409,9 +4933,18 @@ export default function AcademicPlanner() {
                                   <TableHead>Course Code</TableHead>
                                   <TableHead>Course Name</TableHead>
                                   <TableHead>Credits</TableHead>
-                                  <TableHead>Section</TableHead>
-                                  <TableHead>Schedule</TableHead>
-                                  <TableHead>Room</TableHead>
+                                  {semesterIsCurrent ? (
+                                    <>
+                                      <TableHead>Section</TableHead>
+                                      <TableHead>Schedule</TableHead>
+                                      <TableHead>Room</TableHead>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <TableHead>Prerequisite Courses</TableHead>
+                                      <TableHead>Required For Courses</TableHead>
+                                    </>
+                                  )}
                                   <TableHead>Status</TableHead>
                                   <TableHead>Priority</TableHead>
                                   <TableHead>Lock</TableHead>
@@ -4425,6 +4958,7 @@ export default function AcademicPlanner() {
                                     .filter((c): c is Course => c !== undefined)
 
                                   const allPrereqsMet = arePrerequisitesMet(course)
+                                  const requiredForCourses = dependentCoursesMap.get(course.id) ?? []
                                   const section = course.recommendedSection
                                   const availableSections = course.availableSections
                                   const availableTerms = getAvailableTermsForMove(course)
@@ -4488,61 +5022,74 @@ export default function AcademicPlanner() {
                                       </TableCell>
                                       <TableCell>{course.name}</TableCell>
                                       <TableCell>{course.credits}</TableCell>
-                                      <TableCell>
-                                        {availableSections.length > 0 ? (
-                                          <Select
-                                            value={section?.section || ""}
-                                            onValueChange={(value) => {
-                                              const selectedSection = availableSections.find((s) => s.section === value)
-                                              if (selectedSection) {
-                                                changeCourseSection(course.id, selectedSection)
-                                              }
-                                            }}
-                                          >
-                                            <SelectTrigger className="w-32">
-                                              <SelectValue placeholder="Select Section" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                              {availableSections.map((availableSection) => (
-                                                <SelectItem
-                                                  key={availableSection.section}
-                                                  value={availableSection.section}
-                                                >
-                                                  {availableSection.section}
-                                                </SelectItem>
-                                              ))}
-                                            </SelectContent>
-                                          </Select>
-                                        ) : section ? (
-                                          section.section
-                                        ) : (
-                                          <Button
-                                            variant="outline"
-                                            size="sm"
-                                            onClick={() => {
-                                              localStorage.setItem("filterCourseCode", course.code)
-                                              window.location.href = "/schedule-maker"
-                                            }}
-                                            className="flex items-center gap-1"
-                                          >
-                                            <Calendar className="h-3 w-3" />
-                                            Find Section
-                                          </Button>
-                                        )}
-                                      </TableCell>
-                                      <TableCell>
-                                        {section ? (
-                                          <div className="text-sm whitespace-pre-line">
-                                            {formatSchedule(section.meetingDays, section.meetingTime)}
-                                          </div>
-                                        ) : (
-                                          <span className="text-gray-400">TBD</span>
-                                        )}
-                                      </TableCell>
-                                      <TableCell>{section ? section.room : "N/A"}</TableCell>
+                                      {semesterIsCurrent ? (
+                                        <>
+                                          <TableCell>
+                                            {availableSections.length > 0 ? (
+                                              <Select
+                                                value={section?.section || ""}
+                                                onValueChange={(value) => {
+                                                  const selectedSection = availableSections.find((s) => s.section === value)
+                                                  if (selectedSection) {
+                                                    changeCourseSection(course.id, selectedSection)
+                                                  }
+                                                }}
+                                              >
+                                                <SelectTrigger className="w-32">
+                                                  <SelectValue placeholder="Select Section" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                  {availableSections.map((availableSection) => (
+                                                    <SelectItem
+                                                      key={availableSection.section}
+                                                      value={availableSection.section}
+                                                    >
+                                                      {availableSection.section}
+                                                    </SelectItem>
+                                                  ))}
+                                                </SelectContent>
+                                              </Select>
+                                            ) : section ? (
+                                              section.section
+                                            ) : (
+                                              <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => {
+                                                  localStorage.setItem("filterCourseCode", course.code)
+                                                  window.location.href = "/schedule-maker"
+                                                }}
+                                                className="flex items-center gap-1"
+                                              >
+                                                <Calendar className="h-3 w-3" />
+                                                Find Section
+                                              </Button>
+                                            )}
+                                          </TableCell>
+                                          <TableCell>
+                                            {section ? (
+                                              <div className="text-sm whitespace-pre-line">
+                                                {formatSchedule(section.meetingDays, section.meetingTime)}
+                                              </div>
+                                            ) : (
+                                              <span className="text-gray-400">TBD</span>
+                                            )}
+                                          </TableCell>
+                                          <TableCell>{section ? section.room : "N/A"}</TableCell>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <TableCell>
+                                            {renderCourseListBadges(prereqCourses, "No prerequisites")}
+                                          </TableCell>
+                                          <TableCell>
+                                            {renderCourseListBadges(requiredForCourses, "No dependent courses")}
+                                          </TableCell>
+                                        </>
+                                      )}
                                       <TableCell>
                                         {course.needsPetition ? (
-                                          (semester.year === currentYear && semester.term === currentTerm) ? (
+                                          (semester.year === currentYear && termsMatch(semester.term, currentTerm)) ? (
                                             <Badge variant="destructive">Needs Petition</Badge>
                                           ) : (
                                             <Badge variant="outline">May Need Petition</Badge>
@@ -4582,7 +5129,10 @@ export default function AcademicPlanner() {
                                       {/* Lock to this term */}
                                       <TableCell>
                                         {(() => {
-                                          const locked = !!lockedPlacements[course.id] && lockedPlacements[course.id].year === semester.year && lockedPlacements[course.id].term === semester.term
+                                          const locked =
+                                            !!lockedPlacements[course.id] &&
+                                            lockedPlacements[course.id].year === semester.year &&
+                                            termsMatch(lockedPlacements[course.id].term, semester.term)
                                           return (
                                             <Button
                                               variant={locked ? "default" : "outline"}
@@ -4600,9 +5150,10 @@ export default function AcademicPlanner() {
                                       <TableCell>
                                         <div className="flex items-center gap-2">
                                           <Select
+                                            key={`${course.id}-${moveSelectResetCounter}`}
                                             onValueChange={(value) => {
                                               const [year, term] = value.split("-")
-                                              moveCourseToTerm(course.id, Number.parseInt(year), term)
+                                              handleCourseMoveRequest(course.id, Number.parseInt(year), term)
                                             }}
                                           >
                                             <SelectTrigger className="w-40">
@@ -4612,7 +5163,7 @@ export default function AcademicPlanner() {
                                               {availableTerms
                                                 .filter(
                                                   (term) =>
-                                                    !(term.year === semester.year && term.term === semester.term),
+                                                    !(term.year === semester.year && termsMatch(term.term, semester.term)),
                                                 )
                                                 .map((term) => (
                                                   <SelectItem
@@ -4635,7 +5186,7 @@ export default function AcademicPlanner() {
                               </TableBody>
                             </Table>
 
-                            {semester.year === currentYear && semester.term === currentTerm &&
+                            {semester.year === currentYear && termsMatch(semester.term, currentTerm) &&
                               semester.courses.some((course) => course.needsPetition) && (
                                 <Alert className="mt-4 bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800">
                                   <FileWarning className="h-4 w-4" />
@@ -4945,8 +5496,33 @@ export default function AcademicPlanner() {
               </div>
             )}
 
+            <AnimatePresence>
+              {showJumpButton && !isBottomNavVisible && (
+                <motion.div
+                  key="academic-planner-floating-back-to-top"
+                  initial={{ opacity: 0, y: 12, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 12, scale: 0.95 }}
+                  transition={{ duration: 0.2, ease: "easeInOut" }}
+                  className="pointer-events-none fixed bottom-4 right-32 z-[10000] sm:bottom-6 sm:right-40"
+                >
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="pointer-events-auto shadow-lg shadow-slate-500/30"
+                    onClick={scrollToPageTop}
+                    aria-label="Back to top"
+                  >
+                    <ArrowUp className="h-4 w-4" />
+                    Back to top
+                  </Button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Bottom Navigation */}
-            <div className="mt-10 mb-6">
+            <div className="mt-10 mb-6" ref={bottomNavigationRef}>
               <QuickNavigation showBackToTop />
             </div>
           </>
