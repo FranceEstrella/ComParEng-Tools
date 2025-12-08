@@ -236,24 +236,42 @@ const CREDIT_INPUT_MIN = 1
 const CREDIT_INPUT_MAX = 29
 const REGENERATE_STRATEGY_STORAGE_KEY = "planner.regenerate.strategy"
 const STRICT_GUARDRAILS_STORAGE_KEY = "planner.regenerate.strict"
-const REGENERATE_STRATEGY_META: Record<RegenerateStrategy, { title: string; tagline: string; description: string }> = {
+const REGENERATE_STRATEGY_META: Record<
+  RegenerateStrategy,
+  { title: string; tagline: string; description: string; highlights: string[] }
+> = {
   balanced: {
     title: "Balanced",
     tagline: "Evenly distributes credit load",
     description:
       "Uses every remaining term while keeping credit totals as close as possible so you avoid heavy swings.",
+    highlights: [
+      "Stays close to your preferred credit window every term.",
+      "Respects your priority labels without pushing either heavy or light courses first.",
+      "Great default when you just want a steady, curriculum-like cadence.",
+    ],
   },
   crucial: {
     title: "Crucial Courses First",
     tagline: "Pushes domino prerequisites early",
     description:
       "Prioritizes courses that unlock other requirements. Low-impact subjects only fill gaps once credit targets are met.",
+    highlights: [
+      "Puts prerequisite chains and dependency-heavy subjects at the front of the plan.",
+      "Skips medium/low priority courses until the term hits its minimum units and no high-impact option fits.",
+      "Helps clear blockers quickly so upper-year subjects open sooner.",
+    ],
   },
   easy: {
     title: "Easy Courses First",
     tagline: "Stacks lighter courses upfront",
     description:
       "Schedules non-prerequisite courses sooner so tougher chains land later—ideal if you want lighter near-term loads.",
+    highlights: [
+      "Boosts low-impact, lighter-credit subjects when multiple options fit.",
+      "Allows electives and labs to backfill early gaps even if tougher items remain.",
+      "Useful when you prefer a gentler load in the next few terms.",
+    ],
   },
 }
 
@@ -316,7 +334,8 @@ const normalizeTermLabel = (term: string): string => {
   return collapsed
 }
 
-const getTermIndex = (term: string): number => TERM_ORDER.indexOf(normalizeTermLabel(term))
+const getTermIndex = (term: string): number =>
+  TERM_ORDER.indexOf(normalizeTermLabel(term) as (typeof TERM_ORDER)[number])
 
 const termsMatch = (termA: string, termB: string): boolean => normalizeTermLabel(termA) === normalizeTermLabel(termB)
 
@@ -522,6 +541,7 @@ export default function AcademicPlanner() {
   const creditSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const pendingCreditSaveCallbacksRef = useRef<(() => void)[]>([])
   const confirmButtonShakeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const highlightTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const [isMobile, setIsMobile] = useState(false)
   const [planActionsCollapsed, setPlanActionsCollapsed] = useState(false)
   const [unscheduledCollapsed, setUnscheduledCollapsed] = useState(false)
@@ -538,6 +558,8 @@ export default function AcademicPlanner() {
   const [creditSaveMessage, setCreditSaveMessage] = useState<string | null>(null)
   const [creditLimitError, setCreditLimitError] = useState<string | null>(null)
   const [confirmButtonShaking, setConfirmButtonShaking] = useState(false)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [highlightedCourseId, setHighlightedCourseId] = useState<string | null>(null)
   const [creditPreview, setCreditPreview] = useState<CreditRebalancePreview | null>(null)
   const [creditPreviewDialogOpen, setCreditPreviewDialogOpen] = useState(false)
   const [showJumpButton, setShowJumpButton] = useState(false)
@@ -921,6 +943,7 @@ export default function AcademicPlanner() {
   }
 
   const creditPreviewMoves = creditPreview?.moves ?? []
+  const selectedRegenerateMeta = REGENERATE_STRATEGY_META[pendingRegenerateStrategy]
   const creditPreviewMoveCount = creditPreviewMoves.length
 
   const dependentsMap = useMemo(() => {
@@ -943,6 +966,75 @@ export default function AcademicPlanner() {
     return counts
   }, [dependentsMap])
 
+  const searchResults = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase()
+    if (!query) return [] as Course[]
+
+    const plannedIds = new Set<string>()
+    graduationPlan.forEach((sem) => sem.courses.forEach((c) => plannedIds.add(c.id)))
+
+    const matches = courses.filter((course) => {
+      const haystack = `${course.code} ${course.name}`.toLowerCase()
+      return haystack.includes(query)
+    })
+
+    // Prioritize courses already in the plan, then by code
+    return matches
+      .sort((a, b) => {
+        const aPlanned = plannedIds.has(a.id) ? 0 : 1
+        const bPlanned = plannedIds.has(b.id) ? 0 : 1
+        if (aPlanned !== bPlanned) return aPlanned - bPlanned
+        return a.code.localeCompare(b.code)
+      })
+      .slice(0, 8)
+  }, [courses, graduationPlan, searchQuery])
+
+  const inferPriorityLabel = (course: { id: string; prerequisites?: string[]; credits?: number } | null | undefined):
+    | keyof typeof PRIORITY_WEIGHTS
+    | undefined => {
+    if (!course) return undefined
+
+    const getCriticalScore = (target?: { id: string; prerequisites?: string[] }) => {
+      if (!target) return 0
+      const dependents = dependentsCount.get(target.id) || 0
+      const prereqCount = Array.isArray((target as any)?.prerequisites) ? (target as any).prerequisites.length : 0
+      return dependents * 2 + prereqCount
+    }
+
+    let critical = getCriticalScore(course)
+    const pairedId = getPairedCourseId(course as Course | PlanCourse | null)
+    if (pairedId) {
+      critical = Math.max(critical, getCriticalScore(findCourseById(pairedId)))
+    }
+
+    if (critical === 0) return "low"
+    if (critical >= 2) return "high"
+    return "medium"
+  }
+
+  useEffect(() => {
+    if (!highlightedCourseId) return
+    return () => {
+      if (highlightTimeoutRef.current) {
+        clearTimeout(highlightTimeoutRef.current)
+      }
+    }
+  }, [highlightedCourseId])
+
+  const getPriorityLabel = (courseId: string, course?: { id: string; prerequisites?: string[]; credits?: number }) => {
+    const pairId = resolveLockPairCourseId(courseId)
+    const selfLevel = coursePriorities[courseId]
+    const pairLevel = pairId ? coursePriorities[pairId] : undefined
+
+    if (selfLevel || pairLevel) {
+      const weight = (level: keyof typeof PRIORITY_WEIGHTS | undefined) => PRIORITY_WEIGHTS[level || "medium"] || 0
+      const winner = weight(selfLevel) >= weight(pairLevel) ? selfLevel : pairLevel
+      return winner || "medium"
+    }
+
+    return inferPriorityLabel(course ?? findCourseById(courseId)) || "medium"
+  }
+
   useEffect(() => {
     if (graduationPlan.length === 0) return
     setGraduationPlan((prevPlan) => {
@@ -951,6 +1043,7 @@ export default function AcademicPlanner() {
         allowCurrentTermActiveMoves: true,
         minCredits: strictGuardrailsEnabled ? minCreditsPerTerm : undefined,
         maxCredits: strictGuardrailsEnabled ? effectiveMaxCreditsPerTerm : undefined,
+        strategy: plannerStrategy,
       })
       if (balanced === prevPlan) return prevPlan
       return applyPetitionFlagsToPlan(balanced)
@@ -967,7 +1060,63 @@ export default function AcademicPlanner() {
     currentTerm,
     courses,
     strictGuardrailsEnabled,
+    plannerStrategy,
   ])
+
+  useEffect(() => {
+    // Keep paired lec/lab priorities in sync: unify to the highest priority across the pair
+    setCoursePriorities((prev) => {
+      let changed = false
+      const next = { ...prev }
+      const weight = (level: keyof typeof PRIORITY_WEIGHTS | undefined) => PRIORITY_WEIGHTS[level || "medium"] || 0
+
+      const seen = new Set<string>()
+      Object.keys(prev).forEach((courseId) => {
+        if (seen.has(courseId)) return
+        const pairId = resolveLockPairCourseId(courseId)
+        const levelA = prev[courseId]
+        const levelB = pairId ? prev[pairId] : undefined
+        const winner = weight(levelA) >= weight(levelB) ? levelA : levelB
+        if (pairId) {
+          if (winner && next[courseId] !== winner) {
+            next[courseId] = winner
+            changed = true
+          }
+          if (winner && next[pairId] !== winner) {
+            next[pairId] = winner
+            changed = true
+          }
+          seen.add(pairId)
+        }
+        seen.add(courseId)
+      })
+
+      return changed ? next : prev
+    })
+  }, [coursePriorities])
+
+  useEffect(() => {
+    if (!courses.length) return
+    setCoursePriorities((prev) => {
+      let changed = false
+      const next = { ...prev }
+
+      courses.forEach((course) => {
+        if (course.status !== "active") return
+        if (next[course.id] !== "high") {
+          next[course.id] = "high"
+          changed = true
+        }
+        const pairId = getPairedCourseId(course)
+        if (pairId && next[pairId] !== "high") {
+          next[pairId] = "high"
+          changed = true
+        }
+      })
+
+      return changed ? next : prev
+    })
+  }, [courses])
 
   useEffect(() => {
     if (!regenerateDialogOpen) return
@@ -1323,16 +1472,17 @@ export default function AcademicPlanner() {
     // If no available sections data, assume it needs petition
     if (availableSections.length === 0) return false
 
-    // Check if the course exists in available sections
-    return availableSections.some((section) => section.courseCode === courseCode && section.hasSlots)
+    // Treat full sections as available for matching, even if slots are zero
+    return availableSections.some((section) => section.courseCode === courseCode)
   }
 
-  // Find the best section for a course (most available slots)
+  // Find the best section for a course (prefer open slots, otherwise take any)
   const findBestSection = (courseCode: string): CourseSection | undefined => {
     const sections = getAvailableSections(courseCode)
     if (sections.length === 0) return undefined
-
-    return sections.reduce((best, current) => {
+    const open = sections.filter((s) => s.hasSlots)
+    const pool = open.length > 0 ? open : sections
+    return pool.reduce((best, current) => {
       const bestSlots = Number.parseInt(best.remainingSlots)
       const currentSlots = Number.parseInt(current.remainingSlots)
       return currentSlots > bestSlots ? current : best
@@ -1355,7 +1505,7 @@ export default function AcademicPlanner() {
 
   // Get available sections for a course
   const getAvailableSections = (courseCode: string): CourseSection[] => {
-    const sections = availableSections.filter((section) => section.courseCode === courseCode && section.hasSlots)
+    const sections = availableSections.filter((section) => section.courseCode === courseCode)
     return sections.length > 0 ? sections : []
   }
 
@@ -1577,6 +1727,7 @@ export default function AcademicPlanner() {
         allowCurrentTermActiveMoves: true,
         minCredits: sanitizedMin,
         maxCredits: sanitizedMax,
+        strategy: plannerStrategy,
       })
 
       const moves = computeCreditRebalanceMoves(graduationPlan, previewPlan)
@@ -1594,6 +1745,7 @@ export default function AcademicPlanner() {
       creditLimitsDirty,
       graduationPlan,
       triggerConfirmButtonShake,
+      plannerStrategy,
     ],
   )
 
@@ -1683,6 +1835,27 @@ export default function AcademicPlanner() {
       }
     }
     return null
+  }
+
+  const focusCourseInPlan = (courseId: string) => {
+    const location = getCourseLocationInPlan(courseId)
+    if (!location) return
+
+    const semesterKey = `${location.year}-${location.term}`
+    setOpenSemesters((prev) => ({ ...prev, [semesterKey]: true }))
+    setHighlightedCourseId(courseId)
+
+    if (highlightTimeoutRef.current) {
+      clearTimeout(highlightTimeoutRef.current)
+    }
+    highlightTimeoutRef.current = setTimeout(() => setHighlightedCourseId(null), 4000)
+
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`course-row-${courseId}`)
+      if (el && typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ behavior: "smooth", block: "center" })
+      }
+    })
   }
 
   const getPlanCourseEntry = (courseId: string): { course: PlanCourse; year: number; term: string } | null => {
@@ -1822,7 +1995,12 @@ export default function AcademicPlanner() {
   }
     const rebalancePlanForCreditLimits = (
       inputPlan: SemesterPlan[],
-      options?: { allowCurrentTermActiveMoves?: boolean; minCredits?: number; maxCredits?: number },
+      options?: {
+        allowCurrentTermActiveMoves?: boolean
+        minCredits?: number
+        maxCredits?: number
+        strategy?: RegenerateStrategy
+      },
     ): SemesterPlan[] => {
       if (!Array.isArray(inputPlan) || inputPlan.length === 0) {
         return inputPlan
@@ -1843,6 +2021,7 @@ export default function AcademicPlanner() {
       const minTarget = normalizedOptionMin ?? minCreditsPerTerm
 
       const allowCurrentTermActiveMoves = Boolean(options?.allowCurrentTermActiveMoves)
+      const strategyForRebalance = options?.strategy ?? plannerStrategy
 
       type MoveBundle = {
         courses: PlanCourse[]
@@ -1863,7 +2042,20 @@ export default function AcademicPlanner() {
         })
       })
 
-      const priorityScore = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
+      const priorityScore = (id: string) => {
+        const course = courses.find((c) => c.id === id) || null
+        const dependents = dependentsCount.get(id) || 0
+        const prereqCount = Array.isArray((course as any)?.prerequisites) ? (course as any).prerequisites.length : 0
+        const critical = dependents * 2 + prereqCount
+        const inferredLabel: keyof typeof PRIORITY_WEIGHTS = critical === 0 ? "low" : critical >= 2 ? "high" : "medium"
+        const label = (course && coursePriorities[course.id]) || inferredLabel
+        const base = PRIORITY_WEIGHTS[label] || 0
+        const credits = course?.credits ?? 0
+        const lightness = Math.max(0, 6 - credits)
+        if (strategyForRebalance === "crucial") return base + critical * 3
+        if (strategyForRebalance === "easy") return base + lightness * 2 - critical
+        return base
+      }
 
       const dependentsRemainAfterMove = (course: PlanCourse, targetYear: number, targetTerm: string) => {
         const dependents = dependentsMap.get(course.id) || []
@@ -2009,9 +2201,10 @@ export default function AcademicPlanner() {
             if (!bundle.courses.every((bundleCourse) => canScheduleCourse(bundleCourse, targetSemester.year, targetSemester.term))) continue
             if (!bundle.courses.every((bundleCourse) => dependentsRemainAfterMove(bundleCourse, targetSemester.year, targetSemester.term))) continue
 
+            // Prefer moving the lowest-priority bundles first to fill underloaded/low-credit terms
             const priority = bundle.courses.reduce(
-              (score, bundleCourse) => Math.max(score, priorityScore(bundleCourse.id)),
-              Number.NEGATIVE_INFINITY,
+              (score, bundleCourse) => Math.min(score, priorityScore(bundleCourse.id)),
+              Number.POSITIVE_INFINITY,
             )
 
             candidates.push({
@@ -2026,7 +2219,7 @@ export default function AcademicPlanner() {
         if (candidates.length === 0) return null
 
         candidates.sort((a, b) => {
-          if (a.priority !== b.priority) return b.priority - a.priority
+          if (a.priority !== b.priority) return a.priority - b.priority // lower priority first
           if (a.bundle.totalCredits !== b.bundle.totalCredits) return b.bundle.totalCredits - a.bundle.totalCredits
           return a.sourceIndex - b.sourceIndex
         })
@@ -2050,8 +2243,6 @@ export default function AcademicPlanner() {
           const pb = priorityScore(b.id)
           if (pa !== pb) return pa - pb
 
-          const strategyDelta = strategyBias(b) - strategyBias(a)
-          if (strategyDelta !== 0) return strategyDelta
           const depA = dependentsCount.get(a.id) || 0
           const depB = dependentsCount.get(b.id) || 0
           if (depA !== depB) return depA - depB
@@ -3728,7 +3919,10 @@ export default function AcademicPlanner() {
         return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
-      const balancedImportedPlan = rebalancePlanForCreditLimits(newPlan, { allowCurrentTermActiveMoves: true })
+      const balancedImportedPlan = rebalancePlanForCreditLimits(newPlan, {
+        allowCurrentTermActiveMoves: true,
+        strategy: plannerStrategy,
+      })
       const finalPlan = balancedImportedPlan === newPlan ? newPlan : balancedImportedPlan
 
       // Update graduation plan
@@ -4195,6 +4389,18 @@ export default function AcademicPlanner() {
 
     const isLowImpactCourse = (course: PlanCourse | Course | null | undefined): boolean => criticalityScore(course) === 0
 
+    const strategyPriorityWeight = (course: PlanCourse | Course | null | undefined): number => {
+      if (!course) return 0
+      const critical = criticalityScore(course)
+      const inferredLabel: keyof typeof PRIORITY_WEIGHTS = critical === 0 ? "low" : critical >= 2 ? "high" : "medium"
+      const label = coursePriorities[course.id] || inferredLabel
+      const base = PRIORITY_WEIGHTS[label] || 0
+      const lightness = Math.max(0, 6 - (course.credits || 0))
+      if (selectedStrategy === "crucial") return base + critical * 3
+      if (selectedStrategy === "easy") return base + lightness * 2 - critical
+      return base
+    }
+
     const hasSchedulableHighImpactForTerm = (year: number, term: string): boolean => {
       return remainingRegularCourses.some((c) => {
         if (isLowImpactCourse(c)) return false
@@ -4242,7 +4448,7 @@ export default function AcademicPlanner() {
     }
 
     // Sort regular courses by priority
-    const priorityScore = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
+    const priorityScore = (id: string) => strategyPriorityWeight(findCourseById(id))
     enhancedRegularCourses.sort((a, b) => {
       // First: failed courses (retakes) asap
       if (a.status === "failed" && b.status !== "failed") return -1
@@ -4289,7 +4495,8 @@ export default function AcademicPlanner() {
     const tryFillToMin = () => {
       let added = 0
       if (currentSemesterCredits >= plannerMinCredits) return added
-      const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
+      const priorityScoreLocal = (id: string) =>
+        strategyPriorityWeight(remainingRegularCourses.find((c) => c.id === id) || findCourseById(id))
       const candidates = [...remainingRegularCourses].sort((a, b) => {
         if (a.status === "failed" && b.status !== "failed") return -1
         if (a.status !== "failed" && b.status === "failed") return 1
@@ -4318,7 +4525,14 @@ export default function AcademicPlanner() {
       for (const course of candidates) {
         if (currentSemesterCredits >= plannerMinCredits) break
         if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) continue
-        if (selectedStrategy !== "easy" && hasSchedulableHighImpactForTerm(currentPlanYear, currentPlanTerm) && isLowImpactCourse(course)) continue
+        if (
+          selectedStrategy === "crucial" &&
+          currentSemesterCredits >= plannerMinCredits &&
+          hasSchedulableHighImpactForTerm(currentPlanYear, currentPlanTerm) &&
+          isLowImpactCourse(course)
+        ) {
+          continue
+        }
         if (currentSemesterCredits + course.credits > TARGET_MAX_CREDITS) continue
         currentSemesterCourses.push(course)
         currentSemesterCredits += course.credits
@@ -4408,14 +4622,14 @@ export default function AcademicPlanner() {
 
       const preferHighImpact = selectedStrategy !== "easy" && hasSchedulableHighImpactForTerm(currentPlanYear, currentPlanTerm)
 
-      const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
+      const priorityScoreLocal = (id: string) => strategyPriorityWeight(remainingRegularCourses.find((c) => c.id === id) || findCourseById(id))
       const sorted = [...eligible].sort((a, b) => {
         if (a.status === "failed" && b.status !== "failed") return -1
         if (a.status !== "failed" && b.status === "failed") return 1
         if (a.status === "active" && b.status !== "active") return -1
         if (a.status !== "active" && b.status === "active") return 1
-        const pa = priorityScoreLocal(a.id)
-        const pb = priorityScoreLocal(b.id)
+         const pa = priorityScoreLocal(a.id)
+         const pb = priorityScoreLocal(b.id)
         if (pa !== pb) return pb - pa
         const strategyDelta = strategyBias(b) - strategyBias(a)
         if (strategyDelta !== 0) return strategyDelta
@@ -4530,7 +4744,12 @@ export default function AcademicPlanner() {
         }
 
         const highImpactAvailable = selectedStrategy !== "easy" && hasSchedulableHighImpactForTerm(currentPlanYear, currentPlanTerm)
-        if (highImpactAvailable && isLowImpactCourse(course)) {
+        if (
+          highImpactAvailable &&
+          isLowImpactCourse(course) &&
+          selectedStrategy === "crucial" &&
+          currentSemesterCredits >= plannerMinCredits
+        ) {
           continue
         }
 
@@ -4701,7 +4920,7 @@ export default function AcademicPlanner() {
         return
       }
 
-      const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
+      const priorityScoreLocal = (id: string) => strategyPriorityWeight(remainingRegularCourses.find((c) => c.id === id) || findCourseById(id))
 
       const dependentsRemainAfterMove = (course: PlanCourse, targetYear: number, targetTerm: string) => {
         const dependents = dependentsMap.get(course.id) || []
@@ -4857,6 +5076,7 @@ export default function AcademicPlanner() {
     allowCurrentTermActiveMoves: true,
     minCredits: enforceStrictCredits ? plannerMinCredits : undefined,
     maxCredits: enforceStrictCredits ? plannerMaxCredits : undefined,
+    strategy: selectedStrategy,
   })
   balancedPlan.sort((a, b) => (a.year === b.year ? termOrderIdx(a.term) - termOrderIdx(b.term) : a.year - b.year))
 
@@ -4866,11 +5086,18 @@ export default function AcademicPlanner() {
 
   // Remove a course from the graduation plan
   const removeCourseFromPlan = (courseId: string) => {
+    const baseCourse = findCourseById(courseId) ?? getPlanCourseEntry(courseId)?.course ?? null
+    const pairedCourseId = baseCourse ? getPairedCourseId(baseCourse) : null
+    const idsToRemove = new Set<string>([courseId])
+    if (pairedCourseId) {
+      idsToRemove.add(pairedCourseId)
+    }
+
     setGraduationPlan((prevPlan) => {
       const updatedPlan = prevPlan
         .map((semester) => ({
           ...semester,
-          courses: semester.courses.filter((course) => course.id !== courseId),
+          courses: semester.courses.filter((course) => !idsToRemove.has(course.id)),
         }))
         .filter((semester) => semester.courses.length > 0)
 
@@ -4893,7 +5120,14 @@ export default function AcademicPlanner() {
 
   // Priority and Lock helpers
   const setCoursePriority = (courseId: string, level: keyof typeof PRIORITY_WEIGHTS) => {
-    setCoursePriorities((prev) => ({ ...prev, [courseId]: level }))
+    const pairCourseId = resolveLockPairCourseId(courseId)
+    setCoursePriorities((prev) => {
+      const next = { ...prev, [courseId]: level }
+      if (pairCourseId) {
+        next[pairCourseId] = level
+      }
+      return next
+    })
   }
   const toggleCourseLock = (courseId: string, year: number, term: string) => {
     const normalizedTerm = normalizeTermLabel(term)
@@ -5573,6 +5807,23 @@ export default function AcademicPlanner() {
                 )
               })}
             </div>
+            {selectedRegenerateMeta && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm dark:border-slate-700 dark:bg-slate-900/30">
+                <p className="font-semibold text-slate-900 dark:text-slate-100">How this profile behaves</p>
+                <p className="mt-1 text-xs text-muted-foreground">{selectedRegenerateMeta.tagline}</p>
+                <ul className="mt-3 space-y-2 text-slate-700 dark:text-slate-200">
+                  {selectedRegenerateMeta.highlights.map((point) => (
+                    <li key={point} className="flex items-start gap-2 text-sm">
+                      <span
+                        className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-500 dark:bg-blue-400"
+                        aria-hidden="true"
+                      />
+                      <span>{point}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="space-y-3">
               <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
                 <div className="flex items-center justify-between gap-3 text-sm">
@@ -6717,7 +6968,7 @@ export default function AcademicPlanner() {
                                 {/* Priority for unscheduled courses */}
                                 <TableCell>
                                   <Select
-                                    value={(coursePriorities[course.id] || "medium") as string}
+                                    value={getPriorityLabel(course.id, course) as string}
                                     onValueChange={(value) =>
                                       setCoursePriority(course.id, value as keyof typeof PRIORITY_WEIGHTS)
                                     }
@@ -6820,7 +7071,39 @@ export default function AcademicPlanner() {
 
             {/* Graduation Plan */}
             <div className="mb-6">
-              <h2 className="text-2xl font-bold mb-4">Your Graduation Plan</h2>
+              <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <h2 className="text-2xl font-bold">Your Graduation Plan</h2>
+                <div className="relative w-full md:w-96">
+                  <Input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search courses by code or name"
+                    className="pr-3"
+                  />
+                  {searchQuery.trim().length > 0 && (
+                    <div className="absolute z-30 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-md dark:border-slate-700 dark:bg-slate-900">
+                      {searchResults.length === 0 ? (
+                        <div className="px-3 py-2 text-sm text-muted-foreground">No matches found</div>
+                      ) : (
+                        searchResults.map((course) => (
+                          <button
+                            key={`search-${course.id}`}
+                            type="button"
+                            className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800"
+                            onClick={() => {
+                              focusCourseInPlan(course.id)
+                              setSearchQuery("")
+                            }}
+                          >
+                            <span className="font-semibold">{course.code}</span>
+                            <span className="text-xs text-muted-foreground line-clamp-1">{course.name}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
 
               {graduationPlan.length === 0 ? (
                 <Alert>
@@ -7126,7 +7409,7 @@ export default function AcademicPlanner() {
                                       {/* Priority (per-course) */}
                                       <TableCell>
                                         <Select
-                                          value={(coursePriorities[course.id] || "medium") as string}
+                                          value={getPriorityLabel(course.id, course) as string}
                                           onValueChange={(value) => setCoursePriority(course.id, value as keyof typeof PRIORITY_WEIGHTS)}
                                         >
                                           <SelectTrigger className="w-28">
