@@ -28,7 +28,7 @@ function simulate(startYear = new Date().getFullYear()) {
       if (c.status === 'pending' || c.status === 'active') {
         const key = `${c.year}-${c.term}`
         if (!grouped.has(key)) grouped.set(key, { year: c.year, term: c.term, courses: [] })
-        grouped.get(key).courses.push({ ...c, availableSections: getAvailableSections(c.code), needsPetition: !hasAvailableSections(c.code), recommendedSection: findBestSection(c.code) })
+        grouped.get(key).courses.push({ ...c, availableSections: getAvailableSections(c.code), needsPetition: false, recommendedSection: findBestSection(c.code) })
       }
     }
 

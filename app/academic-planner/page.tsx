@@ -42,7 +42,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { initialCourses, curriculumCodes } from "@/lib/course-data"
 import { loadCourseStatuses, loadTrackerPreferences, TRACKER_PREFERENCES_KEY } from "@/lib/course-storage"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  SelectSeparator,
+  SelectGroup,
+} from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -55,6 +63,7 @@ import {
 } from "@/components/ui/dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX, ALLOW_OVERFLOW_UNITS, PRIORITY_WEIGHTS } from "@/lib/config"
 import NonCpeNotice from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
@@ -112,12 +121,82 @@ interface DependentAdjustment {
   toTerm: string
 }
 
+interface CreditGuardrailReason {
+  type: "min" | "max"
+  semesterLabel: string
+  credits: number
+  threshold: number
+}
+
+interface CreditGuardrailDialogInfo {
+  courseCode: string
+  courseName: string
+  targetYear: number
+  targetTerm: string
+  reasons: CreditGuardrailReason[]
+}
+
+type RegenerateStrategy = "balanced" | "crucial" | "easy"
+
+interface RegeneratePreviewRow {
+  label: string
+  credits: number
+  minTarget: number
+  maxTarget: number
+}
+
 interface LinkedPairMove {
   courseId: string
   code: string
   name: string
   fromYear: number
   fromTerm: string
+}
+
+interface CreditRebalanceMove {
+  courseId: string
+  code: string
+  name: string
+  credits: number
+  fromYear: number
+  fromTerm: string
+  toYear: number
+  toTerm: string
+}
+
+interface CreditRebalancePreview {
+  minCredits: number
+  maxCredits: number
+  plan: SemesterPlan[]
+  moves: CreditRebalanceMove[]
+}
+
+interface PrereqBlockerInfo {
+  courseId: string
+  code: string
+  name: string
+  reason: "not_scheduled" | "scheduled_too_late"
+  scheduledYear?: number
+  scheduledTerm?: string
+}
+
+interface MoveTermOption {
+  year: number
+  term: string
+  label: string
+}
+
+interface BlockedTermOption extends MoveTermOption {
+  blockers: PrereqBlockerInfo[]
+}
+
+interface BlockedMoveDialogState {
+  courseId: string
+  courseCode: string
+  courseName: string
+  targetYear: number
+  targetTerm: string
+  blockers: PrereqBlockerInfo[]
 }
 
 // Move history interface
@@ -153,6 +232,30 @@ const DEFAULT_CURRICULUM_CODE_SET = new Set(
 )
 
 const TERM_ORDER = ["Term 1", "Term 2", "Term 3"] as const
+const CREDIT_INPUT_MIN = 1
+const CREDIT_INPUT_MAX = 29
+const REGENERATE_STRATEGY_STORAGE_KEY = "planner.regenerate.strategy"
+const STRICT_GUARDRAILS_STORAGE_KEY = "planner.regenerate.strict"
+const REGENERATE_STRATEGY_META: Record<RegenerateStrategy, { title: string; tagline: string; description: string }> = {
+  balanced: {
+    title: "Balanced",
+    tagline: "Evenly distributes credit load",
+    description:
+      "Uses every remaining term while keeping credit totals as close as possible so you avoid heavy swings.",
+  },
+  crucial: {
+    title: "Crucial Courses First",
+    tagline: "Pushes domino prerequisites early",
+    description:
+      "Prioritizes courses that unlock other requirements. Low-impact subjects only fill gaps once credit targets are met.",
+  },
+  easy: {
+    title: "Easy Courses First",
+    tagline: "Stacks lighter courses upfront",
+    description:
+      "Schedules non-prerequisite courses sooner so tougher chains land later—ideal if you want lighter near-term loads.",
+  },
+}
 
 const normalizeTermLabel = (term: string): string => {
   const trimmed = term?.toString().trim() ?? ""
@@ -217,6 +320,23 @@ const getTermIndex = (term: string): number => TERM_ORDER.indexOf(normalizeTermL
 
 const termsMatch = (termA: string, termB: string): boolean => normalizeTermLabel(termA) === normalizeTermLabel(termB)
 
+const courseNeedsPetitionForTerm = (course: Course | PlanCourse | null | undefined, targetTerm: string): boolean => {
+  if (!course) return false
+  if (typeof course.term !== "string" || course.term.trim() === "") return false
+  return !termsMatch(course.term, targetTerm)
+}
+
+const applyPetitionFlagsToPlan = (plan: SemesterPlan[]): SemesterPlan[] => {
+  if (!Array.isArray(plan)) return plan
+  plan.forEach((semester) => {
+    const normalizedTerm = normalizeTermLabel(semester.term)
+    semester.courses.forEach((course) => {
+      course.needsPetition = courseNeedsPetitionForTerm(course, normalizedTerm)
+    })
+  })
+  return plan
+}
+
 const getNextTerm = (year: number, term: string): { year: number; term: string } => {
   const normalized = normalizeTermLabel(term)
   if (normalized === "Term 1") return { year, term: "Term 2" }
@@ -244,6 +364,44 @@ interface ParsedPlanImportResult {
     minCreditsPerTerm?: number
     maxCreditsPerTerm?: number
   }
+  coursePriorities?: Record<string, keyof typeof PRIORITY_WEIGHTS>
+  lockedPlacements?: Record<string, { year: number; term: string }>
+}
+
+const sanitizePrioritySnapshot = (input: unknown): Record<string, keyof typeof PRIORITY_WEIGHTS> => {
+  if (!input || typeof input !== "object") return {}
+  const allowedLevels = Object.keys(PRIORITY_WEIGHTS) as Array<keyof typeof PRIORITY_WEIGHTS>
+  const sanitized: Record<string, keyof typeof PRIORITY_WEIGHTS> = {}
+
+  Object.entries(input as Record<string, unknown>).forEach(([courseId, level]) => {
+    if (typeof courseId !== "string" || typeof level !== "string") return
+    const normalized = level.toLowerCase() as keyof typeof PRIORITY_WEIGHTS
+    if (allowedLevels.includes(normalized)) {
+      sanitized[courseId] = normalized
+    }
+  })
+
+  return sanitized
+}
+
+const sanitizeLockedPlacementSnapshot = (
+  input: unknown,
+): Record<string, { year: number; term: string }> => {
+  if (!input || typeof input !== "object") return {}
+  const sanitized: Record<string, { year: number; term: string }> = {}
+
+  Object.entries(input as Record<string, unknown>).forEach(([courseId, lockData]) => {
+    if (typeof courseId !== "string" || !lockData || typeof lockData !== "object") return
+    const year = Number((lockData as any).year)
+    const term = (lockData as any).term
+    if (!Number.isFinite(year) || typeof term !== "string") return
+    sanitized[courseId] = {
+      year,
+      term: normalizeTermLabel(term),
+    }
+  })
+
+  return sanitized
 }
 
 // Quick Navigation Component
@@ -317,6 +475,8 @@ export default function AcademicPlanner() {
       pair?: LinkedPairMove | null
     } | null
   >(null)
+  const [blockedMoveDialog, setBlockedMoveDialog] = useState<BlockedMoveDialogState | null>(null)
+  const [creditGuardrailDialog, setCreditGuardrailDialog] = useState<CreditGuardrailDialogInfo | null>(null)
   const [moveSelectResetCounter, setMoveSelectResetCounter] = useState(0)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
@@ -329,6 +489,25 @@ export default function AcademicPlanner() {
   const [conflictDetail, setConflictDetail] = useState<{ title: string; conflicts: ConflictInfo[] } | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
   const [importSuccessInfo, setImportSuccessInfo] = useState<{ semesters: number; courses: number } | null>(null)
+  const [regenerateDialogOpen, setRegenerateDialogOpen] = useState(false)
+  const [plannerStrategy, setPlannerStrategy] = useState<RegenerateStrategy>("balanced")
+  const [pendingRegenerateStrategy, setPendingRegenerateStrategy] = useState<RegenerateStrategy>("balanced")
+  const [strictGuardrailsEnabled, setStrictGuardrailsEnabled] = useState(false)
+  const [pendingStrictGuardrails, setPendingStrictGuardrails] = useState(false)
+  const [regeneratePreview, setRegeneratePreview] = useState<{
+    plan: SemesterPlan[]
+    rows: RegeneratePreviewRow[]
+  } | null>(null)
+  const [regeneratePreviewLoading, setRegeneratePreviewLoading] = useState(false)
+  const [pendingRegenerateMin, setPendingRegenerateMin] = useState(RECOMMENDED_UNITS_MIN)
+  const [pendingRegenerateMax, setPendingRegenerateMax] = useState(RECOMMENDED_UNITS_MAX)
+  const [regenerateCreditError, setRegenerateCreditError] = useState<string | null>(null)
+  const [regenerateToast, setRegenerateToast] = useState<
+    { strategy: RegenerateStrategy; strict: boolean; min: number; max: number } | null
+  >(null)
+  const [lastRegenerateResult, setLastRegenerateResult] = useState<
+    { strategy: RegenerateStrategy; strict: boolean; min: number; max: number } | null
+  >(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [unscheduledCoursesRef, setUnscheduledCoursesRef] = useState<HTMLDivElement | null>(null)
   const [showFloatingUnscheduled, setShowFloatingUnscheduled] = useState(false)
@@ -341,6 +520,7 @@ export default function AcademicPlanner() {
   const [planActionsFloatingEntering, setPlanActionsFloatingEntering] = useState(false)
   const [unscheduledFloatingEntering, setUnscheduledFloatingEntering] = useState(false)
   const creditSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const pendingCreditSaveCallbacksRef = useRef<(() => void)[]>([])
   const confirmButtonShakeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const [isMobile, setIsMobile] = useState(false)
   const [planActionsCollapsed, setPlanActionsCollapsed] = useState(false)
@@ -352,10 +532,14 @@ export default function AcademicPlanner() {
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const [minCreditsPerTerm, setMinCreditsPerTerm] = useState(RECOMMENDED_UNITS_MIN)
   const [maxCreditsPerTerm, setMaxCreditsPerTerm] = useState(RECOMMENDED_UNITS_MAX)
+  const [draftMinCreditsPerTerm, setDraftMinCreditsPerTerm] = useState(RECOMMENDED_UNITS_MIN)
+  const [draftMaxCreditsPerTerm, setDraftMaxCreditsPerTerm] = useState(RECOMMENDED_UNITS_MAX)
   const [creditLimitsDirty, setCreditLimitsDirty] = useState(false)
   const [creditSaveMessage, setCreditSaveMessage] = useState<string | null>(null)
   const [creditLimitError, setCreditLimitError] = useState<string | null>(null)
   const [confirmButtonShaking, setConfirmButtonShaking] = useState(false)
+  const [creditPreview, setCreditPreview] = useState<CreditRebalancePreview | null>(null)
+  const [creditPreviewDialogOpen, setCreditPreviewDialogOpen] = useState(false)
   const [showJumpButton, setShowJumpButton] = useState(false)
   const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
   const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
@@ -385,8 +569,11 @@ export default function AcademicPlanner() {
   const shouldPromptCreditConfirmation =
     hasCustomCurriculum &&
     ((minCreditsPerTerm === RECOMMENDED_UNITS_MIN && maxCreditsPerTerm === RECOMMENDED_UNITS_MAX) || creditLimitsDirty)
-  const isMaxCreditsAtOrBelowMin = maxCreditsPerTerm <= minCreditsPerTerm
-  const effectiveMaxCreditsPerTerm = isMaxCreditsAtOrBelowMin ? RECOMMENDED_UNITS_MAX : maxCreditsPerTerm
+  const isMaxCreditsAtOrBelowMin = draftMaxCreditsPerTerm <= draftMinCreditsPerTerm
+  const normalizedAppliedMaxPreference = Number.isFinite(maxCreditsPerTerm)
+    ? Math.min(CREDIT_INPUT_MAX, Math.max(CREDIT_INPUT_MIN, Math.trunc(maxCreditsPerTerm)))
+    : RECOMMENDED_UNITS_MAX
+  const effectiveMaxCreditsPerTerm = normalizedAppliedMaxPreference
   const effectiveMaxCreditsWithOverflow = effectiveMaxCreditsPerTerm + ALLOW_OVERFLOW_UNITS
 
   const dependentCoursesMap = useMemo(() => {
@@ -446,18 +633,7 @@ export default function AcademicPlanner() {
       if (p) setCoursePriorities(JSON.parse(p))
       if (l) {
         const parsedLocks = JSON.parse(l)
-        if (parsedLocks && typeof parsedLocks === "object") {
-          const normalizedLocks: Record<string, { year: number; term: string }> = {}
-          for (const [courseId, lock] of Object.entries(parsedLocks)) {
-            if (lock && typeof lock === "object" && typeof (lock as any).year === "number") {
-              normalizedLocks[courseId] = {
-                year: (lock as any).year,
-                term: normalizeTermLabel((lock as any).term as string),
-              }
-            }
-          }
-          setLockedPlacements(normalizedLocks)
-        }
+        setLockedPlacements(normalizeLockPairsWithLinkedCourses(parsedLocks))
       }
     } catch {}
   }, [])
@@ -474,14 +650,26 @@ export default function AcademicPlanner() {
     if (typeof window === "undefined") return
     try {
       const stored = window.localStorage.getItem(CREDIT_LIMITS_STORAGE_KEY)
-      if (!stored) return
+      if (!stored) {
+        setDraftMinCreditsPerTerm(RECOMMENDED_UNITS_MIN)
+        setDraftMaxCreditsPerTerm(RECOMMENDED_UNITS_MAX)
+        setCreditLimitsDirty(false)
+        setCreditSaveMessage(null)
+        return
+      }
       const parsed = JSON.parse(stored)
+      let resolvedMin = RECOMMENDED_UNITS_MIN
+      let resolvedMax = RECOMMENDED_UNITS_MAX
       if (typeof parsed?.min === "number" && Number.isFinite(parsed.min)) {
-        setMinCreditsPerTerm(normalizeCreditInput(parsed.min))
+        resolvedMin = normalizeCreditInput(parsed.min)
       }
       if (typeof parsed?.max === "number" && Number.isFinite(parsed.max)) {
-        setMaxCreditsPerTerm(normalizeCreditInput(parsed.max))
+        resolvedMax = normalizeCreditInput(parsed.max)
       }
+      setMinCreditsPerTerm(resolvedMin)
+      setMaxCreditsPerTerm(resolvedMax)
+      setDraftMinCreditsPerTerm(resolvedMin)
+      setDraftMaxCreditsPerTerm(resolvedMax)
     } catch (err) {
       console.error("Error loading credit limits:", err)
     }
@@ -655,6 +843,21 @@ export default function AcademicPlanner() {
     return () => window.removeEventListener("storage", handleStorage)
   }, [])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const storedStrategy = window.localStorage.getItem(REGENERATE_STRATEGY_STORAGE_KEY) as RegenerateStrategy | null
+    if (storedStrategy === "balanced" || storedStrategy === "crucial" || storedStrategy === "easy") {
+      setPlannerStrategy(storedStrategy)
+      setPendingRegenerateStrategy(storedStrategy)
+    }
+    const strictRaw = window.localStorage.getItem(STRICT_GUARDRAILS_STORAGE_KEY)
+    if (strictRaw !== null) {
+      const strictValue = strictRaw === "true"
+      setStrictGuardrailsEnabled(strictValue)
+      setPendingStrictGuardrails(strictValue)
+    }
+  }, [])
+
   // Generate graduation plan when courses or available sections change
   useEffect(() => {
     if (!loading) {
@@ -671,7 +874,14 @@ export default function AcademicPlanner() {
   // Detect conflicts whenever graduation plan changes
   useEffect(() => {
     detectConflicts()
-  }, [graduationPlan])
+  }, [
+    graduationPlan,
+    strictGuardrailsEnabled,
+    minCreditsPerTerm,
+    effectiveMaxCreditsPerTerm,
+    effectiveMaxCreditsWithOverflow,
+    lastRegenerateResult,
+  ])
 
   const activeCourses = useMemo(() => courses.filter((course) => course.status === "active"), [courses])
   const activeCourseHash = useMemo(() => JSON.stringify(activeCourses.map((course) => course.id).sort()), [activeCourses])
@@ -693,6 +903,136 @@ export default function AcademicPlanner() {
     [currentTermPlanCourses],
   )
 
+  const summarizeCreditSpread = (
+    plan: SemesterPlan[],
+    targets?: { min?: number; max?: number },
+  ): RegeneratePreviewRow[] => {
+    if (!Array.isArray(plan) || plan.length === 0) {
+      return []
+    }
+    const minTargetValue = typeof targets?.min === "number" ? targets.min : minCreditsPerTerm
+    const maxTargetValue = typeof targets?.max === "number" ? targets.max : effectiveMaxCreditsPerTerm
+    return plan.map((semester) => ({
+      label: `${formatAcademicYear(semester.year)} ${semester.term}`,
+      credits: semester.courses.reduce((sum, course) => sum + (course.credits ?? 0), 0),
+      minTarget: minTargetValue,
+      maxTarget: maxTargetValue,
+    }))
+  }
+
+  const creditPreviewMoves = creditPreview?.moves ?? []
+  const creditPreviewMoveCount = creditPreviewMoves.length
+
+  const dependentsMap = useMemo(() => {
+    const map = new Map<string, string[]>()
+    courses.forEach((course) => {
+      const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+      prereqs.forEach((prereqId) => {
+        if (!map.has(prereqId)) {
+          map.set(prereqId, [])
+        }
+        map.get(prereqId)!.push(course.id)
+      })
+    })
+    return map
+  }, [courses])
+
+  const dependentsCount = useMemo(() => {
+    const counts = new Map<string, number>()
+    dependentsMap.forEach((dependents, prereqId) => counts.set(prereqId, dependents.length))
+    return counts
+  }, [dependentsMap])
+
+  useEffect(() => {
+    if (graduationPlan.length === 0) return
+    setGraduationPlan((prevPlan) => {
+      if (!prevPlan || prevPlan.length === 0) return prevPlan
+      const balanced = rebalancePlanForCreditLimits(prevPlan, {
+        allowCurrentTermActiveMoves: true,
+        minCredits: strictGuardrailsEnabled ? minCreditsPerTerm : undefined,
+        maxCredits: strictGuardrailsEnabled ? effectiveMaxCreditsPerTerm : undefined,
+      })
+      if (balanced === prevPlan) return prevPlan
+      return applyPetitionFlagsToPlan(balanced)
+    })
+  }, [
+    graduationPlan,
+    effectiveMaxCreditsPerTerm,
+    coursePriorities,
+    dependentsCount,
+    dependentsMap,
+    lockedPlacements,
+    minCreditsPerTerm,
+    currentYear,
+    currentTerm,
+    courses,
+    strictGuardrailsEnabled,
+  ])
+
+  useEffect(() => {
+    if (!regenerateDialogOpen) return
+    if (typeof window === "undefined") return
+    setRegeneratePreviewLoading(true)
+    const validationMessage = getCreditLimitValidationMessage(pendingRegenerateMin, pendingRegenerateMax)
+    if (validationMessage) {
+      setRegeneratePreview(null)
+      setRegeneratePreviewLoading(false)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      const previewPlan =
+        generateGraduationPlan({
+          strategy: pendingRegenerateStrategy,
+          strictCredits: pendingStrictGuardrails,
+          previewOnly: true,
+          minCredits: pendingRegenerateMin,
+          maxCredits: pendingRegenerateMax,
+        }) ?? []
+      setRegeneratePreview({
+        plan: previewPlan,
+        rows: summarizeCreditSpread(previewPlan, {
+          min: pendingRegenerateMin,
+          max: pendingRegenerateMax,
+        }),
+      })
+      setRegeneratePreviewLoading(false)
+    }, 80)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    regenerateDialogOpen,
+    pendingRegenerateStrategy,
+    pendingStrictGuardrails,
+    courses,
+    coursePriorities,
+    lockedPlacements,
+    currentYear,
+    currentTerm,
+    minCreditsPerTerm,
+    effectiveMaxCreditsPerTerm,
+    pendingRegenerateMin,
+    pendingRegenerateMax,
+  ])
+
+  const openRegeneratePlanDialog = useCallback(() => {
+    setPendingRegenerateStrategy(plannerStrategy)
+    setPendingStrictGuardrails(strictGuardrailsEnabled)
+    setPendingRegenerateMin(minCreditsPerTerm)
+    setPendingRegenerateMax(maxCreditsPerTerm)
+    setRegenerateCreditError(null)
+    setRegenerateDialogOpen(true)
+  }, [plannerStrategy, strictGuardrailsEnabled, minCreditsPerTerm, maxCreditsPerTerm])
+
+  const handleRegenerateImportClick = () => {
+    setRegenerateDialogOpen(false)
+    const openImport = () => setImportDialogOpen(true)
+    if (typeof window !== "undefined") {
+      window.setTimeout(openImport, 80)
+    } else {
+      openImport()
+    }
+  }
+
   useEffect(() => {
     if (typeof window === "undefined") return
     const key = `${currentYear}-${currentTerm}`
@@ -709,20 +1049,7 @@ export default function AcademicPlanner() {
     }
   }, [currentYear, currentTerm, activeCourseHash])
 
-  const confirmPeriodDialog = () => {
-    if (shouldPromptCreditConfirmation) {
-      const validationMessage = getCreditLimitValidationMessage(minCreditsPerTerm, maxCreditsPerTerm)
-      if (validationMessage) {
-        setCreditLimitError(validationMessage)
-        triggerConfirmButtonShake()
-        return
-      }
-      setCreditLimitError(null)
-    }
-
-    if (creditLimitsDirty) {
-      handleSaveCreditPreferences()
-    }
+  const finalizePeriodDialogConfirmation = useCallback(() => {
     let nextRegularInfo: { year: number; term: string; courses: Course[] } | null = null
     if (typeof window !== "undefined") {
       if (periodDialogKey) {
@@ -765,6 +1092,34 @@ export default function AcademicPlanner() {
     }
 
     setPeriodDialogOpen(false)
+    openRegeneratePlanDialog()
+  }, [
+    activeCourseHash,
+    currentTerm,
+    currentTermPlanCourses,
+    currentYear,
+    periodDialogKey,
+    startYear,
+    openRegeneratePlanDialog,
+  ])
+
+  const confirmPeriodDialog = () => {
+    if (shouldPromptCreditConfirmation) {
+      const validationMessage = getCreditLimitValidationMessage(draftMinCreditsPerTerm, draftMaxCreditsPerTerm)
+      if (validationMessage) {
+        setCreditLimitError(validationMessage)
+        triggerConfirmButtonShake()
+        return
+      }
+      setCreditLimitError(null)
+    }
+
+    if (creditLimitsDirty) {
+      handleSaveCreditPreferences(() => finalizePeriodDialogConfirmation())
+      return
+    }
+
+    finalizePeriodDialogConfirmation()
   }
 
   // Auto-detect "regular student" semesters: if a generated semester contains all
@@ -1061,10 +1416,6 @@ export default function AcademicPlanner() {
     const start = startYear + (curriculumYear - 1)
     return `S.Y ${start}-${start + 1}`
   }
-
-  const CREDIT_INPUT_MIN = 1
-  const CREDIT_INPUT_MAX = 29
-
   const normalizeCreditInput = (value: number) => {
     if (!Number.isFinite(value)) return 0
     const whole = Math.trunc(value)
@@ -1107,54 +1458,203 @@ export default function AcademicPlanner() {
     }, 550)
   }
 
-  const markCreditLimitsDirty = () => {
-    setCreditLimitsDirty(true)
-    setCreditSaveMessage(null)
-    clearCreditSaveMessageTimeout()
+  const computeCreditRebalanceMoves = (currentPlan: SemesterPlan[], nextPlan: SemesterPlan[]): CreditRebalanceMove[] => {
+    if (!Array.isArray(currentPlan) || !Array.isArray(nextPlan)) return []
+
+    const currentPlacement = new Map<string, { year: number; term: string; course?: PlanCourse }>()
+    currentPlan.forEach((semester) => {
+      semester.courses.forEach((course) => {
+        currentPlacement.set(course.id, { year: semester.year, term: semester.term, course })
+      })
+    })
+
+    const nextPlacement = new Map<string, { year: number; term: string }>()
+    nextPlan.forEach((semester) => {
+      semester.courses.forEach((course) => {
+        nextPlacement.set(course.id, { year: semester.year, term: semester.term })
+      })
+    })
+
+    const moves: CreditRebalanceMove[] = []
+    currentPlacement.forEach((fromPlacement, courseId) => {
+      const destination = nextPlacement.get(courseId)
+      if (!destination) return
+      if (fromPlacement.year === destination.year && termsMatch(fromPlacement.term, destination.term)) return
+
+      const courseDetails = fromPlacement.course || findCourseById(courseId)
+      moves.push({
+        courseId,
+        code: courseDetails?.code || "",
+        name: courseDetails?.name || "Untitled Course",
+        credits: courseDetails?.credits ?? 0,
+        fromYear: fromPlacement.year,
+        fromTerm: normalizeTermLabel(fromPlacement.term),
+        toYear: destination.year,
+        toTerm: normalizeTermLabel(destination.term),
+      })
+    })
+
+    moves.sort((a, b) => {
+      const fromComparison = compareSemesters(a.fromYear, a.fromTerm, b.fromYear, b.fromTerm)
+      if (fromComparison !== 0) return fromComparison
+      return compareSemesters(a.toYear, a.toTerm, b.toYear, b.toTerm)
+    })
+
+    return moves
   }
+
+  const synchronizeCreditDirtyState = useCallback(
+    (nextMin: number, nextMax: number) => {
+      const changed = nextMin !== minCreditsPerTerm || nextMax !== maxCreditsPerTerm
+      setCreditLimitsDirty(changed)
+      if (changed) {
+        setCreditSaveMessage(null)
+        clearCreditSaveMessageTimeout()
+      }
+    },
+    [minCreditsPerTerm, maxCreditsPerTerm],
+  )
 
   const handleMinCreditsChange = (value: number) => {
     const sanitized = normalizeCreditInput(value)
-    setMinCreditsPerTerm(sanitized)
-    markCreditLimitsDirty()
+    setDraftMinCreditsPerTerm(sanitized)
+    synchronizeCreditDirtyState(sanitized, draftMaxCreditsPerTerm)
     if (shouldPromptCreditConfirmation) {
-      setCreditLimitError(getCreditLimitValidationMessage(sanitized, maxCreditsPerTerm))
+      setCreditLimitError(getCreditLimitValidationMessage(sanitized, draftMaxCreditsPerTerm))
     }
   }
 
   const handleMaxCreditsChange = (value: number) => {
     const sanitized = normalizeCreditInput(value)
-    setMaxCreditsPerTerm(sanitized)
-    markCreditLimitsDirty()
+    setDraftMaxCreditsPerTerm(sanitized)
+    synchronizeCreditDirtyState(draftMinCreditsPerTerm, sanitized)
     if (shouldPromptCreditConfirmation) {
-      setCreditLimitError(getCreditLimitValidationMessage(minCreditsPerTerm, sanitized))
+      setCreditLimitError(getCreditLimitValidationMessage(draftMinCreditsPerTerm, sanitized))
     }
+  }
+
+  const handlePendingRegenerateMinChange = (value: number) => {
+    const sanitized = normalizeCreditInput(value)
+    setPendingRegenerateMin(sanitized)
+    setRegenerateCreditError(getCreditLimitValidationMessage(sanitized, pendingRegenerateMax))
+  }
+
+  const handlePendingRegenerateMaxChange = (value: number) => {
+    const sanitized = normalizeCreditInput(value)
+    setPendingRegenerateMax(sanitized)
+    setRegenerateCreditError(getCreditLimitValidationMessage(pendingRegenerateMin, sanitized))
   }
 
   const resetCreditLimitPreferences = () => {
-    setMinCreditsPerTerm(RECOMMENDED_UNITS_MIN)
-    setMaxCreditsPerTerm(RECOMMENDED_UNITS_MAX)
-    markCreditLimitsDirty()
+    setDraftMinCreditsPerTerm(RECOMMENDED_UNITS_MIN)
+    setDraftMaxCreditsPerTerm(RECOMMENDED_UNITS_MAX)
+    synchronizeCreditDirtyState(RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX)
     setCreditLimitError(null)
   }
 
-  const handleSaveCreditPreferences = useCallback(() => {
-    if (typeof window === "undefined") return
-    try {
-      window.localStorage.setItem(
-        CREDIT_LIMITS_STORAGE_KEY,
-        JSON.stringify({ min: minCreditsPerTerm, max: maxCreditsPerTerm }),
-      )
-      setCreditLimitsDirty(false)
-      setCreditSaveMessage("Unit limits saved")
-      clearCreditSaveMessageTimeout()
-      creditSaveTimeoutRef.current = setTimeout(() => setCreditSaveMessage(null), 4000)
-      generateGraduationPlan()
-    } catch (err) {
-      console.error("Error saving credit limits:", err)
-      setCreditSaveMessage("Unable to save limits right now.")
+  const handleSaveCreditPreferences = useCallback(
+    (afterApply?: () => void) => {
+      const validationMessage = getCreditLimitValidationMessage(draftMinCreditsPerTerm, draftMaxCreditsPerTerm)
+      if (validationMessage) {
+        setCreditLimitError(validationMessage)
+        triggerConfirmButtonShake()
+        return
+      }
+
+      setCreditLimitError(null)
+      if (!creditLimitsDirty) {
+        if (afterApply) afterApply()
+        return
+      }
+
+      if (afterApply) {
+        pendingCreditSaveCallbacksRef.current = [...pendingCreditSaveCallbacksRef.current, afterApply]
+      }
+
+      const sanitizedMin = normalizeCreditInput(draftMinCreditsPerTerm)
+      const sanitizedMax = normalizeCreditInput(draftMaxCreditsPerTerm)
+      const previewPlan = rebalancePlanForCreditLimits(graduationPlan, {
+        allowCurrentTermActiveMoves: true,
+        minCredits: sanitizedMin,
+        maxCredits: sanitizedMax,
+      })
+
+      const moves = computeCreditRebalanceMoves(graduationPlan, previewPlan)
+      setCreditPreview({
+        minCredits: sanitizedMin,
+        maxCredits: sanitizedMax,
+        plan: previewPlan,
+        moves,
+      })
+      setCreditPreviewDialogOpen(true)
+    },
+    [
+      draftMinCreditsPerTerm,
+      draftMaxCreditsPerTerm,
+      creditLimitsDirty,
+      graduationPlan,
+      triggerConfirmButtonShake,
+    ],
+  )
+
+  const handleCreditPreviewConfirm = () => {
+    if (!creditPreview) {
+      setCreditPreviewDialogOpen(false)
+      return
     }
-  }, [minCreditsPerTerm, maxCreditsPerTerm])
+
+    const { minCredits, maxCredits, plan } = creditPreview
+    setMinCreditsPerTerm(minCredits)
+    setMaxCreditsPerTerm(maxCredits)
+    setDraftMinCreditsPerTerm(minCredits)
+    setDraftMaxCreditsPerTerm(maxCredits)
+    setCreditLimitsDirty(false)
+    setCreditLimitError(null)
+
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(
+          CREDIT_LIMITS_STORAGE_KEY,
+          JSON.stringify({ min: minCredits, max: maxCredits }),
+        )
+      } catch (err) {
+        console.error("Error saving credit limits:", err)
+      }
+    }
+
+    clearCreditSaveMessageTimeout()
+    setCreditSaveMessage("Unit limits saved")
+    creditSaveTimeoutRef.current = setTimeout(() => setCreditSaveMessage(null), 4000)
+
+    if (plan !== graduationPlan) {
+      setGraduationPlan(applyPetitionFlagsToPlan(plan))
+    }
+
+    setCreditPreview(null)
+    setCreditPreviewDialogOpen(false)
+
+    const callbacks = pendingCreditSaveCallbacksRef.current
+    pendingCreditSaveCallbacksRef.current = []
+    callbacks.forEach((callback, index) => {
+      if (typeof callback !== "function") {
+        if (callback != null) {
+          console.warn(`Skipping non-function credit-save callback at index ${index}`)
+        }
+        return
+      }
+      try {
+        callback()
+      } catch (err) {
+        console.error("Error running post-save callback:", err)
+      }
+    })
+  }
+
+  const handleCreditPreviewCancel = () => {
+    pendingCreditSaveCallbacksRef.current = []
+    setCreditPreviewDialogOpen(false)
+    setCreditPreview(null)
+  }
 
   // Helper to get the previous term
   const getPreviousTerm = (year: number, term: string): { year: number; term: string } => {
@@ -1231,6 +1731,37 @@ export default function AcademicPlanner() {
     return null
   }
 
+  const resolveLockPairCourseId = (courseId: string): string | null => {
+    const baseCourse = findCourseById(courseId) ?? getPlanCourseEntry(courseId)?.course ?? null
+    if (!baseCourse) return null
+    return getPairedCourseId(baseCourse)
+  }
+
+  function normalizeLockPairsWithLinkedCourses(
+    locks: Record<string, { year?: number; term?: string }> | null | undefined,
+  ): Record<string, { year: number; term: string }> {
+    if (!locks || typeof locks !== "object") return {}
+
+    const normalized: Record<string, { year: number; term: string }> = {}
+
+    Object.entries(locks).forEach(([courseId, placement]) => {
+      if (!placement || typeof placement !== "object") return
+      const year = Number((placement as any).year)
+      const termValue = (placement as any).term
+      if (!Number.isFinite(year) || typeof termValue !== "string" || termValue.trim() === "") return
+
+      const normalizedTerm = normalizeTermLabel(termValue)
+      normalized[courseId] = { year, term: normalizedTerm }
+
+      const pairId = resolveLockPairCourseId(courseId)
+      if (pairId && pairId !== courseId) {
+        normalized[pairId] = { year, term: normalizedTerm }
+      }
+    })
+
+    return normalized
+  }
+
   const getLinkedPairMoveInfo = (
     courseId: string,
     targetYear: number,
@@ -1289,6 +1820,372 @@ export default function AcademicPlanner() {
       return planned
     })
   }
+    const rebalancePlanForCreditLimits = (
+      inputPlan: SemesterPlan[],
+      options?: { allowCurrentTermActiveMoves?: boolean; minCredits?: number; maxCredits?: number },
+    ): SemesterPlan[] => {
+      if (!Array.isArray(inputPlan) || inputPlan.length === 0) {
+        return inputPlan
+      }
+
+      const normalizedOptionMax = Number.isFinite(options?.maxCredits)
+        ? Math.min(CREDIT_INPUT_MAX, Math.max(CREDIT_INPUT_MIN, Math.trunc(options!.maxCredits!)))
+        : null
+      const normalizedOptionMin = Number.isFinite(options?.minCredits)
+        ? Math.min(CREDIT_INPUT_MAX, Math.max(CREDIT_INPUT_MIN, Math.trunc(options!.minCredits!)))
+        : null
+
+      const limit = normalizedOptionMax ?? effectiveMaxCreditsPerTerm
+      if (!Number.isFinite(limit) || limit <= 0) {
+        return inputPlan
+      }
+
+      const minTarget = normalizedOptionMin ?? minCreditsPerTerm
+
+      const allowCurrentTermActiveMoves = Boolean(options?.allowCurrentTermActiveMoves)
+
+      type MoveBundle = {
+        courses: PlanCourse[]
+        totalCredits: number
+      }
+
+      let mutated = false
+      const plan = inputPlan.map((semester) => ({
+        ...semester,
+        term: normalizeTermLabel(semester.term),
+        courses: [...semester.courses],
+      }))
+
+      const courseScheduleMap = new Map<string, { year: number; term: string }>()
+      plan.forEach((semester) => {
+        semester.courses.forEach((course) => {
+          courseScheduleMap.set(course.id, { year: semester.year, term: semester.term })
+        })
+      })
+
+      const priorityScore = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
+
+      const dependentsRemainAfterMove = (course: PlanCourse, targetYear: number, targetTerm: string) => {
+        const dependents = dependentsMap.get(course.id) || []
+        return dependents.every((dependentId) => {
+          const placement = courseScheduleMap.get(dependentId)
+          if (!placement) return true
+          return isAtLeastOneTermAfter(placement.year, placement.term, targetYear, targetTerm)
+        })
+      }
+
+      const canScheduleCourse = (course: PlanCourse, targetYear: number, targetTerm: string) => {
+        const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+        if (prereqs.length === 0) return true
+        return prereqs.every((prereqId) => {
+          const prereqCourse = findCourseById(prereqId)
+          if (prereqCourse && prereqCourse.status === "passed") return true
+          const placement = courseScheduleMap.get(prereqId)
+          if (!placement) return false
+          return isAtLeastOneTermAfter(targetYear, targetTerm, placement.year, placement.term)
+        })
+      }
+
+      const sumCredits = (semester: SemesterPlan) => semester.courses.reduce((sum, course) => sum + course.credits, 0)
+      const containsInternship = (semester: SemesterPlan) => semester.courses.some((course) => isInternshipCourse(course))
+
+      const ensureFutureSemester = (bundle: MoveBundle): SemesterPlan | null => {
+        if (plan.length === 0) return null
+        if (bundle.totalCredits > limit) return null
+        let anchorYear = plan[plan.length - 1].year
+        let anchorTerm = plan[plan.length - 1].term
+        const MAX_ITER = 12
+        for (let iter = 0; iter < MAX_ITER; iter++) {
+          const next = getNextTerm(anchorYear, anchorTerm)
+          anchorYear = next.year
+          anchorTerm = next.term
+          if (!bundle.courses.every((bundleCourse) => canScheduleCourse(bundleCourse, anchorYear, anchorTerm))) continue
+          if (!bundle.courses.every((bundleCourse) => dependentsRemainAfterMove(bundleCourse, anchorYear, anchorTerm))) continue
+          const newSemester: SemesterPlan = { year: anchorYear, term: normalizeTermLabel(anchorTerm), courses: [] }
+          plan.push(newSemester)
+          return newSemester
+        }
+        return null
+      }
+
+      const findTargetSemester = (
+        bundle: MoveBundle,
+        fromSemester: SemesterPlan,
+        fromIndex: number,
+      ): SemesterPlan | null => {
+        const candidates: { semester: SemesterPlan; index: number; load: number; belowMin: boolean }[] = []
+        const movesNonInternshipCourse = bundle.courses.some((bundleCourse) => !isInternshipCourse(bundleCourse))
+
+        for (let idx = fromIndex + 1; idx < plan.length; idx++) {
+          const candidate = plan[idx]
+          if (!isAtLeastOneTermAfter(candidate.year, candidate.term, fromSemester.year, fromSemester.term)) continue
+          if (!bundle.courses.every((bundleCourse) => canScheduleCourse(bundleCourse, candidate.year, candidate.term))) continue
+          if (!bundle.courses.every((bundleCourse) => dependentsRemainAfterMove(bundleCourse, candidate.year, candidate.term))) continue
+          if (containsInternship(candidate) && movesNonInternshipCourse) continue
+
+          const currentLoad = sumCredits(candidate)
+          if (currentLoad + bundle.totalCredits > limit) continue
+
+          const belowMin = currentLoad < minTarget && !containsInternship(candidate)
+          candidates.push({ semester: candidate, index: idx, load: currentLoad, belowMin })
+        }
+
+        if (candidates.length > 0) {
+          candidates.sort((a, b) => {
+            if (a.belowMin !== b.belowMin) return a.belowMin ? -1 : 1
+            if (a.load !== b.load) return a.load - b.load
+            return a.index - b.index
+          })
+          return candidates[0].semester
+        }
+
+        return ensureFutureSemester(bundle)
+      }
+
+      const isMovable = (course: PlanCourse, semester: SemesterPlan) => {
+        if (lockedPlacements[course.id]) return false
+        if (isInternshipCourse(course)) return false
+        if (
+          !allowCurrentTermActiveMoves &&
+          semester.year === currentYear &&
+          termsMatch(semester.term, currentTerm) &&
+          course.status === "active"
+        ) {
+          return false
+        }
+        return true
+      }
+
+      const createMoveBundle = (course: PlanCourse, fromSemester: SemesterPlan): MoveBundle | null => {
+        const stillInSemester = fromSemester.courses.some((candidate) => candidate.id === course.id)
+        if (!stillInSemester) return null
+
+        const bundleCourses: PlanCourse[] = [course]
+        const pairId = getPairedCourseId(course)
+        if (pairId) {
+          const pairedCourse = fromSemester.courses.find((candidate) => candidate.id === pairId)
+          if (pairedCourse) {
+            if (!isMovable(pairedCourse, fromSemester)) {
+              return null
+            }
+            if (!bundleCourses.some((existing) => existing.id === pairedCourse.id)) {
+              bundleCourses.push(pairedCourse)
+            }
+          }
+        }
+
+        const totalCredits = bundleCourses.reduce((sum, bundleCourse) => sum + (bundleCourse.credits ?? 0), 0)
+        if (totalCredits <= 0) return null
+
+        return { courses: bundleCourses, totalCredits }
+      }
+
+      const findCourseForUnderloadedSemester = (targetSemester: SemesterPlan, targetIndex: number) => {
+        if (containsInternship(targetSemester)) return null
+        const targetLoad = sumCredits(targetSemester)
+        const remainingCapacity = limit - targetLoad
+        if (remainingCapacity <= 0) return null
+
+        const candidates: {
+          bundle: MoveBundle
+          sourceSemester: SemesterPlan
+          sourceIndex: number
+          priority: number
+        }[] = []
+
+        for (let idx = plan.length - 1; idx > targetIndex; idx--) {
+          const sourceSemester = plan[idx]
+          if (sourceSemester.courses.length === 0) continue
+          if (!isAtLeastOneTermAfter(sourceSemester.year, sourceSemester.term, targetSemester.year, targetSemester.term)) continue
+
+          const sourceContainsInternship = containsInternship(sourceSemester)
+          if (sourceContainsInternship) continue
+
+          for (const course of sourceSemester.courses) {
+            if (!isMovable(course, sourceSemester)) continue
+            const bundle = createMoveBundle(course, sourceSemester)
+            if (!bundle) continue
+            if (bundle.totalCredits > remainingCapacity) continue
+            if (!bundle.courses.every((bundleCourse) => canScheduleCourse(bundleCourse, targetSemester.year, targetSemester.term))) continue
+            if (!bundle.courses.every((bundleCourse) => dependentsRemainAfterMove(bundleCourse, targetSemester.year, targetSemester.term))) continue
+
+            const priority = bundle.courses.reduce(
+              (score, bundleCourse) => Math.max(score, priorityScore(bundleCourse.id)),
+              Number.NEGATIVE_INFINITY,
+            )
+
+            candidates.push({
+              bundle,
+              sourceSemester,
+              sourceIndex: idx,
+              priority: Number.isFinite(priority) ? priority : priorityScore(course.id),
+            })
+          }
+        }
+
+        if (candidates.length === 0) return null
+
+        candidates.sort((a, b) => {
+          if (a.priority !== b.priority) return b.priority - a.priority
+          if (a.bundle.totalCredits !== b.bundle.totalCredits) return b.bundle.totalCredits - a.bundle.totalCredits
+          return a.sourceIndex - b.sourceIndex
+        })
+
+        return candidates[0]
+      }
+
+      for (let i = 0; i < plan.length; i++) {
+        const semester = plan[i]
+        if (semester.courses.length === 0) continue
+        if (containsInternship(semester)) continue
+
+        let total = sumCredits(semester)
+        if (total <= limit) continue
+
+        const movable = semester.courses.filter((course) => isMovable(course, semester))
+        if (movable.length === 0) continue
+
+        movable.sort((a, b) => {
+          const pa = priorityScore(a.id)
+          const pb = priorityScore(b.id)
+          if (pa !== pb) return pa - pb
+
+          const strategyDelta = strategyBias(b) - strategyBias(a)
+          if (strategyDelta !== 0) return strategyDelta
+          const depA = dependentsCount.get(a.id) || 0
+          const depB = dependentsCount.get(b.id) || 0
+          if (depA !== depB) return depA - depB
+          return b.credits - a.credits
+        })
+
+        for (const course of movable) {
+          if (!semester.courses.some((candidate) => candidate.id === course.id)) continue
+          total = sumCredits(semester)
+          if (total <= limit) break
+
+          const bundle = createMoveBundle(course, semester)
+          if (!bundle) continue
+
+          const targetSemester = findTargetSemester(bundle, semester, i)
+          if (!targetSemester) continue
+          if (!isAtLeastOneTermAfter(targetSemester.year, targetSemester.term, semester.year, semester.term)) continue
+          if (sumCredits(targetSemester) + bundle.totalCredits > limit) continue
+
+          const removedCourses: PlanCourse[] = []
+          let removalSucceeded = true
+          for (const bundleCourse of bundle.courses) {
+            const removeIndex = semester.courses.findIndex((c) => c.id === bundleCourse.id)
+            if (removeIndex === -1) {
+              removalSucceeded = false
+              break
+            }
+            const [removedCourse] = semester.courses.splice(removeIndex, 1)
+            removedCourses.push(removedCourse ?? bundleCourse)
+          }
+
+          if (!removalSucceeded) {
+            semester.courses.push(...removedCourses)
+            continue
+          }
+
+          removedCourses.forEach((movedCourse) => {
+            targetSemester.courses.push(movedCourse)
+            courseScheduleMap.set(movedCourse.id, { year: targetSemester.year, term: targetSemester.term })
+          })
+          mutated = true
+        }
+      }
+
+      const MAX_PULL_ITERATIONS = 50
+      const enforceMinimumCredits = Number.isFinite(minTarget) && minTarget > 0
+      if (enforceMinimumCredits) {
+        for (let i = 0; i < plan.length; i++) {
+          const semester = plan[i]
+          if (semester.courses.length === 0) continue
+
+          const hasRegularCourses = semester.courses.some((course) => !isInternshipCourse(course))
+          if (!hasRegularCourses) continue
+
+          let total = sumCredits(semester)
+          if (total >= minTarget) continue
+
+          let iterations = 0
+          while (total < minTarget && iterations < MAX_PULL_ITERATIONS) {
+            const candidate = findCourseForUnderloadedSemester(semester, i)
+            if (!candidate) break
+
+            const removedCourses: PlanCourse[] = []
+            let removalSucceeded = true
+            for (const bundleCourse of candidate.bundle.courses) {
+              const removeIndex = candidate.sourceSemester.courses.findIndex((c) => c.id === bundleCourse.id)
+              if (removeIndex === -1) {
+                removalSucceeded = false
+                break
+              }
+              const [removedCourse] = candidate.sourceSemester.courses.splice(removeIndex, 1)
+              removedCourses.push(removedCourse ?? bundleCourse)
+            }
+
+            if (!removalSucceeded) {
+              candidate.sourceSemester.courses.push(...removedCourses)
+              iterations += 1
+              continue
+            }
+
+            removedCourses.forEach((movedCourse) => {
+              semester.courses.push(movedCourse)
+              courseScheduleMap.set(movedCourse.id, { year: semester.year, term: semester.term })
+            })
+            mutated = true
+            total = sumCredits(semester)
+            iterations += 1
+          }
+        }
+      }
+
+      const internshipOnlySemesters = plan.filter(
+        (semester) =>
+          semester.courses.length > 0 && semester.courses.every((course) => isInternshipCourse(course)),
+      )
+      const nonInternshipSemesters = plan.filter((semester) =>
+        semester.courses.some((course) => !isInternshipCourse(course)),
+      )
+
+      if (internshipOnlySemesters.length > 0 && nonInternshipSemesters.length > 0) {
+        const lastNonInternship = nonInternshipSemesters.reduce<SemesterPlan | null>((latest, semester) => {
+          if (!latest) return semester
+          return compareSemesters(semester.year, semester.term, latest.year, latest.term) > 0 ? semester : latest
+        }, null)
+
+        if (lastNonInternship) {
+          let cursorYear = lastNonInternship.year
+          let cursorTerm = lastNonInternship.term
+          const orderedInternships = [...internshipOnlySemesters].sort((a, b) =>
+            compareSemesters(a.year, a.term, b.year, b.term),
+          )
+
+          orderedInternships.forEach((internshipSemester) => {
+            const nextSlot = getNextTerm(cursorYear, cursorTerm)
+            cursorYear = nextSlot.year
+            cursorTerm = normalizeTermLabel(nextSlot.term)
+            if (internshipSemester.year !== cursorYear || !termsMatch(internshipSemester.term, cursorTerm)) {
+              internshipSemester.year = cursorYear
+              internshipSemester.term = cursorTerm
+              mutated = true
+            }
+          })
+        }
+      }
+
+      if (!mutated) {
+        return inputPlan
+      }
+
+      const filtered = plan.filter((semester) => semester.courses.length > 0)
+      filtered.sort((a, b) => (a.year === b.year ? getTermIndex(a.term) - getTermIndex(b.term) : a.year - b.year))
+      return applyPetitionFlagsToPlan(filtered)
+    }
+
 
   // Helper to check if one term is at least one term after another
   const isAtLeastOneTermAfter = (
@@ -1307,34 +2204,171 @@ export default function AcademicPlanner() {
     return false
   }
 
+  const getPrereqBlockersForTerm = (
+    course: PlanCourse | Course,
+    targetYear: number,
+    targetTerm: string,
+  ): PrereqBlockerInfo[] => {
+    const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+    const blockers: PrereqBlockerInfo[] = []
+
+    prereqs.forEach((prereqId) => {
+      const prereqCourse = findCourseById(prereqId)
+      const prereqLabel = {
+        code: prereqCourse?.code ?? prereqId,
+        name: prereqCourse?.name ?? prereqCourse?.code ?? prereqId,
+      }
+
+      if (prereqCourse && prereqCourse.status === "passed") {
+        return
+      }
+
+      const prereqLocation = getCourseLocationInPlan(prereqId)
+      if (!prereqLocation) {
+        blockers.push({
+          courseId: prereqId,
+          code: prereqLabel.code,
+          name: prereqLabel.name,
+          reason: "not_scheduled",
+        })
+        return
+      }
+
+      if (!isAtLeastOneTermAfter(targetYear, targetTerm, prereqLocation.year, prereqLocation.term)) {
+        blockers.push({
+          courseId: prereqId,
+          code: prereqLabel.code,
+          name: prereqCourse?.name ?? prereqLabel.code,
+          reason: "scheduled_too_late",
+          scheduledYear: prereqLocation.year,
+          scheduledTerm: prereqLocation.term,
+        })
+      }
+    })
+
+    return blockers
+  }
+
+  interface PlannedCreditMove {
+    courseId: string
+    toYear: number
+    toTerm: string
+  }
+
+  const getCreditGuardrailReasonsForMoves = (plannedMoves: PlannedCreditMove[]): CreditGuardrailReason[] => {
+    if (!Array.isArray(plannedMoves) || plannedMoves.length === 0) return []
+
+    const snapshots = new Map<
+      string,
+      { year: number; term: string; credits: number; totalCourses: number; nonInternshipCount: number }
+    >()
+
+    graduationPlan.forEach((semester) => {
+      snapshots.set(`${semester.year}-${semester.term}`, {
+        year: semester.year,
+        term: semester.term,
+        credits: semester.courses.reduce((sum, course) => sum + (course.credits ?? 0), 0),
+        totalCourses: semester.courses.length,
+        nonInternshipCount: semester.courses.filter((course) => !isInternshipCourse(course)).length,
+      })
+    })
+
+    const affectedKeys = new Set<string>()
+
+    plannedMoves.forEach((move) => {
+      const entry = getPlanCourseEntry(move.courseId)
+      if (!entry) return
+
+      const credits = entry.course.credits ?? 0
+      if (!Number.isFinite(credits) || credits <= 0) return
+
+      const courseIsInternship = isInternshipCourse(entry.course)
+
+      const fromKey = `${entry.year}-${entry.term}`
+      const fromSnapshot = snapshots.get(fromKey)
+      if (fromSnapshot) {
+        fromSnapshot.credits = Math.max(0, fromSnapshot.credits - credits)
+        fromSnapshot.totalCourses = Math.max(0, fromSnapshot.totalCourses - 1)
+        if (!courseIsInternship) {
+          fromSnapshot.nonInternshipCount = Math.max(0, fromSnapshot.nonInternshipCount - 1)
+        }
+        affectedKeys.add(fromKey)
+      }
+
+      const normalizedTargetTerm = normalizeTermLabel(move.toTerm)
+      const toKey = `${move.toYear}-${normalizedTargetTerm}`
+      let toSnapshot = snapshots.get(toKey)
+      if (!toSnapshot) {
+        toSnapshot = {
+          year: move.toYear,
+          term: normalizedTargetTerm,
+          credits: 0,
+          totalCourses: 0,
+          nonInternshipCount: 0,
+        }
+        snapshots.set(toKey, toSnapshot)
+      }
+      toSnapshot.credits += credits
+      toSnapshot.totalCourses += 1
+      if (!courseIsInternship) {
+        toSnapshot.nonInternshipCount += 1
+      }
+      affectedKeys.add(toKey)
+    })
+
+    const reasons: CreditGuardrailReason[] = []
+    affectedKeys.forEach((key) => {
+      const snapshot = snapshots.get(key)
+      if (!snapshot) return
+      const label = `${formatAcademicYear(snapshot.year)} ${snapshot.term}`
+
+      if (snapshot.credits > effectiveMaxCreditsPerTerm) {
+        reasons.push({
+          type: "max",
+          semesterLabel: label,
+          credits: snapshot.credits,
+          threshold: effectiveMaxCreditsPerTerm,
+        })
+      }
+
+      const hasRegularCourses = snapshot.nonInternshipCount > 0
+      if (hasRegularCourses && snapshot.credits < minCreditsPerTerm) {
+        reasons.push({
+          type: "min",
+          semesterLabel: label,
+          credits: snapshot.credits,
+          threshold: minCreditsPerTerm,
+        })
+      }
+    })
+
+    return reasons
+  }
+
+  const summarizeBlockerCodes = (blockers: PrereqBlockerInfo[]): string => {
+    if (blockers.length === 0) return ""
+    if (blockers.length <= 3) {
+      return blockers.map((blocker) => blocker.code).join(", ")
+    }
+    const displayed = blockers.slice(0, 3).map((blocker) => blocker.code)
+    return `${displayed.join(", ")} +${blockers.length - 3} more`
+  }
+
   // Helper to check if a course can be scheduled in a given term (considering prerequisites)
   const canScheduleInTerm = (course: PlanCourse, targetYear: number, targetTerm: string): boolean => {
-    // Check if all prerequisites have been scheduled at least one term before OR are already passed
-    const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
-    return prereqs.every((prereqId) => {
-      // First check if prerequisite is already passed
-      const prereqCourse = findCourseById(prereqId)
-      if (prereqCourse && prereqCourse.status === "passed") {
-        return true
-      }
-
-      // Then check if prerequisite is scheduled in the current plan
-      for (const semester of graduationPlan) {
-        const prereqCourse = semester.courses.find((c) => c.id === prereqId)
-        if (prereqCourse) {
-          return isAtLeastOneTermAfter(targetYear, targetTerm, semester.year, semester.term)
-        }
-      }
-
-      // If prerequisite is not found in plan and not passed, it can't be scheduled
-      return false
-    })
+    return getPrereqBlockersForTerm(course, targetYear, targetTerm).length === 0
   }
 
   // Detect conflicts in the graduation plan
   const detectConflicts = () => {
     const newConflicts: ConflictInfo[] = []
     const lowLoadSemesters: { semester: SemesterPlan; total: number }[] = []
+    const strictRangeActive = Boolean(lastRegenerateResult?.strict && strictGuardrailsEnabled)
+    const strictHighViolations: { semester: SemesterPlan; total: number }[] = []
+    const strictLowViolations: { semester: SemesterPlan; total: number }[] = []
+    const minTarget = Number.isFinite(minCreditsPerTerm)
+      ? Math.min(CREDIT_INPUT_MAX, Math.max(CREDIT_INPUT_MIN, Math.trunc(minCreditsPerTerm)))
+      : RECOMMENDED_UNITS_MIN
 
     graduationPlan.forEach((semester) => {
       // Check credit limits (configurable)
@@ -1354,11 +2388,17 @@ export default function AcademicPlanner() {
           message: `${formatAcademicYear(semester.year)} ${semester.term} exceeds your maximum target load: ${totalCredits} credits (target max: ${effectiveMaxCreditsPerTerm}).`,
           affectedCourses: semester.courses.map((c) => c.id),
         })
-      } else if (totalCredits < minCreditsPerTerm) {
+        if (strictRangeActive) {
+          strictHighViolations.push({ semester, total: totalCredits })
+        }
+      } else if (totalCredits < minTarget) {
         // Defer below-min warnings for a single aggregated message later, excluding internship-only terms
         const isInternshipOnly = semester.courses.length > 0 && semester.courses.every((c) => isInternshipCourse(c))
         if (!isInternshipOnly) {
           lowLoadSemesters.push({ semester, total: totalCredits })
+          if (strictRangeActive) {
+            strictLowViolations.push({ semester, total: totalCredits })
+          }
         }
       }
 
@@ -1463,19 +2503,43 @@ export default function AcademicPlanner() {
       })
     }
 
+    if (strictRangeActive && (strictHighViolations.length > 0 || strictLowViolations.length > 0)) {
+      const formatViolation = (entry: { semester: SemesterPlan; total: number }, type: "high" | "low") =>
+        `${formatAcademicYear(entry.semester.year)} ${entry.semester.term} ${
+          type === "high" ? "above" : "below"
+        } range (${entry.total}u)`
+      const summaryParts = [
+        ...strictHighViolations.map((entry) => formatViolation(entry, "high")),
+        ...strictLowViolations.map((entry) => formatViolation(entry, "low")),
+      ]
+      const strictSummary = summaryParts.join("; ")
+      const affectedStrictCourses = Array.from(
+        new Set(
+          [...strictHighViolations, ...strictLowViolations].flatMap((entry) => entry.semester.courses.map((c) => c.id)),
+        ),
+      )
+      newConflicts.push({
+        type: "credit_limit",
+        severity: "warning",
+        message: `Strict guardrails (${minCreditsPerTerm}-${effectiveMaxCreditsPerTerm}u) couldn't be matched exactly: ${strictSummary}. Consider importing a saved plan or loosening the range.`,
+        affectedCourses: affectedStrictCourses,
+      })
+    }
+
     setConflicts(newConflicts)
   }
 
-  // Generate available terms for moving a course
-  const getAvailableTermsForMove = (course: PlanCourse): { year: number; term: string; label: string }[] => {
-    const terms: { year: number; term: string; label: string }[] = []
-    const maxYears = 5 // Look ahead 5 years
+  const getTermMoveOptions = (
+    course: PlanCourse,
+  ): { available: MoveTermOption[]; blocked: BlockedTermOption[] } => {
+    const available: MoveTermOption[] = []
+    const blocked: BlockedTermOption[] = []
+    const maxYears = 5
 
     for (let yearOffset = 0; yearOffset < maxYears; yearOffset++) {
       const year = currentYear + yearOffset
 
       for (const term of TERM_ORDER) {
-        // Skip terms that are in the past
         if (year === currentYear) {
           const currentTermIndex = getTermIndex(currentTerm)
           const termIndex = getTermIndex(term)
@@ -1484,18 +2548,27 @@ export default function AcademicPlanner() {
           continue
         }
 
-        // Check if the course can be scheduled in this term
-        if (canScheduleInTerm(course, year, term)) {
-          terms.push({
-            year,
-            term,
-            label: `${formatAcademicYear(year)} - ${term}`,
-          })
+        const option: MoveTermOption = {
+          year,
+          term,
+          label: `${formatAcademicYear(year)} - ${term}`,
+        }
+        const blockers = getPrereqBlockersForTerm(course, year, term)
+
+        if (blockers.length === 0) {
+          available.push(option)
+        } else {
+          blocked.push({ ...option, blockers })
         }
       }
     }
 
-    return terms
+    return { available, blocked }
+  }
+
+  // Generate available terms for moving a course
+  const getAvailableTermsForMove = (course: PlanCourse): MoveTermOption[] => {
+    return getTermMoveOptions(course).available
   }
 
   // Get common available terms for multiple courses
@@ -1631,7 +2704,7 @@ export default function AcademicPlanner() {
         return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
-      return updatedPlan
+      return applyPetitionFlagsToPlan(updatedPlan)
     })
   }
 
@@ -1689,7 +2762,7 @@ export default function AcademicPlanner() {
         }
       })
 
-      return updatedPlan
+      return applyPetitionFlagsToPlan(updatedPlan)
     })
   }
 
@@ -1733,12 +2806,155 @@ export default function AcademicPlanner() {
     const pairMove = getLinkedPairMoveInfo(courseId, targetYear, targetTerm)
 
     if (adjustments.length === 0 && !pairMove) {
+      const creditReasons = getCreditGuardrailReasonsForMoves([
+        { courseId, toYear: targetYear, toTerm: targetTerm },
+      ])
+      if (creditReasons.length > 0) {
+        const course = findCourseById(courseId)
+        setCreditGuardrailDialog({
+          courseCode: course?.code ?? courseId,
+          courseName: course?.name ?? course?.code ?? courseId,
+          targetYear,
+          targetTerm: normalizeTermLabel(targetTerm),
+          reasons: creditReasons,
+        })
+        resetMoveSelects()
+        return
+      }
       moveCourseToTerm(courseId, targetYear, targetTerm)
       resetMoveSelects()
       return
     }
 
     setPendingPrereqShift({ courseId, targetYear, targetTerm, adjustments, pair: pairMove ?? null })
+  }
+
+  const openBlockedMoveDialog = (courseId: string, targetYear: number, targetTerm: string): boolean => {
+    const course = findCourseById(courseId)
+    if (!course) return false
+    const blockers = getPrereqBlockersForTerm(course, targetYear, targetTerm)
+    if (blockers.length === 0) return false
+
+    setBlockedMoveDialog({
+      courseId,
+      courseCode: course.code,
+      courseName: course.name,
+      targetYear,
+      targetTerm: normalizeTermLabel(targetTerm),
+      blockers,
+    })
+    return true
+  }
+
+  const handleBlockedMoveAttempt = (
+    courseId: string,
+    targetYear: number,
+    targetTerm: string,
+    shouldResetMoveSelect = false,
+  ) => {
+    const dialogOpened = openBlockedMoveDialog(courseId, targetYear, targetTerm)
+    if (dialogOpened && shouldResetMoveSelect) {
+      resetMoveSelects()
+    }
+  }
+
+  const handleMoveSelectChange = (courseId: string, rawValue: string) => {
+    if (!rawValue) return
+    if (rawValue.startsWith("blocked|")) {
+      const [, yearStr, termLabel] = rawValue.split("|")
+      const parsedYear = Number.parseInt(yearStr, 10)
+      if (Number.isFinite(parsedYear) && termLabel) {
+        handleBlockedMoveAttempt(courseId, parsedYear, termLabel, true)
+      }
+      return
+    }
+
+    const [yearStr, term] = rawValue.split("-")
+    if (!yearStr || !term) return
+    const parsedYear = Number.parseInt(yearStr, 10)
+    if (!Number.isFinite(parsedYear)) return
+    handleCourseMoveRequest(courseId, parsedYear, term)
+  }
+
+  const handleAddCourseSelectChange = (courseId: string, rawValue: string) => {
+    if (!rawValue) return
+    if (rawValue.startsWith("blocked|")) {
+      const [, yearStr, termLabel] = rawValue.split("|")
+      const parsedYear = Number.parseInt(yearStr, 10)
+      if (Number.isFinite(parsedYear) && termLabel) {
+        handleBlockedMoveAttempt(courseId, parsedYear, termLabel)
+      }
+      return
+    }
+
+    const [yearStr, term] = rawValue.split("-")
+    if (!yearStr || !term) return
+    const parsedYear = Number.parseInt(yearStr, 10)
+    if (!Number.isFinite(parsedYear)) return
+    addCourseToTerm(courseId, parsedYear, term)
+  }
+
+  const persistRegeneratePreferences = (strategy: RegenerateStrategy, strict: boolean) => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(REGENERATE_STRATEGY_STORAGE_KEY, strategy)
+      window.localStorage.setItem(STRICT_GUARDRAILS_STORAGE_KEY, strict ? "true" : "false")
+    } catch (err) {
+      console.warn("Unable to persist regenerate preferences", err)
+    }
+  }
+
+  const handleConfirmRegeneratePlan = () => {
+    const validationMessage = getCreditLimitValidationMessage(pendingRegenerateMin, pendingRegenerateMax)
+    if (validationMessage) {
+      setRegenerateCreditError(validationMessage)
+      return
+    }
+
+    const nextMin = normalizeCreditInput(pendingRegenerateMin)
+    const nextMax = normalizeCreditInput(pendingRegenerateMax)
+    setRegenerateCreditError(null)
+
+    if (nextMin !== minCreditsPerTerm || nextMax !== maxCreditsPerTerm) {
+      setMinCreditsPerTerm(nextMin)
+      setMaxCreditsPerTerm(nextMax)
+      setDraftMinCreditsPerTerm(nextMin)
+      setDraftMaxCreditsPerTerm(nextMax)
+      setCreditLimitsDirty(false)
+      setCreditSaveMessage(null)
+      setCreditLimitError(null)
+      clearCreditSaveMessageTimeout()
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(CREDIT_LIMITS_STORAGE_KEY, JSON.stringify({ min: nextMin, max: nextMax }))
+        } catch (err) {
+          console.warn("Unable to persist regenerate credit limits", err)
+        }
+      }
+    }
+
+    generateGraduationPlan({
+      strategy: pendingRegenerateStrategy,
+      strictCredits: pendingStrictGuardrails,
+      minCredits: nextMin,
+      maxCredits: nextMax,
+    })
+    setPlannerStrategy(pendingRegenerateStrategy)
+    setStrictGuardrailsEnabled(pendingStrictGuardrails)
+    persistRegeneratePreferences(pendingRegenerateStrategy, pendingStrictGuardrails)
+    setLastRegenerateResult({
+      strategy: pendingRegenerateStrategy,
+      strict: pendingStrictGuardrails,
+      min: nextMin,
+      max: nextMax,
+    })
+    setRegenerateDialogOpen(false)
+    setRegenerateToast({
+      strategy: pendingRegenerateStrategy,
+      strict: pendingStrictGuardrails,
+      min: nextMin,
+      max: nextMax,
+    })
   }
 
   const confirmPrereqShiftMove = () => {
@@ -1752,25 +2968,51 @@ export default function AcademicPlanner() {
       return
     }
 
+    const targetTermNormalized = normalizeTermLabel(targetTerm)
+    const plannedMoves: PlannedCreditMove[] = [
+      { courseId, toYear: targetYear, toTerm: targetTermNormalized },
+    ]
+    if (pair) {
+      plannedMoves.push({ courseId: pair.courseId, toYear: targetYear, toTerm: targetTermNormalized })
+    }
+    if (adjustments.length > 0) {
+      adjustments.forEach((adjustment) => {
+        plannedMoves.push({ courseId: adjustment.courseId, toYear: adjustment.toYear, toTerm: adjustment.toTerm })
+      })
+    }
+
+    const creditReasons = getCreditGuardrailReasonsForMoves(plannedMoves)
+    if (creditReasons.length > 0) {
+      const course = findCourseById(courseId)
+      setCreditGuardrailDialog({
+        courseCode: course?.code ?? courseId,
+        courseName: course?.name ?? course?.code ?? courseId,
+        targetYear,
+        targetTerm: targetTermNormalized,
+        reasons: creditReasons,
+      })
+      return
+    }
+
     const changes: MoveHistoryEntry["changes"] = []
 
-    moveCourseToTermSilent(courseId, targetYear, targetTerm)
+    moveCourseToTermSilent(courseId, targetYear, targetTermNormalized)
     changes.push({
       courseId,
       fromYear: origin.year,
       fromTerm: origin.term,
       toYear: targetYear,
-      toTerm: targetTerm,
+      toTerm: targetTermNormalized,
     })
 
     if (pair) {
-      moveCourseToTermSilent(pair.courseId, targetYear, targetTerm)
+      moveCourseToTermSilent(pair.courseId, targetYear, targetTermNormalized)
       changes.push({
         courseId: pair.courseId,
         fromYear: pair.fromYear,
         fromTerm: pair.fromTerm,
         toYear: targetYear,
-        toTerm: targetTerm,
+        toTerm: targetTermNormalized,
       })
     }
 
@@ -1896,7 +3138,7 @@ export default function AcademicPlanner() {
         return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
-      return updatedPlan
+      return applyPetitionFlagsToPlan(updatedPlan)
     })
 
     // Add to history
@@ -2021,6 +3263,11 @@ export default function AcademicPlanner() {
       maxCreditsPerTerm,
     }
 
+    const prioritySnapshot = sanitizePrioritySnapshot(coursePriorities)
+    const lockedSnapshot = sanitizeLockedPlacementSnapshot(lockedPlacements)
+    const priorityJson = Object.keys(prioritySnapshot).length > 0 ? JSON.stringify(prioritySnapshot) : null
+    const lockedJson = Object.keys(lockedSnapshot).length > 0 ? JSON.stringify(lockedSnapshot) : null
+
     const exportTimestamp = new Date().toISOString()
 
     let content = ""
@@ -2035,6 +3282,8 @@ export default function AcademicPlanner() {
             exportedAt: exportTimestamp,
             creditPreferences: creditPreferenceSnapshot,
             semesters: planData,
+            ...(priorityJson ? { coursePriorities: prioritySnapshot } : {}),
+            ...(lockedJson ? { lockedPlacements: lockedSnapshot } : {}),
           },
           null,
           2,
@@ -2053,6 +3302,12 @@ export default function AcademicPlanner() {
         content += `\n# Credit Preferences\n`
         content += `# MinCreditsPerTerm:${creditPreferenceSnapshot.minCreditsPerTerm}\n`
         content += `# MaxCreditsPerTerm:${creditPreferenceSnapshot.maxCreditsPerTerm}\n`
+        if (priorityJson) {
+          content += `# COURSE_PRIORITIES_JSON=${priorityJson}\n`
+        }
+        if (lockedJson) {
+          content += `# LOCKED_PLACEMENTS_JSON=${lockedJson}\n`
+        }
         filename = "graduation-plan.csv"
         mimeType = "text/csv"
         break
@@ -2072,6 +3327,12 @@ export default function AcademicPlanner() {
         content += "CREDIT PREFERENCES\n"
         content += `Min Credits Per Term: ${creditPreferenceSnapshot.minCreditsPerTerm}\n`
         content += `Max Credits Per Term: ${creditPreferenceSnapshot.maxCreditsPerTerm}\n`
+        if (priorityJson) {
+          content += `COURSE_PRIORITIES_JSON=${priorityJson}\n`
+        }
+        if (lockedJson) {
+          content += `LOCKED_PLACEMENTS_JSON=${lockedJson}\n`
+        }
         filename = "graduation-plan.txt"
         mimeType = "text/plain"
         break
@@ -2135,9 +3396,13 @@ export default function AcademicPlanner() {
           if (!Array.isArray(data?.semesters)) {
             throw new Error("JSON must contain a semesters array")
           }
+          const priorityMeta = sanitizePrioritySnapshot(data.coursePriorities)
+          const lockedMeta = sanitizeLockedPlacementSnapshot(data.lockedPlacements)
           return {
             semesters: mapSemesters(data.semesters),
             creditPreferences: extractCreditPreferences(data.creditPreferences ?? data),
+            coursePriorities: Object.keys(priorityMeta).length > 0 ? priorityMeta : undefined,
+            lockedPlacements: Object.keys(lockedMeta).length > 0 ? lockedMeta : undefined,
           }
         } catch (error) {
           throw new Error("Invalid JSON format")
@@ -2157,6 +3422,8 @@ export default function AcademicPlanner() {
 
           const semesterMap = new Map<string, ImportedPlanData>()
           let creditPreferences: ParsedPlanImportResult["creditPreferences"]
+          let coursePrioritiesSnapshot: ParsedPlanImportResult["coursePriorities"]
+          let lockedPlacementSnapshot: ParsedPlanImportResult["lockedPlacements"]
 
           const assignCreditPreference = (
             key: keyof NonNullable<ParsedPlanImportResult["creditPreferences"]>,
@@ -2178,6 +3445,37 @@ export default function AcademicPlanner() {
               const maxMatch = line.match(/maxcreditsperterm\s*[:=]\s*(\d+)/i)
               if (minMatch) assignCreditPreference("minCreditsPerTerm", Number(minMatch[1]))
               if (maxMatch) assignCreditPreference("maxCreditsPerTerm", Number(maxMatch[1]))
+
+              const metadataMatch = line.replace(/^#+\s*/, "").match(/^([A-Z_]+)\s*[:=]\s*(.+)$/i)
+              if (metadataMatch) {
+                const key = metadataMatch[1].trim().toUpperCase()
+                const jsonPayload = metadataMatch[2].trim()
+                if (key === "COURSE_PRIORITIES_JSON") {
+                  try {
+                    const parsed = JSON.parse(jsonPayload)
+                    const sanitized = sanitizePrioritySnapshot(parsed)
+                    if (Object.keys(sanitized).length > 0) {
+                      coursePrioritiesSnapshot = sanitized
+                    }
+                  } catch (err) {
+                    console.warn("Failed to parse COURSE_PRIORITIES_JSON metadata:", err)
+                  }
+                  continue
+                }
+                if (key === "LOCKED_PLACEMENTS_JSON") {
+                  try {
+                    const parsed = JSON.parse(jsonPayload)
+                    const sanitized = sanitizeLockedPlacementSnapshot(parsed)
+                    if (Object.keys(sanitized).length > 0) {
+                      lockedPlacementSnapshot = sanitized
+                    }
+                  } catch (err) {
+                    console.warn("Failed to parse LOCKED_PLACEMENTS_JSON metadata:", err)
+                  }
+                  continue
+                }
+              }
+
               continue
             }
 
@@ -2225,6 +3523,8 @@ export default function AcademicPlanner() {
           return {
             semesters: Array.from(semesterMap.values()),
             creditPreferences,
+            coursePriorities: coursePrioritiesSnapshot,
+            lockedPlacements: lockedPlacementSnapshot,
           }
         } catch (error) {
           throw new Error("Invalid CSV format")
@@ -2235,6 +3535,8 @@ export default function AcademicPlanner() {
           const sections = content.split(/\n\s*\n/)
           const planData: ImportedPlanData[] = []
           let creditPreferences: ParsedPlanImportResult["creditPreferences"]
+          let coursePrioritiesSnapshot: ParsedPlanImportResult["coursePriorities"]
+          let lockedPlacementSnapshot: ParsedPlanImportResult["lockedPlacements"]
 
           for (const section of sections) {
             const lines = section.trim().split("\n")
@@ -2298,7 +3600,38 @@ export default function AcademicPlanner() {
             creditPreferences.maxCreditsPerTerm = Number(maxMatch[1])
           }
 
-          return { semesters: planData, creditPreferences }
+          const priorityMatch = content.match(/COURSE_PRIORITIES_JSON\s*[:=]\s*([^\r\n]+)/i)
+          if (priorityMatch) {
+            try {
+              const parsed = JSON.parse(priorityMatch[1].trim())
+              const sanitized = sanitizePrioritySnapshot(parsed)
+              if (Object.keys(sanitized).length > 0) {
+                coursePrioritiesSnapshot = sanitized
+              }
+            } catch (err) {
+              console.warn("Failed to parse COURSE_PRIORITIES_JSON metadata:", err)
+            }
+          }
+
+          const lockedMatch = content.match(/LOCKED_PLACEMENTS_JSON\s*[:=]\s*([^\r\n]+)/i)
+          if (lockedMatch) {
+            try {
+              const parsed = JSON.parse(lockedMatch[1].trim())
+              const sanitized = sanitizeLockedPlacementSnapshot(parsed)
+              if (Object.keys(sanitized).length > 0) {
+                lockedPlacementSnapshot = sanitized
+              }
+            } catch (err) {
+              console.warn("Failed to parse LOCKED_PLACEMENTS_JSON metadata:", err)
+            }
+          }
+
+          return {
+            semesters: planData,
+            creditPreferences,
+            coursePriorities: coursePrioritiesSnapshot,
+            lockedPlacements: lockedPlacementSnapshot,
+          }
         } catch (error) {
           throw new Error("Invalid TXT format")
         }
@@ -2330,7 +3663,12 @@ export default function AcademicPlanner() {
           throw new Error("Unsupported file format. Please use JSON, CSV, or TXT files.")
       }
 
-      const { semesters: importedSemesters, creditPreferences: importedCreditPrefs } = parseImportedData(content, format)
+      const {
+        semesters: importedSemesters,
+        creditPreferences: importedCreditPrefs,
+        coursePriorities: importedPriorities,
+        lockedPlacements: importedLocks,
+      } = parseImportedData(content, format)
 
       if (importedSemesters.length === 0) {
         throw new Error("No valid semester data found in the file")
@@ -2352,7 +3690,7 @@ export default function AcademicPlanner() {
 
           // Create plan course
           const availableSections = getAvailableSections(course.code)
-          const needsPetition = !hasAvailableSections(course.code)
+          const needsPetition = courseNeedsPetitionForTerm(course, semesterData.term)
           let recommendedSection: CourseSection | undefined
 
           // Try to find the section if specified
@@ -2390,24 +3728,21 @@ export default function AcademicPlanner() {
         return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
-      // Update graduation plan
-      setGraduationPlan(newPlan)
+      const balancedImportedPlan = rebalancePlanForCreditLimits(newPlan, { allowCurrentTermActiveMoves: true })
+      const finalPlan = balancedImportedPlan === newPlan ? newPlan : balancedImportedPlan
 
-      // Initialize all semesters as closed except the first one
-      const newOpenSemesters: { [key: string]: boolean } = {}
-      newPlan.forEach((semester, index) => {
-        const key = `${semester.year}-${semester.term}`
-        newOpenSemesters[key] = index === 0
-      })
-      setOpenSemesters(newOpenSemesters)
+      // Update graduation plan
+      setGraduationPlan(applyPetitionFlagsToPlan(finalPlan))
+
+      syncOpenSemesters(finalPlan)
 
       // Clear move history since we're starting fresh
       setMoveHistory([])
 
       // Close import dialog
       setImportDialogOpen(false)
-      const totalCourses = newPlan.reduce((sum, s) => sum + s.courses.length, 0)
-      setImportSuccessInfo({ semesters: newPlan.length, courses: totalCourses })
+      const totalCourses = finalPlan.reduce((sum, s) => sum + s.courses.length, 0)
+      setImportSuccessInfo({ semesters: finalPlan.length, courses: totalCourses })
 
       if (importedCreditPrefs) {
         const hasImportedMin = typeof importedCreditPrefs.minCreditsPerTerm === "number"
@@ -2422,8 +3757,11 @@ export default function AcademicPlanner() {
 
           setMinCreditsPerTerm(nextMin)
           setMaxCreditsPerTerm(nextMax)
+          setDraftMinCreditsPerTerm(nextMin)
+          setDraftMaxCreditsPerTerm(nextMax)
           setCreditLimitsDirty(false)
           setCreditSaveMessage(null)
+          setCreditLimitError(null)
           clearCreditSaveMessageTimeout()
 
           if (typeof window !== "undefined") {
@@ -2438,6 +3776,9 @@ export default function AcademicPlanner() {
           }
         }
       }
+
+      setCoursePriorities(importedPriorities ?? {})
+      setLockedPlacements(normalizeLockPairsWithLinkedCourses(importedLocks))
     } catch (error: any) {
       setImportError(error.message)
     }
@@ -2450,6 +3791,47 @@ export default function AcademicPlanner() {
       importPlan(file)
     }
   }
+
+  const syncOpenSemesters = useCallback(
+    (plan: SemesterPlan[]) => {
+      setOpenSemesters((prev) => {
+        if (!Array.isArray(plan) || plan.length === 0) {
+          return {}
+        }
+
+        const next: { [key: string]: boolean } = {}
+        let hasOpen = false
+        const normalizedCurrentTerm = normalizeTermLabel(currentTerm)
+
+        plan.forEach((semester, index) => {
+          const key = `${semester.year}-${semester.term}`
+          const prevValue = prev[key]
+          const isCurrentSemester =
+            semester.year === currentYear && termsMatch(semester.term, normalizedCurrentTerm)
+          const shouldOpen =
+            typeof prevValue === "boolean" ? prevValue : isCurrentSemester ? true : index === 0
+
+          next[key] = shouldOpen
+          if (shouldOpen) {
+            hasOpen = true
+          }
+        })
+
+        if (!hasOpen && plan.length > 0) {
+          const currentKey = `${currentYear}-${normalizedCurrentTerm}`
+          if (currentKey in next) {
+            next[currentKey] = true
+          } else {
+            const firstKey = `${plan[0].year}-${plan[0].term}`
+            next[firstKey] = true
+          }
+        }
+
+        return next
+      })
+    },
+    [currentYear, currentTerm],
+  )
 
   // Toggle course selection
   const toggleCourseSelection = (courseId: string) => {
@@ -2483,7 +3865,23 @@ export default function AcademicPlanner() {
   }
 
   // Generate a graduation plan for the student
-  const generateGraduationPlan = () => {
+  const generateGraduationPlan = (
+    options?: {
+      strategy?: RegenerateStrategy
+      strictCredits?: boolean
+      previewOnly?: boolean
+      minCredits?: number
+      maxCredits?: number
+    },
+  ): SemesterPlan[] | undefined => {
+    const selectedStrategy = options?.strategy ?? plannerStrategy
+    const enforceStrictCredits = options?.strictCredits ?? strictGuardrailsEnabled
+    const plannerMinCredits =
+      typeof options?.minCredits === "number" ? options.minCredits : minCreditsPerTerm
+    const plannerMaxCredits =
+      typeof options?.maxCredits === "number" ? options.maxCredits : effectiveMaxCreditsPerTerm
+    let lastGeneratedPlan: SemesterPlan[] | null = null
+
     // Get all pending, active, and failed courses
     const pendingCourses = courses.filter((course) => course.status === "pending")
     const activeCourses = courses.filter((course) => course.status === "active")
@@ -2500,21 +3898,22 @@ export default function AcademicPlanner() {
         a.year === b.year ? getTermIndex(a.term) - getTermIndex(b.term) : a.year - b.year,
       )
 
-      const newOpenSemesters: { [key: string]: boolean } = {}
-      ordered.forEach((semester, index) => {
-        const key = `${semester.year}-${semester.term}`
-        newOpenSemesters[key] = index === 0
-      })
+      const flagged = applyPetitionFlagsToPlan(ordered)
+      lastGeneratedPlan = flagged
 
-      setOpenSemesters(newOpenSemesters)
-      setGraduationPlan(ordered)
+      if (options?.previewOnly) {
+        return flagged
+      }
+
+      syncOpenSemesters(flagged)
+      setGraduationPlan(flagged)
       setMoveHistory([])
+      return flagged
     }
 
     // If we have no courses to plan, return early
     if (pendingCourses.length === 0 && activeCourses.length === 0 && failedCourses.length === 0) {
-      finalizePlan([])
-      return
+      return finalizePlan([])
     }
 
     // If no courses are marked as active or passed, recommend the curriculum order (group by original year/term)
@@ -2536,7 +3935,7 @@ export default function AcademicPlanner() {
           const planCourse: PlanCourse = {
             ...c,
             availableSections: getAvailableSections(c.code),
-            needsPetition: !hasAvailableSections(c.code),
+            needsPetition: courseNeedsPetitionForTerm(c, c.term),
             recommendedSection: findBestSection(c.code),
           }
           grouped.get(key)!.courses.push(planCourse)
@@ -2544,8 +3943,7 @@ export default function AcademicPlanner() {
       }
 
       const planArray = Array.from(grouped.values())
-      finalizePlan(planArray)
-      return
+      return finalizePlan(planArray)
     }
 
     // Separate internship and regular courses
@@ -2567,13 +3965,6 @@ export default function AcademicPlanner() {
       dependencyGraph.set(course.id, Array.isArray((course as any).prerequisites) ? course.prerequisites : [])
     })
 
-    // Compute dependents count for prioritization (how many courses depend on this)
-    const dependentsCount = new Map<string, number>()
-    courses.forEach((c) => {
-      const prereqs = Array.isArray((c as any).prerequisites) ? c.prerequisites : []
-      prereqs.forEach((p) => dependentsCount.set(p, (dependentsCount.get(p) || 0) + 1))
-    })
-
     // Perform topological sort to respect prerequisites for regular courses
     const sortedRegularCourses = topologicalSort(regularCourses, dependencyGraph)
 
@@ -2587,7 +3978,24 @@ export default function AcademicPlanner() {
     let currentPlanTerm = currentTerm
     let currentSemesterCourses: PlanCourse[] = []
     let currentSemesterCredits = 0
-    const TARGET_MAX_CREDITS = effectiveMaxCreditsPerTerm
+    const TARGET_MAX_CREDITS = plannerMaxCredits
+
+    const upsertSemesterCourses = (year: number, term: string, coursesToAdd: PlanCourse[]) => {
+      if (!coursesToAdd || coursesToAdd.length === 0) return
+      const normalizedTerm = normalizeTermLabel(term)
+      const existing = plan.find((s) => s.year === year && termsMatch(s.term, normalizedTerm))
+      if (existing) {
+        const existingIds = new Set(existing.courses.map((c) => c.id))
+        coursesToAdd.forEach((course) => {
+          if (!existingIds.has(course.id)) {
+            existing.courses.push(course)
+            existingIds.add(course.id)
+          }
+        })
+      } else {
+        plan.push({ year, term: normalizedTerm, courses: [...coursesToAdd] })
+      }
+    }
 
     // Reserved internship terms (determine from curriculum)
     // Reserved terms disabled; internships will be scheduled dynamically after regular courses
@@ -2610,7 +4018,7 @@ export default function AcademicPlanner() {
       // normalize prerequisites to avoid runtime errors from legacy saved data
       prerequisites: Array.isArray((c as any).prerequisites) ? c.prerequisites : [],
       availableSections: getAvailableSections(c.code),
-      needsPetition: !hasAvailableSections(c.code),
+      needsPetition: false,
       recommendedSection: findBestSection(c.code),
     })
 
@@ -2741,27 +4149,18 @@ export default function AcademicPlanner() {
     const regularInfo = detectRegularStudent()
     if (regularInfo.isRegular) {
       const regularPlan = buildRegularCurriculumPlan(regularInfo)
-      finalizePlan(regularPlan)
-      return
+      return finalizePlan(regularPlan)
     }
 
     // Pre-place locked courses into their specified terms
     const lockedIds = new Set(Object.keys(lockedPlacements))
     if (lockedIds.size > 0) {
-      const addLockedToPlan = (pc: PlanCourse, y: number, t: string) => {
-        const idx = plan.findIndex((s) => s.year === y && termsMatch(s.term, t))
-        if (idx === -1) {
-          plan.push({ year: y, term: normalizeTermLabel(t), courses: [pc] })
-        } else {
-          plan[idx].courses.push(pc)
-        }
-      }
       allCoursesToSchedule.forEach((c) => {
         if (lockedIds.has(c.id)) {
           const lock = lockedPlacements[c.id]
           if (lock) {
             const pc = toEnhance(c)
-            addLockedToPlan(pc, lock.year, lock.term)
+            upsertSemesterCourses(lock.year, lock.term, [pc])
             courseScheduleMap.set(c.id, { year: lock.year, term: normalizeTermLabel(lock.term) })
           }
         }
@@ -2786,6 +4185,37 @@ export default function AcademicPlanner() {
     // Enhance remaining courses with section availability info
     const enhancedRegularCourses: PlanCourse[] = topologicalSort(unlockedRegular, dependencyGraph).map(toEnhance)
     const enhancedInternshipCourses: PlanCourse[] = unlockedInternships.map(toEnhance)
+
+    const criticalityScore = (course: PlanCourse | Course | null | undefined): number => {
+      if (!course) return 0
+      const dependents = dependentsCount.get(course.id) || 0
+      const prereqCount = Array.isArray((course as any).prerequisites) ? course.prerequisites.length : 0
+      return dependents * 2 + prereqCount
+    }
+
+    const isLowImpactCourse = (course: PlanCourse | Course | null | undefined): boolean => criticalityScore(course) === 0
+
+    const hasSchedulableHighImpactForTerm = (year: number, term: string): boolean => {
+      return remainingRegularCourses.some((c) => {
+        if (isLowImpactCourse(c)) return false
+        return canScheduleInTermLocal(c, year, term)
+      })
+    }
+
+    const strategyBias = (course: PlanCourse): number => {
+      const score = criticalityScore(course)
+      const lightness = Math.max(0, 6 - (course.credits || 0)) // reward lighter loads for "easy"
+
+      if (selectedStrategy === "crucial") {
+        // Strongly boost courses that unlock dependents so they land earlier
+        return score * 10 + (course.credits >= 3 ? 1 : 0)
+      }
+      if (selectedStrategy === "easy") {
+        // Prefer low-impact, lighter courses first
+        return lightness * 5 - score * 3
+      }
+      return 0
+    }
 
     // Helper to check if a course can be scheduled in a given term
     const canScheduleInTermLocal = (course: PlanCourse | null | undefined, year: number, term: string): boolean => {
@@ -2832,14 +4262,14 @@ export default function AcademicPlanner() {
       const pb = priorityScore(b.id)
       if (pa !== pb) return pb - pa
 
+      // Strategy bias: push crucial (high criticality) earlier, easy (light/low-impact) earlier
+      const strategyDelta = strategyBias(b) - strategyBias(a)
+      if (strategyDelta !== 0) return strategyDelta
+
       // Fifth: unlocks more dependents earlier
       const da = dependentsCount.get(a.id) || 0
       const db = dependentsCount.get(b.id) || 0
       if (da !== db) return db - da
-
-      // Sixth: courses with available sections first
-      if (!a.needsPetition && b.needsPetition) return -1
-      if (a.needsPetition && !b.needsPetition) return 1
 
       // Finally: by original year and term
       if (a.year !== b.year) return a.year - b.year
@@ -2858,7 +4288,7 @@ export default function AcademicPlanner() {
 
     const tryFillToMin = () => {
       let added = 0
-      if (currentSemesterCredits >= minCreditsPerTerm) return added
+      if (currentSemesterCredits >= plannerMinCredits) return added
       const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
       const candidates = [...remainingRegularCourses].sort((a, b) => {
         if (a.status === "failed" && b.status !== "failed") return -1
@@ -2872,18 +4302,23 @@ export default function AcademicPlanner() {
         const pa = priorityScoreLocal(a.id)
         const pb = priorityScoreLocal(b.id)
         if (pa !== pb) return pb - pa
+        const strategyDelta = strategyBias(b) - strategyBias(a)
+        if (strategyDelta !== 0) return strategyDelta
         const da = dependentsCount.get(a.id) || 0
         const db = dependentsCount.get(b.id) || 0
         if (da !== db) return db - da
-        if (!a.needsPetition && b.needsPetition) return -1
-        if (a.needsPetition && !b.needsPetition) return 1
+        const aPetitionNow = courseNeedsPetitionForTerm(a, currentPlanTerm)
+        const bPetitionNow = courseNeedsPetitionForTerm(b, currentPlanTerm)
+        if (!aPetitionNow && bPetitionNow) return -1
+        if (aPetitionNow && !bPetitionNow) return 1
         if (a.year !== b.year) return a.year - b.year
         return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
       for (const course of candidates) {
-        if (currentSemesterCredits >= minCreditsPerTerm) break
+        if (currentSemesterCredits >= plannerMinCredits) break
         if (!canScheduleInTermLocal(course, currentPlanYear, currentPlanTerm)) continue
+        if (selectedStrategy !== "easy" && hasSchedulableHighImpactForTerm(currentPlanYear, currentPlanTerm) && isLowImpactCourse(course)) continue
         if (currentSemesterCredits + course.credits > TARGET_MAX_CREDITS) continue
         currentSemesterCourses.push(course)
         currentSemesterCredits += course.credits
@@ -2920,6 +4355,48 @@ export default function AcademicPlanner() {
       }
     }
 
+    const tryPlaceCourseInExistingPlan = (course: PlanCourse): boolean => {
+      const lock = lockedPlacements[course.id]
+      const computeCredits = (semester: SemesterPlan) => semester.courses.reduce((sum, c) => sum + c.credits, 0)
+
+      const order: number[] = []
+      for (let idx = 0; idx < plan.length; idx++) {
+        order.push(idx)
+      }
+      const iterationOrder = selectedStrategy === "crucial" ? order : order.reverse()
+
+      for (const i of iterationOrder) {
+        const semester = plan[i]
+
+        if (lock && !(semester.year === lock.year && termsMatch(semester.term, lock.term))) {
+          continue
+        }
+
+        const containsInternship = semester.courses.some((c) => isInternshipCourse(c))
+        if (containsInternship && !isInternshipCourse(course)) {
+          continue
+        }
+
+        if (!canScheduleInTermLocal(course, semester.year, semester.term)) {
+          continue
+        }
+
+        if (computeCredits(semester) + course.credits > TARGET_MAX_CREDITS) {
+          continue
+        }
+
+        semester.courses.push(course)
+        courseScheduleMap.set(course.id, { year: semester.year, term: semester.term })
+        const idx = remainingRegularCourses.findIndex((c) => c.id === course.id)
+        if (idx !== -1) {
+          remainingRegularCourses.splice(idx, 1)
+        }
+        return true
+      }
+
+      return false
+    }
+
     // Try to pack up to the recommended max via small search (singles and pairs)
     const tryPackToMax = () => {
       let packed = 0
@@ -2928,6 +4405,8 @@ export default function AcademicPlanner() {
 
       const eligible = remainingRegularCourses.filter((c) => canScheduleInTermLocal(c, currentPlanYear, currentPlanTerm))
       if (eligible.length === 0) return packed
+
+      const preferHighImpact = selectedStrategy !== "easy" && hasSchedulableHighImpactForTerm(currentPlanYear, currentPlanTerm)
 
       const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
       const sorted = [...eligible].sort((a, b) => {
@@ -2938,11 +4417,15 @@ export default function AcademicPlanner() {
         const pa = priorityScoreLocal(a.id)
         const pb = priorityScoreLocal(b.id)
         if (pa !== pb) return pb - pa
+        const strategyDelta = strategyBias(b) - strategyBias(a)
+        if (strategyDelta !== 0) return strategyDelta
         const da = dependentsCount.get(a.id) || 0
         const db = dependentsCount.get(b.id) || 0
         if (da !== db) return db - da
-        if (!a.needsPetition && b.needsPetition) return -1
-        if (a.needsPetition && !b.needsPetition) return 1
+        const aPetitionNow = courseNeedsPetitionForTerm(a, currentPlanTerm)
+        const bPetitionNow = courseNeedsPetitionForTerm(b, currentPlanTerm)
+        if (!aPetitionNow && bPetitionNow) return -1
+        if (aPetitionNow && !bPetitionNow) return 1
         if (a.year !== b.year) return a.year - b.year
         return getTermIndex(a.term) - getTermIndex(b.term)
       })
@@ -2955,6 +4438,10 @@ export default function AcademicPlanner() {
         let bestCredits = -1
         for (const c of top) {
           if (c.credits <= cap) {
+            if (preferHighImpact && isLowImpactCourse(c)) continue
+            if (selectedStrategy === "crucial" && isLowImpactCourse(c) && currentSemesterCredits >= plannerMinCredits) {
+              continue
+            }
             if (c.credits > bestCredits) {
               best = c
               bestCredits = c.credits
@@ -2974,7 +4461,14 @@ export default function AcademicPlanner() {
       if (remainingSoft <= 0) return packed
 
       const pool = remainingRegularCourses.filter((c) => canScheduleInTermLocal(c, currentPlanYear, currentPlanTerm))
-      const poolTop = pool.sort((a, b) => b.credits - a.credits).slice(0, TOP)
+      const poolTop = pool
+        .sort((a, b) => {
+          if (b.credits !== a.credits) return b.credits - a.credits
+          const delta = strategyBias(b) - strategyBias(a)
+          if (delta !== 0) return delta
+          return (dependentsCount.get(b.id) || 0) - (dependentsCount.get(a.id) || 0)
+        })
+        .slice(0, TOP)
       let pairAdded = false
       for (let i = 0; i < poolTop.length && !pairAdded; i++) {
         for (let j = i + 1; j < poolTop.length && !pairAdded; j++) {
@@ -2982,6 +4476,12 @@ export default function AcademicPlanner() {
           const b = poolTop[j]
           const sum = a.credits + b.credits
           if (sum <= remainingSoft) {
+            if (preferHighImpact && (isLowImpactCourse(a) || isLowImpactCourse(b))) continue
+            if (selectedStrategy === "crucial" && currentSemesterCredits >= plannerMinCredits) {
+              if (isLowImpactCourse(a) || isLowImpactCourse(b)) {
+                continue
+              }
+            }
             if (currentSemesterCredits + a.credits <= TARGET_MAX_CREDITS) {
               addCourseNow(a)
               packed++
@@ -3011,7 +4511,7 @@ export default function AcademicPlanner() {
         currentPlanTerm = nxt.term
         // reset current semester buffer when skipping
         if (currentSemesterCourses.length > 0) {
-          plan.push({ year: currentPlanYear, term: currentPlanTerm, courses: [...currentSemesterCourses] })
+          upsertSemesterCourses(currentPlanYear, currentPlanTerm, [...currentSemesterCourses])
           currentSemesterCourses = []
           currentSemesterCredits = 0
         }
@@ -3029,15 +4529,20 @@ export default function AcademicPlanner() {
           continue // Skip this course for now
         }
 
+        const highImpactAvailable = selectedStrategy !== "easy" && hasSchedulableHighImpactForTerm(currentPlanYear, currentPlanTerm)
+        if (highImpactAvailable && isLowImpactCourse(course)) {
+          continue
+        }
+
     // If adding this course would exceed the target limit, start a new semester (do not add if it would exceed)
         if (currentSemesterCredits + course.credits > TARGET_MAX_CREDITS) {
+          if (tryPlaceCourseInExistingPlan(course)) {
+            coursesScheduledThisIteration++
+            continue
+          }
           if (currentSemesterCourses.length > 0) {
             // Save current semester
-            plan.push({
-              year: currentPlanYear,
-              term: currentPlanTerm,
-              courses: [...currentSemesterCourses],
-            })
+            upsertSemesterCourses(currentPlanYear, currentPlanTerm, [...currentSemesterCourses])
 
             // Move to next term
             const next = getNextTerm(currentPlanYear, currentPlanTerm)
@@ -3065,13 +4570,13 @@ export default function AcademicPlanner() {
       }
 
       // Try to reach the recommended minimum load using eligible remaining courses
-      if (currentSemesterCredits < minCreditsPerTerm) {
+      if (currentSemesterCredits < plannerMinCredits) {
         const newlyAdded = tryFillToMin()
         coursesScheduledThisIteration += newlyAdded
       }
 
       // After min is satisfied, try to pack toward the recommended max with small search
-      if (currentSemesterCredits >= minCreditsPerTerm && currentSemesterCredits < effectiveMaxCreditsPerTerm) {
+      if (currentSemesterCredits >= plannerMinCredits && currentSemesterCredits < plannerMaxCredits) {
         const packed = tryPackToMax()
         coursesScheduledThisIteration += packed
       }
@@ -3080,11 +4585,7 @@ export default function AcademicPlanner() {
       if (coursesScheduledThisIteration === 0 && remainingRegularCourses.length > 0) {
         // Save current semester if it has courses
         if (currentSemesterCourses.length > 0) {
-          plan.push({
-            year: currentPlanYear,
-            term: currentPlanTerm,
-            courses: [...currentSemesterCourses],
-          })
+          upsertSemesterCourses(currentPlanYear, currentPlanTerm, [...currentSemesterCourses])
           currentSemesterCourses = []
           currentSemesterCredits = 0
         }
@@ -3100,11 +4601,7 @@ export default function AcademicPlanner() {
 
     // Add the last semester if it has regular courses
     if (currentSemesterCourses.length > 0) {
-      plan.push({
-        year: currentPlanYear,
-        term: currentPlanTerm,
-        courses: currentSemesterCourses,
-      })
+      upsertSemesterCourses(currentPlanYear, currentPlanTerm, [...currentSemesterCourses])
 
       // Move to next term for internships
       const next = getNextTerm(currentPlanYear, currentPlanTerm)
@@ -3165,15 +4662,11 @@ export default function AcademicPlanner() {
     // Helper to place a single internship into a specific term
     const placeInternship = (course: PlanCourse | undefined, year: number, term: string) => {
       if (!course) return
-      // If the semester already exists in plan, append; otherwise create it
       const existingIndex = plan.findIndex((s) => s.year === year && termsMatch(s.term, term))
       if (existingIndex !== -1) {
-        // Ensure only internships are in this semester
         plan[existingIndex].courses = plan[existingIndex].courses.filter((c) => isInternshipCourse(c))
-        plan[existingIndex].courses.push(course)
-      } else {
-        plan.push({ year, term: normalizeTermLabel(term), courses: [course] })
       }
+      upsertSemesterCourses(year, term, [course])
       courseScheduleMap.set(course.id, { year, term: normalizeTermLabel(term) })
       console.log(`Scheduled internship ${course.code} in ${year} ${term}`)
     }
@@ -3201,6 +4694,107 @@ export default function AcademicPlanner() {
     const termOrderIdx = (t: string) => getTermIndex(t)
     const hasInternOnly = (sem: SemesterPlan) => sem.courses.length > 0 && sem.courses.every((c) => isInternshipCourse(c))
     const sumCredits = (sem: SemesterPlan) => sem.courses.reduce((s, c) => s + c.credits, 0)
+
+    const rebalanceOverloadedSemesters = () => {
+      const limit = plannerMaxCredits
+      if (plan.length === 0 || limit <= 0) {
+        return
+      }
+
+      const priorityScoreLocal = (id: string) => PRIORITY_WEIGHTS[coursePriorities[id] || "medium"] || 0
+
+      const dependentsRemainAfterMove = (course: PlanCourse, targetYear: number, targetTerm: string) => {
+        const dependents = dependentsMap.get(course.id) || []
+        return dependents.every((dependentId) => {
+          const placement = courseScheduleMap.get(dependentId)
+          if (!placement) return true
+          return isAtLeastOneTermAfter(placement.year, placement.term, targetYear, targetTerm)
+        })
+      }
+
+      const appendSemesterForCourse = (course: PlanCourse): SemesterPlan | null => {
+        if (plan.length === 0) return null
+        let anchorYear = plan[plan.length - 1].year
+        let anchorTerm = plan[plan.length - 1].term
+        const MAX_FUTURE_TERMS = 12
+        for (let hop = 0; hop < MAX_FUTURE_TERMS; hop++) {
+          const next = getNextTerm(anchorYear, anchorTerm)
+          anchorYear = next.year
+          anchorTerm = next.term
+          if (!canScheduleInTermLocal(course, anchorYear, anchorTerm)) continue
+          if (!dependentsRemainAfterMove(course, anchorYear, anchorTerm)) continue
+          const newSemester: SemesterPlan = { year: anchorYear, term: normalizeTermLabel(anchorTerm), courses: [] }
+          plan.push(newSemester)
+          return newSemester
+        }
+        return null
+      }
+
+      const findTargetSemester = (course: PlanCourse, fromSemester: SemesterPlan, fromIndex: number): SemesterPlan | null => {
+        for (let idx = fromIndex + 1; idx < plan.length; idx++) {
+          const candidate = plan[idx]
+          if (!isAtLeastOneTermAfter(candidate.year, candidate.term, fromSemester.year, fromSemester.term)) continue
+          if (candidate.courses.some((c) => isInternshipCourse(c)) && !isInternshipCourse(course)) continue
+          if (sumCredits(candidate) + course.credits > limit) continue
+          if (!canScheduleInTermLocal(course, candidate.year, candidate.term)) continue
+          if (!dependentsRemainAfterMove(course, candidate.year, candidate.term)) continue
+          return candidate
+        }
+        return appendSemesterForCourse(course)
+      }
+
+      const isMovableCourse = (course: PlanCourse, semester: SemesterPlan) => {
+        if (lockedPlacements[course.id]) return false
+        if (isInternshipCourse(course)) return false
+        if (semester.year === currentYear && termsMatch(semester.term, currentTerm) && course.status === "active") return false
+        return true
+      }
+
+      for (let i = 0; i < plan.length; i++) {
+        const semester = plan[i]
+        if (semester.courses.length === 0) continue
+        if (hasInternOnly(semester)) continue
+        if (semester.year === currentYear && termsMatch(semester.term, currentTerm)) continue
+
+        let total = sumCredits(semester)
+        if (total <= limit) continue
+
+        const movable = semester.courses.filter((course) => isMovableCourse(course, semester))
+        if (movable.length === 0) continue
+
+        movable.sort((a, b) => {
+          const pa = priorityScoreLocal(a.id)
+          const pb = priorityScoreLocal(b.id)
+          if (pa !== pb) return pa - pb
+          const depA = dependentsCount.get(a.id) || 0
+          const depB = dependentsCount.get(b.id) || 0
+          if (depA !== depB) return depA - depB
+          return b.credits - a.credits
+        })
+
+        for (const course of movable) {
+          total = sumCredits(semester)
+          if (total <= limit) break
+
+          const targetSemester = findTargetSemester(course, semester, i)
+          if (!targetSemester) continue
+          if (!isAtLeastOneTermAfter(targetSemester.year, targetSemester.term, semester.year, semester.term)) continue
+          if (sumCredits(targetSemester) + course.credits > limit) continue
+
+          const removeIndex = semester.courses.findIndex((c) => c.id === course.id)
+          if (removeIndex === -1) continue
+          semester.courses.splice(removeIndex, 1)
+          targetSemester.courses.push(course)
+          courseScheduleMap.set(course.id, { year: targetSemester.year, term: targetSemester.term })
+        }
+      }
+
+      for (let i = plan.length - 1; i >= 0; i--) {
+        if (plan[i].courses.length === 0) {
+          plan.splice(i, 1)
+        }
+      }
+    }
 
     for (let i = plan.length - 1; i >= 1; i--) {
       const sem = plan[i]
@@ -3259,8 +4853,15 @@ export default function AcademicPlanner() {
 
   // Ensure chronological order after backfill
   plan.sort((a, b) => (a.year === b.year ? termOrderIdx(a.term) - termOrderIdx(b.term) : a.year - b.year))
+  const balancedPlan = rebalancePlanForCreditLimits(plan, {
+    allowCurrentTermActiveMoves: true,
+    minCredits: enforceStrictCredits ? plannerMinCredits : undefined,
+    maxCredits: enforceStrictCredits ? plannerMaxCredits : undefined,
+  })
+  balancedPlan.sort((a, b) => (a.year === b.year ? termOrderIdx(a.term) - termOrderIdx(b.term) : a.year - b.year))
 
-  finalizePlan(plan)
+    const resultPlan = finalizePlan(balancedPlan)
+    return resultPlan
   }
 
   // Remove a course from the graduation plan
@@ -3271,21 +4872,22 @@ export default function AcademicPlanner() {
           ...semester,
           courses: semester.courses.filter((course) => course.id !== courseId),
         }))
-        .filter((semester) => semester.courses.length > 0) // Remove empty semesters
+        .filter((semester) => semester.courses.length > 0)
 
-      return updatedPlan
+      return applyPetitionFlagsToPlan(updatedPlan)
     })
   }
 
   // Change section for a course in the plan
   const changeCourseSection = (courseId: string, newSection: CourseSection) => {
     setGraduationPlan((prevPlan) => {
-      return prevPlan.map((semester) => ({
+      const updatedPlan = prevPlan.map((semester) => ({
         ...semester,
         courses: semester.courses.map((course) =>
           course.id === courseId ? { ...course, recommendedSection: newSection } : course,
         ),
       }))
+      return applyPetitionFlagsToPlan(updatedPlan)
     })
   }
 
@@ -3294,14 +4896,32 @@ export default function AcademicPlanner() {
     setCoursePriorities((prev) => ({ ...prev, [courseId]: level }))
   }
   const toggleCourseLock = (courseId: string, year: number, term: string) => {
+    const normalizedTerm = normalizeTermLabel(term)
+    const pairCourseId = resolveLockPairCourseId(courseId)
+
     setLockedPlacements((prev) => {
-      const normalizedTerm = normalizeTermLabel(term)
       const existing = prev[courseId]
-      if (existing && existing.year === year && termsMatch(existing.term, normalizedTerm)) {
+      const shouldRemove = existing && existing.year === year && termsMatch(existing.term, normalizedTerm)
+
+      if (shouldRemove) {
         const { [courseId]: _omit, ...rest } = prev
-        return rest
+        const next = { ...rest }
+        if (pairCourseId && pairCourseId !== courseId) {
+          delete next[pairCourseId]
+        }
+        return next
       }
-      return { ...prev, [courseId]: { year, term: normalizedTerm } }
+
+      const next: Record<string, { year: number; term: string }> = {
+        ...prev,
+        [courseId]: { year, term: normalizedTerm },
+      }
+
+      if (pairCourseId && pairCourseId !== courseId) {
+        next[pairCourseId] = { year, term: normalizedTerm }
+      }
+
+      return next
     })
   }
 
@@ -3403,7 +5023,7 @@ export default function AcademicPlanner() {
       .filter((course) => (course.status === "pending" || course.status === "active" || course.status === "failed") && !coursesInPlan.has(course.id))
       .map((course) => {
         const availableSections = getAvailableSections(course.code)
-        const needsPetition = !hasAvailableSections(course.code)
+        const needsPetition = false
         const recommendedSection = findBestSection(course.code)
 
         return {
@@ -3435,7 +5055,7 @@ export default function AcademicPlanner() {
   }
 
   // If adding to current term and course may need petition, confirm
-  const needsPetition = !hasAvailableSections(course.code)
+  const needsPetition = courseNeedsPetitionForTerm(course, targetTerm)
   if (needsPetition && targetYear === currentYear && termsMatch(targetTerm, currentTerm)) {
     setPendingAdd({ courseId, targetYear, targetTerm, reason: "petition" })
     setOverloadDialogOpen(true)
@@ -3453,7 +5073,7 @@ export default function AcademicPlanner() {
 
     // Create enhanced course
     const availableSections = getAvailableSections(course.code)
-    const needsPetition = !hasAvailableSections(course.code)
+    const needsPetition = courseNeedsPetitionForTerm(course, targetTerm)
     const recommendedSection = findBestSection(course.code)
 
     const planCourse: PlanCourse = {
@@ -3507,7 +5127,7 @@ export default function AcademicPlanner() {
         return getTermIndex(a.term) - getTermIndex(b.term)
       })
 
-      return updatedPlan
+      return applyPetitionFlagsToPlan(updatedPlan)
     })
 
     // Add to history
@@ -3784,7 +5404,7 @@ export default function AcademicPlanner() {
                         inputMode="numeric"
                         pattern="[0-9]*"
                         maxLength={2}
-                        value={minCreditsPerTerm}
+                        value={draftMinCreditsPerTerm}
                         onChange={(e) => handleMinCreditsChange(Number.parseInt(e.target.value, 10))}
                         className="mt-1"
                       />
@@ -3802,7 +5422,7 @@ export default function AcademicPlanner() {
                         inputMode="numeric"
                         pattern="[0-9]*"
                         maxLength={2}
-                        value={maxCreditsPerTerm}
+                        value={draftMaxCreditsPerTerm}
                         onChange={(e) => handleMaxCreditsChange(Number.parseInt(e.target.value, 10))}
                         className="mt-1"
                       />
@@ -3815,7 +5435,7 @@ export default function AcademicPlanner() {
                   )}
                   {isMaxCreditsAtOrBelowMin && (
                     <div className="mt-3 rounded-md border border-amber-300/60 bg-amber-100/70 p-3 text-xs font-medium text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
-                      Maximum units must be greater than {minCreditsPerTerm}. Until that happens, we'll rely on the default cap of {RECOMMENDED_UNITS_MAX} units ({effectiveMaxCreditsWithOverflow} with overflow) to prevent overloads.
+                      Maximum units must be greater than {draftMinCreditsPerTerm}. Until that happens, we'll rely on the default cap of {RECOMMENDED_UNITS_MAX} units ({effectiveMaxCreditsWithOverflow} with overflow) to prevent overloads.
                     </div>
                   )}
                   <p className="mt-3 text-xs text-amber-800 dark:text-amber-200">
@@ -3906,6 +5526,268 @@ export default function AcademicPlanner() {
             </p>
             <DialogFooter>
               <Button onClick={() => setRegularNoticeOpen(false)}>Got it</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={regenerateDialogOpen}
+          onOpenChange={(open) => {
+            setRegenerateDialogOpen(open)
+            if (!open) {
+              setPendingRegenerateStrategy(plannerStrategy)
+              setPendingStrictGuardrails(strictGuardrailsEnabled)
+              setPendingRegenerateMin(minCreditsPerTerm)
+              setPendingRegenerateMax(maxCreditsPerTerm)
+              setRegenerateCreditError(null)
+              setRegeneratePreview(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Generate Graduation Plan</DialogTitle>
+              <DialogDescription>
+                Choose how we should rebuild the remaining terms. We'll keep your locks and credit guardrails intact.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3 sm:grid-cols-3">
+              {(Object.keys(REGENERATE_STRATEGY_META) as RegenerateStrategy[]).map((strategy) => {
+                const meta = REGENERATE_STRATEGY_META[strategy]
+                const isActive = pendingRegenerateStrategy === strategy
+                return (
+                  <button
+                    key={strategy}
+                    type="button"
+                    onClick={() => setPendingRegenerateStrategy(strategy)}
+                    className={cn(
+                      "rounded-xl border p-4 text-left transition focus:outline-none",
+                      isActive
+                        ? "border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-900/30"
+                        : "border-slate-200 hover:border-slate-400 dark:border-slate-700 dark:hover:border-slate-500",
+                    )}
+                  >
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{meta.title}</p>
+                    <p className="text-xs font-medium text-blue-700 dark:text-blue-300 mt-1">{meta.tagline}</p>
+                    <p className="mt-2 text-xs text-muted-foreground">{meta.description}</p>
+                  </button>
+                )
+              })}
+            </div>
+            <div className="space-y-3">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <p className="font-medium text-slate-900 dark:text-slate-100">Preferred unit range</p>
+                  <span className="text-xs text-muted-foreground">Used for this regeneration</span>
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300" htmlFor="regenerate-min">
+                      Minimum units per term
+                    </label>
+                    <Input
+                      id="regenerate-min"
+                      type="number"
+                      min={CREDIT_INPUT_MIN}
+                      max={CREDIT_INPUT_MAX}
+                      step={1}
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={pendingRegenerateMin}
+                      onChange={(e) => handlePendingRegenerateMinChange(Number.parseInt(e.target.value, 10))}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300" htmlFor="regenerate-max">
+                      Maximum units per term
+                    </label>
+                    <Input
+                      id="regenerate-max"
+                      type="number"
+                      min={CREDIT_INPUT_MIN}
+                      max={CREDIT_INPUT_MAX}
+                      step={1}
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={pendingRegenerateMax}
+                      onChange={(e) => handlePendingRegenerateMaxChange(Number.parseInt(e.target.value, 10))}
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  These values override your saved credit guardrails for the regenerated plan and update your defaults once applied.
+                </p>
+                {regenerateCreditError && (
+                  <p className="mt-3 rounded-md border border-red-200/60 bg-red-50/70 p-2 text-xs font-semibold text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200">
+                    {regenerateCreditError}
+                  </p>
+                )}
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-700 dark:bg-slate-900/40">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <p className="font-medium text-slate-900 dark:text-slate-100">Credit distribution preview</p>
+                  <span className="text-xs text-muted-foreground">Updates automatically</span>
+                </div>
+                {regeneratePreview && regeneratePreview.rows.length > 0 ? (
+                  <div className="mt-3 max-h-60 overflow-y-auto relative">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Term</TableHead>
+                          <TableHead className="text-right">Credits</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {regeneratePreview.rows.map((row) => {
+                          const withinRange = row.credits >= row.minTarget && row.credits <= row.maxTarget
+                          return (
+                            <TableRow key={row.label}>
+                              <TableCell>{row.label}</TableCell>
+                              <TableCell className="text-right">
+                                <span
+                                  className={cn(
+                                    "font-semibold",
+                                    withinRange
+                                      ? "text-emerald-600 dark:text-emerald-300"
+                                      : "text-amber-600 dark:text-amber-300",
+                                  )}
+                                >
+                                  {row.credits}u
+                                </span>
+                                <span className="ml-2 text-xs text-muted-foreground">
+                                  ({row.minTarget}-{row.maxTarget}u)
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                    {regeneratePreviewLoading && (
+                      <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-white/80 text-xs font-medium text-muted-foreground backdrop-blur-sm dark:bg-slate-900/70">
+                        Calculating preview…
+                      </div>
+                    )}
+                  </div>
+                ) : regeneratePreviewLoading ? (
+                  <p className="mt-3 text-xs text-muted-foreground">Calculating preview…</p>
+                ) : (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    No remaining courses need planning right now.
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
+                <div>
+                  <p className="text-sm font-medium">Strict credit guardrails</p>
+                  <p className="text-xs text-muted-foreground">
+                    When enabled, every regenerated term is forced to stay between {pendingRegenerateMin} and {pendingRegenerateMax} units.
+                  </p>
+                </div>
+                <Switch checked={pendingStrictGuardrails} onCheckedChange={setPendingStrictGuardrails} />
+              </div>
+            </div>
+            <DialogFooter className="flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex w-full flex-col gap-1 sm:w-auto sm:flex-row sm:items-center sm:gap-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2 w-full sm:w-auto"
+                  onClick={handleRegenerateImportClick}
+                >
+                  <Upload className="h-4 w-4" /> Import plan
+                </Button>
+                <span className="text-xs text-muted-foreground sm:text-sm">
+                  If you've exported a plan before, you can bring it back here.
+                </span>
+              </div>
+              <div className="flex w-full gap-2 sm:w-auto sm:justify-end">
+                <Button
+                  variant="outline"
+                  className="w-full sm:w-auto"
+                  onClick={() => {
+                    setRegenerateDialogOpen(false)
+                    setPendingRegenerateStrategy(plannerStrategy)
+                    setPendingStrictGuardrails(strictGuardrailsEnabled)
+                    setRegeneratePreview(null)
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className="w-full sm:w-auto"
+                  onClick={handleConfirmRegeneratePlan}
+                  disabled={regeneratePreviewLoading || Boolean(regenerateCreditError)}
+                >
+                  Apply profile
+                </Button>
+              </div>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={creditPreviewDialogOpen}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) {
+              handleCreditPreviewCancel()
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Review credit limit changes</DialogTitle>
+              <DialogDescription>
+                {creditPreview
+                  ? `We'll enforce ${creditPreview.minCredits}–${creditPreview.maxCredits} units per term once you confirm.`
+                  : "We'll save your updated credit preferences."}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 text-sm text-muted-foreground">
+              <div className="rounded-md border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-900/40">
+                {creditPreviewMoveCount > 0 ? (
+                  <p>
+                    <strong>{creditPreviewMoveCount}</strong> course{creditPreviewMoveCount === 1 ? "" : "s"} will shift to
+                    stay within your preferred limits.
+                  </p>
+                ) : (
+                  <p>No courses need to move—your current layout already satisfies the new limits.</p>
+                )}
+              </div>
+              {creditPreviewMoveCount > 0 && (
+                <div className="max-h-60 overflow-y-auto rounded-md border border-slate-200 dark:border-slate-700">
+                  <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {creditPreviewMoves.map((move) => (
+                      <li key={move.courseId} className="p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-slate-900 dark:text-slate-100">{move.code}</p>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">{move.name}</p>
+                          </div>
+                          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">{move.credits}u</span>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                          <span>
+                            {formatAcademicYear(move.fromYear)} {move.fromTerm}
+                          </span>
+                          <ArrowRight className="h-3 w-3 text-slate-400" />
+                          <span>
+                            {formatAcademicYear(move.toYear)} {move.toTerm}
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            <DialogFooter className="flex-col gap-2 sm:flex-row">
+              <Button variant="outline" className="w-full sm:w-auto" onClick={handleCreditPreviewCancel}>
+                Cancel
+              </Button>
+              <Button className="w-full sm:w-auto" onClick={handleCreditPreviewConfirm}>
+                Apply and Save
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -4069,6 +5951,90 @@ export default function AcademicPlanner() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        <Dialog
+          open={Boolean(blockedMoveDialog)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setBlockedMoveDialog(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Cannot Move Before Prerequisites</DialogTitle>
+              <DialogDescription>
+                {blockedMoveDialog
+                  ? `${blockedMoveDialog.courseCode} needs prerequisite clearance before ${formatAcademicYear(blockedMoveDialog.targetYear)} ${blockedMoveDialog.targetTerm}.`
+                  : "Prerequisite requirements prevent this move."}
+              </DialogDescription>
+            </DialogHeader>
+            {blockedMoveDialog && (
+              <div className="space-y-3 text-sm">
+                {blockedMoveDialog.blockers.map((blocker) => (
+                  <div
+                    key={blocker.courseId}
+                    className="rounded-md border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/50 dark:bg-amber-900/20"
+                  >
+                    <p className="text-sm font-semibold">{blocker.code}</p>
+                    <p className="text-xs text-muted-foreground">{blocker.name}</p>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {blocker.reason === "not_scheduled"
+                        ? "This prerequisite is not scheduled or marked as passed yet. Schedule it at least one term earlier."
+                        : blocker.scheduledYear && blocker.scheduledTerm
+                          ? `Currently planned for ${formatAcademicYear(blocker.scheduledYear)} ${blocker.scheduledTerm}. It must stay at least one term before the requested move.`
+                          : "This prerequisite needs to be completed earlier."}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+            <DialogFooter>
+              <Button onClick={() => setBlockedMoveDialog(null)}>Understood</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={Boolean(creditGuardrailDialog)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setCreditGuardrailDialog(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Move Blocked by Credit Limits</DialogTitle>
+              <DialogDescription>
+                {creditGuardrailDialog
+                  ? `Moving ${creditGuardrailDialog.courseCode} to ${formatAcademicYear(creditGuardrailDialog.targetYear)} ${creditGuardrailDialog.targetTerm} would violate your credit guardrails.`
+                  : "Credit guardrails prevented this move."}
+              </DialogDescription>
+            </DialogHeader>
+            {creditGuardrailDialog && (
+              <div className="space-y-3 text-sm">
+                {creditGuardrailDialog.reasons.map((reason, index) => (
+                  <div
+                    key={`${reason.type}-${index}`}
+                    className="rounded-md border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900"
+                  >
+                    <p className="text-sm font-semibold">{reason.semesterLabel}</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {reason.type === "min"
+                        ? `Credits would drop to ${reason.credits}, below your minimum target of ${reason.threshold}.`
+                        : `Credits would rise to ${reason.credits}, above your maximum limit of ${reason.threshold}.`}
+                    </p>
+                  </div>
+                ))}
+                <p className="text-xs text-muted-foreground">
+                  Adjust the credit guardrails or shuffle additional courses so each term stays within your preferred range.
+                </p>
+              </div>
+            )}
+            <DialogFooter>
+              <Button onClick={() => setCreditGuardrailDialog(null)}>Got it</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {error && (
           <Alert className="mb-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-300">
@@ -4103,6 +6069,32 @@ export default function AcademicPlanner() {
             </AlertDescription>
           </Alert>
         )}
+
+        <Dialog open={Boolean(regenerateToast)} onOpenChange={(open) => !open && setRegenerateToast(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Plan regenerated</DialogTitle>
+              {regenerateToast && (
+                <DialogDescription className="flex flex-col gap-2 text-sm">
+                  <span className="font-semibold text-emerald-800 dark:text-emerald-200">
+                    {REGENERATE_STRATEGY_META[regenerateToast.strategy].title}
+                  </span>
+                  <span>
+                    Profile focus: {REGENERATE_STRATEGY_META[regenerateToast.strategy].tagline}.
+                  </span>
+                  <span>
+                    Target load: {regenerateToast.min}-{regenerateToast.max}u. {regenerateToast.strict
+                      ? "Strict guardrails kept every feasible term within that range."
+                      : "Flexible guardrails allowed small shifts to satisfy prerequisites."}
+                  </span>
+                </DialogDescription>
+              )}
+            </DialogHeader>
+            <DialogFooter>
+              <Button onClick={() => setRegenerateToast(null)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Conflicts Alert */}
         {conflicts.length > 0 && (
@@ -4280,7 +6272,7 @@ export default function AcademicPlanner() {
                     </select>
                   </div>
                   <div className="flex items-end">
-                    <Button onClick={generateGraduationPlan}>Regenerate Plan</Button>
+                    <Button onClick={openRegeneratePlanDialog}>Regenerate Plan</Button>
                   </div>
                 </div>
               </CardContent>
@@ -4307,7 +6299,7 @@ export default function AcademicPlanner() {
                         inputMode="numeric"
                         pattern="[0-9]*"
                         maxLength={2}
-                        value={minCreditsPerTerm}
+                        value={draftMinCreditsPerTerm}
                         onChange={(e) => handleMinCreditsChange(Number.parseInt(e.target.value, 10))}
                       />
                       <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -4324,7 +6316,7 @@ export default function AcademicPlanner() {
                         inputMode="numeric"
                         pattern="[0-9]*"
                         maxLength={2}
-                        value={maxCreditsPerTerm}
+                        value={draftMaxCreditsPerTerm}
                         onChange={(e) => handleMaxCreditsChange(Number.parseInt(e.target.value, 10))}
                       />
                       <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -4332,7 +6324,7 @@ export default function AcademicPlanner() {
                       </p>
                       {isMaxCreditsAtOrBelowMin && (
                         <p className="mt-2 rounded-md border border-amber-300/60 bg-amber-50/80 p-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
-                          Maximum credits must be greater than {minCreditsPerTerm} to apply. Until then, the planner will fall back to the default limit of {RECOMMENDED_UNITS_MAX} credits ({effectiveMaxCreditsWithOverflow} with overflow).
+                          Maximum credits must be greater than {draftMinCreditsPerTerm} to apply. Until then, the planner will fall back to the default limit of {RECOMMENDED_UNITS_MAX} credits ({effectiveMaxCreditsWithOverflow} with overflow).
                         </p>
                       )}
                     </div>
@@ -4345,7 +6337,7 @@ export default function AcademicPlanner() {
                     <Button
                       size="sm"
                       className="flex items-center gap-2"
-                      onClick={handleSaveCreditPreferences}
+                      onClick={() => handleSaveCreditPreferences()}
                       disabled={!creditLimitsDirty}
                     >
                       <Save className="h-4 w-4" />
@@ -4679,7 +6671,7 @@ export default function AcademicPlanner() {
                         <TableBody>
                           {visibleCourses.map((course) => {
                             const allPrereqsMet = arePrerequisitesMet(course)
-                            const availableTerms = getAvailableTermsForMove(course)
+                            const { available: availableTerms, blocked: blockedTerms } = getTermMoveOptions(course)
 
                             return (
                               <TableRow key={`${course.id}-unscheduled`}>
@@ -4741,12 +6733,7 @@ export default function AcademicPlanner() {
                                   </Select>
                                 </TableCell>
                                 <TableCell>
-                                  <Select
-                                    onValueChange={(value) => {
-                                      const [year, term] = value.split("-")
-                                      addCourseToTerm(course.id, Number.parseInt(year), term)
-                                    }}
-                                  >
+                                  <Select onValueChange={(value) => handleAddCourseSelectChange(course.id, value)}>
                                     <SelectTrigger className="w-40">
                                       <SelectValue placeholder="Add to term..." />
                                     </SelectTrigger>
@@ -4759,6 +6746,32 @@ export default function AcademicPlanner() {
                                           </div>
                                         </SelectItem>
                                       ))}
+                                      {blockedTerms.length > 0 && (
+                                        <>
+                                          <SelectSeparator />
+                                          <SelectGroup>
+                                            <div className="pl-3 text-xs uppercase tracking-wide text-muted-foreground font-semibold">
+                                              Blocked by prerequisites
+                                            </div>
+                                            {blockedTerms.map((term) => (
+                                              <SelectItem
+                                                key={`blocked-${term.year}-${term.term}`}
+                                                value={`blocked|${term.year}|${term.term}`}
+                                              >
+                                                <div className="flex flex-col gap-0.5 text-left">
+                                                  <span className="flex items-center gap-2 text-sm">
+                                                    <AlertTriangle className="h-3 w-3 text-amber-500" />
+                                                    {term.label}
+                                                  </span>
+                                                  <span className="text-xs text-muted-foreground">
+                                                    Waiting on {summarizeBlockerCodes(term.blockers)}
+                                                  </span>
+                                                </div>
+                                              </SelectItem>
+                                            ))}
+                                          </SelectGroup>
+                                        </>
+                                      )}
                                     </SelectContent>
                                   </Select>
                                 </TableCell>
@@ -4961,7 +6974,7 @@ export default function AcademicPlanner() {
                                   const requiredForCourses = dependentCoursesMap.get(course.id) ?? []
                                   const section = course.recommendedSection
                                   const availableSections = course.availableSections
-                                  const availableTerms = getAvailableTermsForMove(course)
+                                  const { available: availableTerms, blocked: blockedTerms } = getTermMoveOptions(course)
                                   const isSelected = selectedCourses.has(course.id)
                                   const hasConflict = conflicts.some((conflict) =>
                                     conflict.affectedCourses.includes(course.id),
@@ -5151,10 +7164,7 @@ export default function AcademicPlanner() {
                                         <div className="flex items-center gap-2">
                                           <Select
                                             key={`${course.id}-${moveSelectResetCounter}`}
-                                            onValueChange={(value) => {
-                                              const [year, term] = value.split("-")
-                                              handleCourseMoveRequest(course.id, Number.parseInt(year), term)
-                                            }}
+                                            onValueChange={(value) => handleMoveSelectChange(course.id, value)}
                                           >
                                             <SelectTrigger className="w-40">
                                               <SelectValue placeholder="Move to..." />
@@ -5176,6 +7186,32 @@ export default function AcademicPlanner() {
                                                     </div>
                                                   </SelectItem>
                                                 ))}
+                                              {blockedTerms.length > 0 && (
+                                                <>
+                                                  <SelectSeparator />
+                                                  <SelectGroup>
+                                                    <div className="pl-3 text-xs uppercase tracking-wide text-muted-foreground font-semibold">
+                                                      Blocked by prerequisites
+                                                    </div>
+                                                    {blockedTerms.map((term) => (
+                                                      <SelectItem
+                                                        key={`blocked-${term.year}-${term.term}`}
+                                                        value={`blocked|${term.year}|${term.term}`}
+                                                      >
+                                                        <div className="flex flex-col gap-0.5 text-left">
+                                                          <span className="flex items-center gap-2 text-sm">
+                                                            <AlertTriangle className="h-3 w-3 text-amber-500" />
+                                                            {term.label}
+                                                          </span>
+                                                          <span className="text-xs text-muted-foreground">
+                                                            Waiting on {summarizeBlockerCodes(term.blockers)}
+                                                          </span>
+                                                        </div>
+                                                      </SelectItem>
+                                                    ))}
+                                                  </SelectGroup>
+                                                </>
+                                              )}
                                             </SelectContent>
                                           </Select>
                                         </div>
@@ -5298,7 +7334,7 @@ export default function AcademicPlanner() {
                             <Button
                               size="sm"
                               className="w-full justify-start gap-2"
-                              onClick={generateGraduationPlan}
+                              onClick={openRegeneratePlanDialog}
                             >
                               <RefreshCw className="h-3 w-3" />
                               Regenerate Plan
