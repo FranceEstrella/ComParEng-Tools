@@ -14,7 +14,91 @@ export interface PatchNote {
 }
 
 export const patchNotes: PatchNote[] = [
-  {
+    {
+    version: "1.47",
+    date: "December 11, 2025",
+    title: "Improved Academic Planner",
+    silent: true,
+    changes: [
+      {
+        type: "new",
+        description: "Introduced three Graduation Plan generation modes so you can plan by strategy: Balanced mode evenly distributes credit load across all remaining terms to avoid heavy swings.",
+      },
+      {
+        type: "new",
+        description: "Added a Crucial Courses First mode that prioritizes prerequisite chains, helping major subjects unlock earlier in your academic timeline.",
+      },
+      {
+        type: "new",
+        description: "Added an Easy Courses First mode that schedules lighter, non-prerequisite courses earlier for a smoother short-term workload.",
+      },
+      {
+        type: "new",
+        description: "A 'Blocked by Pre-requisites' warning now appears when attempting to move a course you are not yet eligible to take.",
+      },
+      {
+        type: "new",
+        description: "You can now search courses by code or description to instantly locate where a course is placed in your plan.",
+      },
+      {
+        type: "new",
+        description: "Petition detection has been improved and now intelligently adjusts based on your planned term.",
+      },
+      {
+        type: "new",
+        description: "A confirmation dialog now appears when moving a course into a term that already meets the credit limit.",
+      },
+      {
+        type: "new",
+        description: "Added a dialog that clearly shows which courses will be affected whenever credit limits are updated.",
+      },
+      {
+        type: "improved",
+        description: "Locking behavior, priorities, and available actions have been updated so lecture and laboratory pairs always mirror each other.",
+      },
+      {
+        type: "improved",
+        description: "Full course descriptions are now accessible on click or hover within prerequisites and 'required for' lists.",
+      },
+      {
+        type: "improved",
+        description: "Non-current-term details such as Section, Schedule, and Room have been replaced with prerequisite and 'required for' information for better long-term planning clarity.",
+      },
+      {
+        type: "improved",
+        description: "Time-conflict detection is being refined, especially for edge cases such as 12:00 PM versus 12:50 PM schedules.",
+      },
+      {
+        type: "improved",
+        description: "Added a convenient Back to Top button that appears once you scroll past the header.",
+      },
+      {
+        type: "fixed",
+        description: "The Academic Planner no longer resets when the page is refreshed.",
+      },
+      {
+        type: "fixed",
+        description: "Resolved an issue where the UI reset after every planner action.",
+      },
+      {
+        type: "fixed",
+        description: "Import and Export now correctly preserve each course’s priority and lock status.",
+      },
+      {
+        type: "fixed",
+        description: "Current-term sections now display all available sections, even when slots are already full.",
+      },
+      {
+        type: "known-issue",
+        description: "Academic Planner preparation is underway to use your Schedule Maker’s planned schedule for the current term.",
+      },
+      {
+        type: "known-issue",
+        description: "Time-conflict detection, especially around edge cases like 12:00 PM vs. 12:50 PM.",
+      },
+    ],
+  }
+  ,{
     version: "1.46",
     date: "December 5, 2025",
     title: "Schedule Maker quality rollup (silent)",
