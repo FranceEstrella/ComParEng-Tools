@@ -5,7 +5,7 @@ import React from "react"
 import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card"
 import {
   CheckCircle,
   Clock,
@@ -41,7 +41,13 @@ import { useTheme } from "next-themes"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { saveCourseStatuses, loadCourseStatuses, saveTrackerPreferences, loadTrackerPreferences } from "@/lib/course-storage"
-import { initialCourses, registerExternalCourses } from "@/lib/course-data"
+import {
+  initialCourses,
+  registerExternalCourses,
+  registerCourseCodeAliases,
+  getAliasesForCanonical,
+  resolveCanonicalCourseCode,
+} from "@/lib/course-data"
 import { parseCurriculumHtml } from "@/lib/curriculum-import"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
@@ -131,6 +137,7 @@ interface FilterAndSearchControlsProps {
   viewMode: "card" | "table"
   setViewMode: (v: "card" | "table") => void
   courses: Course[]
+  onAddAliases: (aliases: Record<string, string>) => void
 }
 
 interface OverallProgressProps {
@@ -837,155 +844,314 @@ const FilterAndSearchControls = ({
   viewMode,
   setViewMode,
   courses,
+  onAddAliases,
 }: FilterAndSearchControlsProps) => {
   const [open, setOpen] = useState(false)
   const [suggestions, setSuggestions] = useState<Course[]>([])
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [aliasForm, setAliasForm] = useState({ alias: "", canonical: "" })
+  const [aliasError, setAliasError] = useState<string | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [pendingAlias, setPendingAlias] = useState<{ alias: string; canonical: string } | null>(null)
+
+  const matchesSearchTerm = useCallback(
+    (course: Course, term: string) => {
+      if (!term) return true
+      const normalized = term.toLowerCase()
+      const canonical = resolveCanonicalCourseCode(course.code)
+      const aliases = getAliasesForCanonical(canonical)
+
+      const fields = [course.code, canonical, course.name, ...(aliases || [])]
+        .filter(Boolean)
+        .map((value) => value.toLowerCase())
+
+      return fields.some((value) => value.includes(normalized))
+    },
+    [],
+  )
 
   // Generate suggestions based on search term
   useEffect(() => {
     if (searchTerm.length >= 3) {
       const filtered = courses
-        .filter(
-          (course) =>
-            course.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            course.name.toLowerCase().includes(searchTerm.toLowerCase()),
-        )
+        .filter((course) => matchesSearchTerm(course, searchTerm))
         .sort((a, b) => a.code.localeCompare(b.code))
         .slice(0, 5)
       setSuggestions(filtered)
+      setOpen(filtered.length > 0)
     } else {
       setSuggestions([])
+      setOpen(false)
     }
-  }, [searchTerm, courses])
+  }, [matchesSearchTerm, searchTerm, courses])
+
+  const handleAliasSave = () => {
+    const rawAlias = aliasForm.alias.trim().toUpperCase()
+    const rawCanonical = aliasForm.canonical.trim().toUpperCase()
+    const canonical = resolveCanonicalCourseCode(rawCanonical)
+
+    if (!rawAlias || !canonical) {
+      setAliasError("Enter both the old code and the current code.")
+      return
+    }
+    if (rawAlias === canonical) {
+      setAliasError("Alias and canonical code should differ.")
+      return
+    }
+
+    setPendingAlias({ alias: rawAlias, canonical })
+    setAliasError(null)
+    setConfirmOpen(true)
+  }
+
+  const confirmAliasSave = () => {
+    if (!pendingAlias) return
+    onAddAliases({ [pendingAlias.alias]: pendingAlias.canonical })
+    setAliasForm({ alias: "", canonical: "" })
+    setPendingAlias(null)
+    setConfirmOpen(false)
+  }
 
   return (
-    <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Search Input with Suggestions */}
-        <div className="relative">
-          <Label htmlFor="search-course" className="text-sm font-medium mb-1 block">
-            Search Courses
-          </Label>
+    <div className="mb-6 space-y-4">
+      <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Search Input with Suggestions */}
           <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Popover open={open && suggestions.length > 0} onOpenChange={setOpen}>
-              <PopoverTrigger asChild>
-                <Input
-                  id="search-course"
-                  type="text"
-                  placeholder="Search by code or name..."
-                  value={searchTerm}
-                  onChange={(e) => {
-                    setSearchTerm(e.target.value)
-                    if (e.target.value.length >= 3) setOpen(true)
-                    else setOpen(false)
+            <Label htmlFor="search-course" className="text-sm font-medium mb-1 block">
+              Search Courses
+            </Label>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Popover open={open && suggestions.length > 0} onOpenChange={setOpen}>
+                <PopoverTrigger asChild>
+                  <Input
+                    id="search-course"
+                    type="text"
+                    placeholder="Search by code or name..."
+                    value={searchTerm}
+                    onChange={(e) => {
+                      setSearchTerm(e.target.value)
+                      if (e.target.value.length >= 3) setOpen(true)
+                      else setOpen(false)
+                    }}
+                    onFocus={() => {
+                      if (searchTerm.length >= 3 && suggestions.length > 0) {
+                        setOpen(true)
+                      }
+                    }}
+                    className="pl-8 w-full"
+                    autoComplete="off" // Prevent browser autocomplete
+                    ref={inputRef}
+                  />
+                </PopoverTrigger>
+                <PopoverContent
+                  className="p-0 w-full"
+                  align="start"
+                  sideOffset={5}
+                  onOpenAutoFocus={(event) => event.preventDefault()}
+                  onCloseAutoFocus={(event) => {
+                    event.preventDefault()
+                    inputRef.current?.focus()
                   }}
-                  className="pl-8 w-full"
-                  autoComplete="off" // Prevent browser autocomplete
-                />
-              </PopoverTrigger>
-              <PopoverContent className="p-0 w-full" align="start" sideOffset={5}>
-                <Command>
-                  <CommandList>
-                    <CommandGroup heading="Suggestions">
-                      {suggestions.map((course) => (
-                        <CommandItem
-                          key={course.id}
-                          onSelect={() => {
-                            setSearchTerm(course.code)
-                            setOpen(false)
-                          }}
-                          className="cursor-pointer"
-                        >
-                          <span className="font-medium">{course.code}</span>
-                          <span className="ml-2 text-sm text-muted-foreground">{course.name}</span>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
-            {searchTerm && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
-                onClick={() => setSearchTerm("")}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {/* Status Filter and View Toggle */}
-        <div>
-          <Label className="text-sm font-medium mb-1 block">Filter & View Options</Label>
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant={filterStatus === "all" ? "default" : "outline"}
-                onClick={() => setFilterStatus("all")}
-                className="text-xs"
-              >
-                All
-              </Button>
-              <Button
-                variant={filterStatus === "pending" ? "default" : "outline"}
-                onClick={() => setFilterStatus("pending")}
-                className="text-xs bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800 hover:bg-yellow-500/20"
-              >
-                Pending
-              </Button>
-              <Button
-                variant={filterStatus === "active" ? "default" : "outline"}
-                onClick={() => setFilterStatus("active")}
-                className="text-xs bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800 hover:bg-blue-500/20"
-              >
-                Active
-              </Button>
-              <Button
-                variant={filterStatus === "passed" ? "default" : "outline"}
-                onClick={() => setFilterStatus("passed")}
-                className="text-xs bg-green-500/10 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800 hover:bg-green-500/20"
-              >
-                Passed
-              </Button>
-              <Button
-                variant={filterStatus === "future" ? "default" : "outline"}
-                onClick={() => setFilterStatus("future")}
-                className="text-xs bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-200 dark:border-purple-800 hover:bg-purple-500/20"
-              >
-                Future
-              </Button>
+                >
+                  <Command>
+                    <CommandList>
+                      <CommandGroup heading="Suggestions">
+                        {suggestions.map((course) => (
+                          <CommandItem
+                            key={course.id}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onSelect={() => {
+                              setSearchTerm(course.code)
+                              setOpen(false)
+                              inputRef.current?.focus()
+                            }}
+                            className="cursor-pointer"
+                          >
+                            <span className="font-medium">{course.code}</span>
+                            <span className="ml-2 text-sm text-muted-foreground">{course.name}</span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+              {searchTerm && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
+                  onClick={() => {
+                    setSearchTerm("")
+                    inputRef.current?.focus()
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              )}
             </div>
+          </div>
 
-            <div className="flex justify-end">
-              <div className="flex border rounded-md overflow-hidden">
+          {/* Status Filter and View Toggle */}
+          <div>
+            <Label className="text-sm font-medium mb-1 block">Filter & View Options</Label>
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button
-                  variant={viewMode === "card" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setViewMode("card")}
-                  className="rounded-none"
+                  variant={filterStatus === "all" ? "default" : "outline"}
+                  onClick={() => setFilterStatus("all")}
+                  className="text-xs"
                 >
-                  <Grid3X3 className="h-4 w-4 mr-1" />
-                  Card
+                  All
                 </Button>
                 <Button
-                  variant={viewMode === "table" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setViewMode("table")}
-                  className="rounded-none"
+                  variant={filterStatus === "pending" ? "default" : "outline"}
+                  onClick={() => setFilterStatus("pending")}
+                  className="text-xs bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800 hover:bg-yellow-500/20"
                 >
-                  <Table className="h-4 w-4 mr-1" />
-                  Table
+                  Pending
                 </Button>
+                <Button
+                  variant={filterStatus === "active" ? "default" : "outline"}
+                  onClick={() => setFilterStatus("active")}
+                  className="text-xs bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800 hover:bg-blue-500/20"
+                >
+                  Active
+                </Button>
+                <Button
+                  variant={filterStatus === "passed" ? "default" : "outline"}
+                  onClick={() => setFilterStatus("passed")}
+                  className="text-xs bg-green-500/10 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800 hover:bg-green-500/20"
+                >
+                  Passed
+                </Button>
+                <Button
+                  variant={filterStatus === "future" ? "default" : "outline"}
+                  onClick={() => setFilterStatus("future")}
+                  className="text-xs bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-200 dark:border-purple-800 hover:bg-purple-500/20"
+                >
+                  Future
+                </Button>
+              </div>
+
+              <div className="flex justify-end">
+                <div className="flex border rounded-md overflow-hidden">
+                  <Button
+                    variant={viewMode === "card" ? "default" : "ghost"}
+                    size="sm"
+                    onClick={() => setViewMode("card")}
+                    className="rounded-none"
+                  >
+                    <Grid3X3 className="h-4 w-4 mr-1" />
+                    Card
+                  </Button>
+                  <Button
+                    variant={viewMode === "table" ? "default" : "ghost"}
+                    size="sm"
+                    onClick={() => setViewMode("table")}
+                    className="rounded-none"
+                  >
+                    <Table className="h-4 w-4 mr-1" />
+                    Table
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      <Card className="bg-white dark:bg-gray-800 shadow-md">
+        <CardHeader>
+          <CardTitle>Update Course Code Alias</CardTitle>
+          <CardDescription>Link an old course code to the current one so search, imports, and planning stay in sync.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            <div>
+              <Label htmlFor="alias-input" className="text-sm font-medium mb-1 block">
+                Legacy code
+              </Label>
+              <Input
+                id="alias-input"
+                placeholder="e.g., CPE0001"
+                value={aliasForm.alias}
+                onChange={(e) => setAliasForm((prev) => ({ ...prev, alias: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label htmlFor="canonical-input" className="text-sm font-medium mb-1 block">
+                Current code
+              </Label>
+              <Input
+                id="canonical-input"
+                placeholder="e.g., COE0001"
+                value={aliasForm.canonical}
+                onChange={(e) => setAliasForm((prev) => ({ ...prev, canonical: e.target.value }))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    handleAliasSave()
+                  }
+                }}
+              />
+            </div>
+            <div className="flex items-end">
+              <Button type="button" className="w-full" onClick={handleAliasSave}>
+                Review alias change
+              </Button>
+            </div>
+          </div>
+          {aliasError && <p className="mt-1 text-xs text-red-500">{aliasError}</p>}
+          <p className="mt-1 text-xs text-muted-foreground">
+            Saved aliases are remembered across tools so searches and schedule imports recognize old course codes.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          setConfirmOpen(open)
+          if (!open) setPendingAlias(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm alias update</DialogTitle>
+            <DialogDescription>
+              This will treat the legacy code as equivalent to the current code across Course Tracker, Schedule Maker, and Academic Planner.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-md border border-slate-200 dark:border-slate-800 p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Legacy code</span>
+                <span className="font-semibold">{pendingAlias?.alias ?? "—"}</span>
+              </div>
+              <div className="mt-2 flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Maps to current</span>
+                <span className="font-semibold">{pendingAlias?.canonical ?? "—"}</span>
+              </div>
+            </div>
+            <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
+              <li>Searches will match both codes.</li>
+              <li>Imported schedules and planner suggestions reuse this mapping.</li>
+              <li>You can update or add more aliases at any time.</li>
+            </ul>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmAliasSave} disabled={!pendingAlias}>
+              Confirm and save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -1555,6 +1721,7 @@ const AcademicTimeline = ({
 export default function CourseTracker() {
   const [courses, setCourses] = useState<Course[]>(() => hydrateCourses(initialCourses as unknown as Course[]))
   const [searchTerm, setSearchTerm] = useState("")
+  const [courseCodeAliases, setCourseCodeAliases] = useState<Record<string, string>>({})
   const [filterStatus, setFilterStatus] = useState<CourseStatus | "all" | "future">("all")
   const [openYears, setOpenYears] = useState<{ [key: number]: boolean }>({ 1: true }) // Start with Year 1 open
   const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null) // Track expanded card
@@ -1647,6 +1814,20 @@ export default function CourseTracker() {
     })
   }, [])
 
+  const handleAddAliases = useCallback((aliases: Record<string, string>) => {
+    if (!aliases || Object.keys(aliases).length === 0) return
+    setCourseCodeAliases((prev) => {
+      const next = { ...prev, ...aliases }
+      try {
+        window.localStorage.setItem("courseCodeAliases", JSON.stringify(next))
+      } catch (err) {
+        console.error("Failed to persist course code aliases", err)
+      }
+      registerCourseCodeAliases(next)
+      return next
+    })
+  }, [])
+
   const handleCurrentYearLevelChange = useCallback(
     (value: number) => {
       const sanitized = Math.max(1, Math.floor(value))
@@ -1672,6 +1853,21 @@ export default function CourseTracker() {
       setTimeout(() => setSaveMessage(null), 3000)
     }
     setCoursesHydrated(true)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = window.localStorage.getItem("courseCodeAliases")
+      if (!stored) return
+      const parsed = JSON.parse(stored)
+      if (parsed && typeof parsed === "object") {
+        setCourseCodeAliases(parsed)
+        registerCourseCodeAliases(parsed)
+      }
+    } catch (err) {
+      console.error("Failed to load course code aliases", err)
+    }
   }, [])
 
   useEffect(() => {
@@ -2645,13 +2841,24 @@ export default function CourseTracker() {
     })
   }
 
+  const matchesCourseSearch = useCallback(
+    (course: Course, term: string) => {
+      const normalized = term.trim().toLowerCase()
+      if (!normalized) return true
+
+      const canonical = resolveCanonicalCourseCode(course.code)
+      const aliases = getAliasesForCanonical(canonical)
+      const haystacks = [course.code, canonical, course.name, ...(aliases || [])]
+
+      return haystacks.some((value) => value.toLowerCase().includes(normalized))
+    },
+    [courseCodeAliases],
+  )
+
   // Filter courses based on search term and status
   const filteredCourses = useMemo(() => {
     return courses.filter((course) => {
-      const matchesSearch =
-        searchTerm === "" ||
-        course.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        course.name.toLowerCase().includes(searchTerm.toLowerCase())
+      const matchesSearch = matchesCourseSearch(course, searchTerm)
 
       let matchesStatus = true
       if (filterStatus === "future") {
@@ -2662,7 +2869,7 @@ export default function CourseTracker() {
 
       return matchesSearch && matchesStatus
     })
-  }, [courses, searchTerm, filterStatus])
+  }, [courses, searchTerm, filterStatus, matchesCourseSearch])
 
   // Group the filtered courses for display
   const groupedFilteredCourses = useMemo<CoursesByYearAndTerm>(() => groupCourses(filteredCourses), [filteredCourses])
@@ -3226,6 +3433,7 @@ export default function CourseTracker() {
           viewMode={viewMode}
           setViewMode={setViewMode}
           courses={courses}
+          onAddAliases={handleAddAliases}
         />
 
         {/* Course Display Area */}

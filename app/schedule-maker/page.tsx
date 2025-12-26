@@ -46,6 +46,7 @@ import {
   getCourseDetailsByCode,
   registerExternalCourses,
   registerExternalCourseCodes,
+  registerCourseCodeAliases,
 } from "@/lib/course-data"
 import { loadCurriculumSignature } from "@/lib/course-storage"
 import { Input } from "@/components/ui/input"
@@ -577,6 +578,20 @@ export default function ScheduleMaker() {
     const storedNotice = localStorage.getItem(STALE_IMPORT_NOTICE_STORAGE_KEY)
     if (storedNotice) {
       setStaleImportNotice(storedNotice)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = window.localStorage.getItem("courseCodeAliases")
+      if (!stored) return
+      const parsed = JSON.parse(stored)
+      if (parsed && typeof parsed === "object") {
+        registerCourseCodeAliases(parsed)
+      }
+    } catch (err) {
+      console.error("Failed to load course code aliases", err)
     }
   }, [])
 

@@ -36,10 +36,11 @@ import {
   Save,
 } from "lucide-react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { initialCourses, curriculumCodes } from "@/lib/course-data"
+import { initialCourses, curriculumCodes, registerCourseCodeAliases, resolveCanonicalCourseCode } from "@/lib/course-data"
 import { loadCourseStatuses, loadTrackerPreferences, TRACKER_PREFERENCES_KEY } from "@/lib/course-storage"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
@@ -95,6 +96,19 @@ interface CourseSection {
   meetingTime: string
   room: string
   hasSlots: boolean
+}
+
+interface SavedPlanSemester {
+  year: number
+  term: string
+  courseIds: string[]
+}
+
+interface SavedPlanSnapshot {
+  version: 1
+  startYear: number
+  semesters: SavedPlanSemester[]
+  savedAt: number
 }
 
 // Semester plan interface
@@ -225,6 +239,7 @@ interface ConflictInfo {
 const PERIOD_CONFIRM_PREFIX = "planner.period.confirmed"
 const PERIOD_REGULAR_PREFIX = "planner.period.regular"
 const CREDIT_LIMITS_STORAGE_KEY = "planner.creditLimits"
+const SAVED_PLAN_STORAGE_KEY = "planner.savedPlan.v1"
 const DEFAULT_CURRICULUM_CODE_SET = new Set(
   (curriculumCodes ?? [])
     .map((code) => (typeof code === "string" ? code.toUpperCase() : ""))
@@ -424,7 +439,13 @@ const sanitizeLockedPlacementSnapshot = (
 }
 
 // Quick Navigation Component
-const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean }) => {
+const QuickNavigation = ({
+  showBackToTop = false,
+  onNavigate,
+}: {
+  showBackToTop?: boolean
+  onNavigate?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => void
+}) => {
   const handleScrollTop = () => {
     if (typeof window === "undefined") return
     window.scrollTo({ top: 0, behavior: "smooth" })
@@ -432,19 +453,34 @@ const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean })
 
   return (
     <div className="flex flex-col sm:flex-row gap-3 justify-center">
-      <Link href="/">
+      <Link
+        href="/"
+        onClick={(event) => {
+          onNavigate?.("/", event)
+        }}
+      >
         <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
           <ArrowLeft className="h-4 w-4" />
           Back to Home
         </Button>
       </Link>
-      <Link href="/schedule-maker">
+      <Link
+        href="/schedule-maker"
+        onClick={(event) => {
+          onNavigate?.("/schedule-maker", event)
+        }}
+      >
         <Button className="w-full sm:w-auto bg-purple-700 dark:bg-purple-900 bg-gradient-to-r from-purple-600 to-purple-800 hover:bg-purple-800 dark:hover:bg-purple-950 hover:from-purple-700 hover:to-purple-900 text-white flex items-center gap-2">
           <Calendar className="h-4 w-4" />
           Schedule Maker
         </Button>
       </Link>
-      <Link href="/course-tracker">
+      <Link
+        href="/course-tracker"
+        onClick={(event) => {
+          onNavigate?.("/course-tracker", event)
+        }}
+      >
         <Button className="w-full sm:w-auto bg-blue-700 dark:bg-blue-900 bg-gradient-to-r from-blue-600 to-blue-800 hover:bg-blue-800 dark:hover:bg-blue-950 hover:from-blue-700 hover:to-blue-900 text-white flex items-center gap-2">
           <BookOpen className="h-4 w-4" />
           Course Tracker
@@ -467,10 +503,18 @@ const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean })
 
 export default function AcademicPlanner() {
   const { theme, setTheme } = useTheme()
+  const router = useRouter()
 
   const [courses, setCourses] = useState<Course[]>(initialCourses as unknown as Course[])
   const [availableSections, setAvailableSections] = useState<CourseSection[]>([])
+  const [savedScheduleSelections, setSavedScheduleSelections] = useState<Record<string, CourseSection>>({})
   const [graduationPlan, setGraduationPlan] = useState<SemesterPlan[]>([])
+  const [planDirty, setPlanDirty] = useState(false)
+  const [planLocked, setPlanLocked] = useState(false)
+  const [lastSavedPlan, setLastSavedPlan] = useState<SavedPlanSnapshot | null>(null)
+  const [pendingNavigationHref, setPendingNavigationHref] = useState<string | null>(null)
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
+  const restoredPlanRef = useRef(false)
   const [startYear, setStartYear] = useState<number>(new Date().getFullYear())
   const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear())
   const [currentTerm, setCurrentTerm] = useState<string>("Term 1")
@@ -573,6 +617,7 @@ export default function AcademicPlanner() {
     if (typeof window === "undefined") return
     window.scrollTo({ top: 0, behavior: "smooth" })
   }, [])
+
   // Track if we've already shown the regular-student curriculum notice
   const [regularNoticeShown, setRegularNoticeShown] = useState(false)
   const [regularNoticeTerm, setRegularNoticeTerm] = useState<{ year: number; term: string } | null>(null)
@@ -647,6 +692,19 @@ export default function AcademicPlanner() {
     }
   }, [])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!planDirty) return
+      event.preventDefault()
+      event.returnValue = ""
+    }
+
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload)
+  }, [planDirty])
+
   // Load persisted settings
   useEffect(() => {
     try {
@@ -703,6 +761,56 @@ export default function AcademicPlanner() {
     return () => {
       clearCreditSaveMessageTimeout()
       clearConfirmShakeTimeout()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = window.localStorage.getItem("courseCodeAliases")
+      if (!stored) return
+      const parsed = JSON.parse(stored)
+      if (parsed && typeof parsed === "object") {
+        registerCourseCodeAliases(parsed)
+      }
+    } catch (err) {
+      console.error("Failed to load course code aliases", err)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = window.localStorage.getItem("scheduleMakerData")
+      if (!stored) return
+      const parsed = JSON.parse(stored)
+      const selected = Array.isArray(parsed?.selectedCourses) ? parsed.selectedCourses : []
+      if (!selected.length) return
+
+      const mapping: Record<string, CourseSection> = {}
+      selected.forEach((course: any) => {
+        const canonical = resolveCanonicalCourseCode(course?.canonicalCode || course?.courseCode || "")
+        const section = (course?.section || "").trim()
+        if (!canonical || !section) return
+
+        const key = `${canonical}__${section.toUpperCase()}`
+        mapping[key] = {
+          courseCode: course?.courseCode || canonical,
+          section,
+          classSize: course?.classSize ?? "",
+          remainingSlots: course?.remainingSlots ?? "0",
+          meetingDays: course?.meetingDays ?? (Array.isArray(course?.parsedDays) ? course.parsedDays.join("") : ""),
+          meetingTime:
+            course?.meetingTime ||
+            (course?.timeStart && course?.timeEnd ? `${course.timeStart}-${course.timeEnd}` : ""),
+          room: course?.room ?? course?.displayRoom ?? "",
+          hasSlots: typeof course?.hasSlots === "boolean" ? course.hasSlots : true,
+        }
+      })
+
+      setSavedScheduleSelections(mapping)
+    } catch (err) {
+      console.error("Failed to load saved schedule selections", err)
     }
   }, [])
 
@@ -882,16 +990,16 @@ export default function AcademicPlanner() {
 
   // Generate graduation plan when courses or available sections change
   useEffect(() => {
-    if (!loading) {
+    if (!loading && !planDirty && !planLocked) {
       generateGraduationPlan()
     }
-  }, [courses, availableSections, loading, currentYear, currentTerm])
+  }, [courses, availableSections, loading, currentYear, currentTerm, planDirty, planLocked])
   // Regenerate when priorities/locks change
   useEffect(() => {
-    if (!loading) {
+    if (!loading && !planDirty && !planLocked) {
       generateGraduationPlan()
     }
-  }, [coursePriorities, lockedPlacements])
+  }, [coursePriorities, lockedPlacements, loading, planDirty, planLocked])
 
   // Detect conflicts whenever graduation plan changes
   useEffect(() => {
@@ -1164,6 +1272,7 @@ export default function AcademicPlanner() {
   ])
 
   const openRegeneratePlanDialog = useCallback(() => {
+    setPlanLocked(false)
     setPendingRegenerateStrategy(plannerStrategy)
     setPendingStrictGuardrails(strictGuardrailsEnabled)
     setPendingRegenerateMin(minCreditsPerTerm)
@@ -1473,11 +1582,31 @@ export default function AcademicPlanner() {
     if (availableSections.length === 0) return false
 
     // Treat full sections as available for matching, even if slots are zero
-    return availableSections.some((section) => section.courseCode === courseCode)
+    const canonical = resolveCanonicalCourseCode(courseCode)
+    return availableSections.some((section) => resolveCanonicalCourseCode(section.courseCode) === canonical)
   }
+
+  const pickSavedSection = useCallback(
+    (courseCode: string): CourseSection | undefined => {
+      const canonical = resolveCanonicalCourseCode(courseCode)
+      const available = getAvailableSections(courseCode)
+      const availableMatch = available.find((section) => {
+        const key = `${canonical}__${(section.section || "").trim().toUpperCase()}`
+        return Boolean(savedScheduleSelections[key])
+      })
+      if (availableMatch) return availableMatch
+
+      const fallback = Object.entries(savedScheduleSelections).find(([key]) => key.startsWith(`${canonical}__`))
+      return fallback ? fallback[1] : undefined
+    },
+    [savedScheduleSelections],
+  )
 
   // Find the best section for a course (prefer open slots, otherwise take any)
   const findBestSection = (courseCode: string): CourseSection | undefined => {
+    const saved = pickSavedSection(courseCode)
+    if (saved) return saved
+
     const sections = getAvailableSections(courseCode)
     if (sections.length === 0) return undefined
     const open = sections.filter((s) => s.hasSlots)
@@ -1505,9 +1634,136 @@ export default function AcademicPlanner() {
 
   // Get available sections for a course
   const getAvailableSections = (courseCode: string): CourseSection[] => {
-    const sections = availableSections.filter((section) => section.courseCode === courseCode)
+    const canonical = resolveCanonicalCourseCode(courseCode)
+    const sections = availableSections.filter(
+      (section) => resolveCanonicalCourseCode(section.courseCode) === canonical,
+    )
     return sections.length > 0 ? sections : []
   }
+
+  const buildSavedPlanSnapshot = useCallback((): SavedPlanSnapshot | null => {
+    if (!graduationPlan || graduationPlan.length === 0) return null
+
+    const semesters: SavedPlanSemester[] = graduationPlan.map((semester) => ({
+      year: semester.year,
+      term: normalizeTermLabel(semester.term),
+      courseIds: semester.courses.map((course) => course.id),
+    }))
+
+    return {
+      version: 1,
+      startYear,
+      semesters,
+      savedAt: Date.now(),
+    }
+  }, [graduationPlan, startYear])
+
+  const hydrateSavedPlan = useCallback(
+    (snapshot: SavedPlanSnapshot | null): SemesterPlan[] | null => {
+      if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.semesters)) return null
+
+      const courseMap = new Map(courses.map((course) => [course.id, course]))
+      const hydrated: SemesterPlan[] = snapshot.semesters
+        .map((semester) => {
+          const coursesForTerm: PlanCourse[] = semester.courseIds
+            .map((courseId) => courseMap.get(courseId))
+            .filter(Boolean)
+            .map((course) => {
+              const available = getAvailableSections(course!.code)
+              const recommended = findBestSection(course!.code) || available[0] || createMockSection(course!.code)
+
+              return {
+                ...course!,
+                prerequisites: Array.isArray((course as any)?.prerequisites) ? (course as any).prerequisites : [],
+                availableSections: available,
+                needsPetition: courseNeedsPetitionForTerm(course!, semester.term),
+                recommendedSection: recommended,
+              }
+            })
+
+          if (coursesForTerm.length === 0) return null
+
+          return {
+            year: semester.year,
+            term: normalizeTermLabel(semester.term),
+            courses: coursesForTerm,
+          }
+        })
+        .filter(Boolean) as SemesterPlan[]
+
+      return applyPetitionFlagsToPlan(hydrated)
+    },
+    [courses, getAvailableSections, findBestSection],
+  )
+
+  const saveCurrentPlan = useCallback(() => {
+    const snapshot = buildSavedPlanSnapshot()
+    if (!snapshot) return false
+
+    try {
+      window.localStorage.setItem(SAVED_PLAN_STORAGE_KEY, JSON.stringify(snapshot))
+      setLastSavedPlan(snapshot)
+      setPlanDirty(false)
+      setPlanLocked(true)
+      return true
+    } catch (err) {
+      console.error("Failed to save planner plan", err)
+      return false
+    }
+  }, [buildSavedPlanSnapshot])
+
+  // Auto-save local snapshot shortly after any edits to the plan
+  useEffect(() => {
+    if (loading || !planDirty) return
+    const timeout = window.setTimeout(() => {
+      saveCurrentPlan()
+    }, 1200)
+    return () => window.clearTimeout(timeout)
+  }, [loading, planDirty, graduationPlan, startYear, saveCurrentPlan])
+
+  const handleNavigationIntent = useCallback(
+    (href: string, event?: React.MouseEvent<HTMLAnchorElement>) => {
+      if (planDirty) {
+        event?.preventDefault()
+        setPendingNavigationHref(href)
+        setLeaveDialogOpen(true)
+        return
+      }
+      router.push(href)
+    },
+    [planDirty, router],
+  )
+
+  const proceedNavigation = useCallback(
+    (href: string | null) => {
+      if (!href) return
+      router.push(href)
+    },
+    [router],
+  )
+
+  const handleLeaveWithoutSaving = useCallback(() => {
+    const target = pendingNavigationHref
+    setLeaveDialogOpen(false)
+    setPendingNavigationHref(null)
+    proceedNavigation(target)
+  }, [pendingNavigationHref, proceedNavigation])
+
+  const handleSaveAndLeave = useCallback(() => {
+    const target = pendingNavigationHref
+    const saved = saveCurrentPlan()
+    setLeaveDialogOpen(false)
+    setPendingNavigationHref(null)
+    if (target) {
+      proceedNavigation(target)
+    }
+    return saved
+  }, [pendingNavigationHref, proceedNavigation, saveCurrentPlan])
+
+  const handleStayOnPage = useCallback(() => {
+    setLeaveDialogOpen(false)
+    setPendingNavigationHref(null)
+  }, [])
 
   // Convert day abbreviation to full day name
   const getFullDayName = (day: string): string => {
@@ -2800,6 +3056,8 @@ export default function AcademicPlanner() {
       timestamp: new Date(),
     }
     setMoveHistory((prev) => [newEntry, ...prev.slice(0, 9)]) // Keep last 10 entries
+    setPlanDirty(true)
+    setPlanLocked(false)
   }
 
   // Undo the last move
@@ -3009,8 +3267,6 @@ export default function AcademicPlanner() {
           targetTerm: normalizeTermLabel(targetTerm),
           reasons: creditReasons,
         })
-        resetMoveSelects()
-        return
       }
       moveCourseToTerm(courseId, targetYear, targetTerm)
       resetMoveSelects()
@@ -3173,17 +3429,6 @@ export default function AcademicPlanner() {
     }
 
     const creditReasons = getCreditGuardrailReasonsForMoves(plannedMoves)
-    if (creditReasons.length > 0) {
-      const course = findCourseById(courseId)
-      setCreditGuardrailDialog({
-        courseCode: course?.code ?? courseId,
-        courseName: course?.name ?? course?.code ?? courseId,
-        targetYear,
-        targetTerm: targetTermNormalized,
-        reasons: creditReasons,
-      })
-      return
-    }
 
     const changes: MoveHistoryEntry["changes"] = []
 
@@ -3231,6 +3476,17 @@ export default function AcademicPlanner() {
 
     const baseDescription = `${movedCourse?.code || "Course"} moved to ${formatAcademicYear(targetYear)} ${targetTerm}`
     const description = summaryBits.length > 0 ? `${baseDescription}; also moved ${summaryBits.join(" and ")}` : baseDescription
+
+    if (creditReasons.length > 0) {
+      const course = findCourseById(courseId)
+      setCreditGuardrailDialog({
+        courseCode: course?.code ?? courseId,
+        courseName: course?.name ?? course?.code ?? courseId,
+        targetYear,
+        targetTerm: targetTermNormalized,
+        reasons: creditReasons,
+      })
+    }
 
     addToMoveHistory({
       type: "single",
@@ -3932,6 +4188,8 @@ export default function AcademicPlanner() {
 
       // Clear move history since we're starting fresh
       setMoveHistory([])
+      setPlanDirty(true)
+      setPlanLocked(false)
 
       // Close import dialog
       setImportDialogOpen(false)
@@ -4026,6 +4284,28 @@ export default function AcademicPlanner() {
     },
     [currentYear, currentTerm],
   )
+
+  useEffect(() => {
+    if (loading || restoredPlanRef.current) return
+
+    try {
+      const raw = window.localStorage.getItem(SAVED_PLAN_STORAGE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as SavedPlanSnapshot
+      const hydrated = hydrateSavedPlan(parsed)
+      if (!hydrated || hydrated.length === 0) return
+
+      setGraduationPlan(hydrated)
+      syncOpenSemesters(hydrated)
+      setMoveHistory([])
+      setPlanDirty(false)
+      setPlanLocked(true)
+      setLastSavedPlan(parsed)
+      restoredPlanRef.current = true
+    } catch (err) {
+      console.error("Failed to restore saved planner plan", err)
+    }
+  }, [hydrateSavedPlan, loading, syncOpenSemesters])
 
   // Toggle course selection
   const toggleCourseSelection = (courseId: string) => {
@@ -5500,7 +5780,7 @@ export default function AcademicPlanner() {
         )}
       >
         <div className="mb-6">
-          <QuickNavigation />
+          <QuickNavigation onNavigate={handleNavigationIntent} />
         </div>
 
         <div className="mb-6" ref={topHeaderRef}>
@@ -5685,7 +5965,12 @@ export default function AcademicPlanner() {
               )}
             >
               <Button variant="outline" className="w-full" asChild>
-                <Link href="/course-tracker">Open Course Tracker</Link>
+                <Link
+                  href="/course-tracker"
+                  onClick={(event) => handleNavigationIntent("/course-tracker", event)}
+                >
+                  Open Course Tracker
+                </Link>
               </Button>
               <Button
                 onClick={confirmPeriodDialog}
@@ -6432,7 +6717,7 @@ export default function AcademicPlanner() {
                     The current plan shows the default curriculum progression. You can still use all planning features
                     to customize your path.
                     <div className="mt-3">
-                      <Link href="/course-tracker">
+                      <Link href="/course-tracker" onClick={(event) => handleNavigationIntent("/course-tracker", event)}>
                         <Button size="sm" className="mr-2">
                           <BookOpen className="h-4 w-4 mr-1" />
                           Update Course Status
@@ -7842,7 +8127,7 @@ export default function AcademicPlanner() {
 
             {/* Bottom Navigation */}
             <div className="mt-10 mb-6" ref={bottomNavigationRef}>
-              <QuickNavigation showBackToTop />
+              <QuickNavigation showBackToTop onNavigate={handleNavigationIntent} />
             </div>
           </>
         )}
