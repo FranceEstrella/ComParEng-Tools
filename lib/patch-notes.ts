@@ -14,6 +14,39 @@ export interface PatchNote {
 }
 
 export const patchNotes: PatchNote[] = [
+  {
+    version: "1.48",
+    date: "December 27, 2025",
+    title: "Alias consistency & planner prompts (silent)",
+    silent: true,
+    changes: [
+      {
+        type: "improved",
+        description:
+          "Schedule Maker and Academic Planner now show your saved display aliases everywhere they list a course, including available selections, conflicts, exports, and tables for clearer cross-tool consistency.",
+      },
+      {
+        type: "improved",
+        description:
+          "Alias-aware formatting now flows through swap options, unscheduled panels, dependency badges, and ICS exports so alternate codes stay visible alongside canonical ones.",
+      },
+      {
+        type: "fixed",
+        description:
+          "The Academic Planner’s ‘Confirm current academic period’ dialog no longer reopens on every refresh; it now waits for saved courses to load and only re-prompts when the active-course set actually changes.",
+      },
+      {
+        type: "improved",
+        description:
+          "Schedule Maker search now honors saved course code aliases and keeps the search field focused while suggestions update.",
+      },
+      {
+        type: "improved",
+        description:
+          "Academic Planner reuses your Schedule Maker selections as fallback sections when live offerings are empty, so recommendations stay aligned with what you already picked.",
+      },
+    ],
+  },
     {
     version: "1.47",
     date: "December 11, 2025",

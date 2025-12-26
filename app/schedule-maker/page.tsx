@@ -47,6 +47,7 @@ import {
   registerExternalCourses,
   registerExternalCourseCodes,
   registerCourseCodeAliases,
+  getAliasesForCanonical,
 } from "@/lib/course-data"
 import { loadCurriculumSignature } from "@/lib/course-storage"
 import { Input } from "@/components/ui/input"
@@ -193,23 +194,32 @@ interface CourseCustomization {
   color?: string
 }
 
-const getDefaultSelectedCourseTitle = (course: SelectedCourse) => {
+const getDefaultSelectedCourseTitle = (course: SelectedCourse, formatCode?: (code: string) => string) => {
   const safeName = course.name || "Unknown Course"
   const safeSection = course.section || ""
-  return `[${course.courseCode}] ${safeName}${safeSection ? ` | ${safeSection}` : ""}`
+  const codeLabel = formatCode ? formatCode(course.courseCode) : course.courseCode
+  return `[${codeLabel}] ${safeName}${safeSection ? ` | ${safeSection}` : ""}`
 }
 
-const getSelectedCourseDisplayTitle = (course: SelectedCourse, customization?: CourseCustomization) => {
+const getSelectedCourseDisplayTitle = (
+  course: SelectedCourse,
+  customization?: CourseCustomization,
+  formatCode?: (code: string) => string,
+) => {
   const customTitle = customization?.customTitle?.trim()
   if (customTitle) {
     return customTitle
   }
-  return getDefaultSelectedCourseTitle(course)
+  return getDefaultSelectedCourseTitle(course, formatCode)
 }
 
-const getSelectedCourseIdentifierLabel = (course: SelectedCourse) => {
+const getSelectedCourseIdentifierLabel = (
+  course: SelectedCourse,
+  formatCode?: (code: string) => string,
+) => {
   const safeName = course.name || "Unknown Course"
-  return `${course.courseCode} - ${safeName}`
+  const codeLabel = formatCode ? formatCode(course.courseCode) : course.courseCode
+  return `${codeLabel} - ${safeName}`
 }
 
 interface GroupedCourseSet {
@@ -518,6 +528,63 @@ export default function ScheduleMaker() {
   )
   const [curriculumSignature, setCurriculumSignature] = useState<string>("")
   const [importStatus, setImportStatus] = useState<null | { type: "success" | "warning" | "error"; message: string }>(null)
+  const [displayAliasMap, setDisplayAliasMap] = useState<Map<string, string>>(new Map())
+
+  const normalizeAliasState = useCallback(
+    (raw: Record<string, unknown> | null | undefined): Record<string, { canonical: string; displayAlias?: boolean }> => {
+      if (!raw || typeof raw !== "object") return {}
+      const next: Record<string, { canonical: string; displayAlias?: boolean }> = {}
+      Object.entries(raw).forEach(([legacy, value]) => {
+        if (!legacy) return
+        if (typeof value === "string") {
+          next[legacy.toUpperCase()] = { canonical: value.toUpperCase(), displayAlias: true }
+          return
+        }
+        if (value && typeof value === "object" && typeof (value as any).canonical === "string") {
+          const canonical = (value as any).canonical.toUpperCase()
+          const displayAlias = (value as any).displayAlias !== false
+          next[legacy.toUpperCase()] = { canonical, displayAlias }
+        }
+      })
+      return next
+    },
+    [],
+  )
+
+  const registerAliases = useCallback(
+    (aliases: Record<string, { canonical: string; displayAlias?: boolean }>) => {
+      const mappedEntries = Object.entries(aliases || {})
+        .map(([legacy, value]) => {
+          const canonical = value?.canonical
+          return canonical ? [legacy, canonical] : null
+        })
+        .filter((entry): entry is [string, string] => Array.isArray(entry))
+
+      if (mappedEntries.length > 0) {
+        registerCourseCodeAliases(Object.fromEntries(mappedEntries))
+      }
+
+      const map = new Map<string, string>()
+      Object.entries(aliases || {}).forEach(([legacy, value]) => {
+        const canonical = value?.canonical
+        const displayAlias = value?.displayAlias !== false
+        if (!canonical) return
+        const canonicalResolved = resolveCanonicalCourseCode(canonical)
+        map.set(canonicalResolved, displayAlias ? canonicalResolved : legacy.toUpperCase())
+      })
+      setDisplayAliasMap(map)
+    },
+    [],
+  )
+
+  const getDisplayCode = useCallback(
+    (code: string) => {
+      const canonical = resolveCanonicalCourseCode(code || "")
+      const alias = displayAliasMap.get(canonical)
+      return alias ?? canonical
+    },
+    [displayAliasMap],
+  )
   const [importErrorDialog, setImportErrorDialog] = useState<ImportDialogConfig | null>(null)
   const [staleImportNotice, setStaleImportNotice] = useState<string | null>(null)
   const [icsDialogOpen, setIcsDialogOpen] = useState(false)
@@ -588,12 +655,13 @@ export default function ScheduleMaker() {
       if (!stored) return
       const parsed = JSON.parse(stored)
       if (parsed && typeof parsed === "object") {
-        registerCourseCodeAliases(parsed)
+        const normalized = normalizeAliasState(parsed)
+        registerAliases(normalized)
       }
     } catch (err) {
       console.error("Failed to load course code aliases", err)
     }
-  }, [])
+  }, [normalizeAliasState, registerAliases])
 
   const noActiveCourses = activeCourses.length === 0
 
@@ -1447,7 +1515,7 @@ export default function ScheduleMaker() {
         : [{ weekday: 1, code: "MO" }]
 
       const customizationKey = `${course.courseCode}-${course.section}`
-      const summary = getSelectedCourseDisplayTitle(course, customizations[customizationKey])
+      const summary = getSelectedCourseDisplayTitle(course, customizations[customizationKey], getDisplayCode)
       const description = `Section: ${course.section}\nRoom: ${course.displayRoom}`
 
       return dayInfo.map((day, dayIndex) => {
@@ -1582,6 +1650,8 @@ export default function ScheduleMaker() {
     const filtered = filteredCourses.filter((course) => {
       const courseDetails = getCourseDetails(course.courseCode)
       const courseName = (courseDetails?.name || "").toLowerCase()
+      const canonicalCode = getCanonicalCourseCode(course.courseCode)
+      const aliasMatches = getAliasesForCanonical(canonicalCode).map((alias) => alias.toLowerCase())
       const sectionValue = (course.section || "").toLowerCase()
       const meetingDaysValue = (course.meetingDays || "").toLowerCase()
       const meetingTimeRaw = (course.meetingTime || "").toLowerCase()
@@ -1591,6 +1661,8 @@ export default function ScheduleMaker() {
       const matchesSearch =
         normalizedSearch === "" ||
         course.courseCode.toLowerCase().includes(normalizedSearch) ||
+        canonicalCode.toLowerCase().includes(normalizedSearch) ||
+        aliasMatches.some((alias) => alias.includes(normalizedSearch)) ||
         courseName.includes(normalizedSearch) ||
         sectionValue.includes(normalizedSearch) ||
         meetingDaysValue.includes(normalizedSearch) ||
@@ -1958,11 +2030,12 @@ export default function ScheduleMaker() {
       const canonical = getCanonicalCourseCode(courses[0].courseCode)
       const details = getCourseDetails(canonical) || getCourseDetails(courses[0].courseCode)
       const name = details?.name
-      if (!name) return value
+      if (!name) return getDisplayCode(value)
       const creditsLabel = typeof details?.credits === "number" ? `${details.credits} unit${details.credits === 1 ? "" : "s"}` : null
-      return creditsLabel ? `${value} - ${name} (${creditsLabel})` : `${value} - ${name}`
+      const displayValue = getDisplayCode(value)
+      return creditsLabel ? `${displayValue} - ${name} (${creditsLabel})` : `${displayValue} - ${name}`
     },
-    [groupBy],
+    [groupBy, getDisplayCode],
   )
 
   // Find active courses that don't have available sections
@@ -2055,7 +2128,7 @@ const downloadScheduleImage = async () => {
     setCustomizations(prev => ({
       ...prev,
       [key]: {
-        customTitle: tempCustomTitle || getDefaultSelectedCourseTitle(editingCourse),
+        customTitle: tempCustomTitle || getDefaultSelectedCourseTitle(editingCourse, getDisplayCode),
         color: tempCustomColor,
       }
     }))
@@ -2197,7 +2270,7 @@ const renderScheduleView = () => {
               const customization = customizations[key] || {};
               const bgColor = customization.color || DEFAULT_CUSTOM_COLOR;
               const textColor = getContrastColor(bgColor);
-              const displayTitle = getSelectedCourseDisplayTitle(course, customization);
+              const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode);
               
               // Calculate exact positions with 30-minute adjustment
               const [startHour, startMinute] = course.timeStart.split(':').map(Number);
@@ -2786,7 +2859,7 @@ const renderScheduleView = () => {
                                         return (
                                           <TableRow key={`${course.courseCode}-${course.section}-${index}`}>
                                             <TableCell>{departmentValue}</TableCell>
-                                            <TableCell>{course.courseCode}</TableCell>
+                                            <TableCell>{getDisplayCode(course.courseCode)}</TableCell>
                                             <TableCell>{courseDetails.name}</TableCell>
                                             <TableCell>{course.section}</TableCell>
                                             <TableCell>
@@ -2821,7 +2894,7 @@ const renderScheduleView = () => {
                                                     <div className="space-y-4">
                                                       <h4 className="font-medium">Replace Existing Section</h4>
                                                       <p className="text-sm">
-                                                        You already have {course.courseCode} section {existingCourse?.section}{" "}
+                                                        You already have {getDisplayCode(course.courseCode)} section {existingCourse?.section}{" "}
                                                         in your schedule. Do you want to replace it with section{" "}
                                                         {course.section}?
                                                       </p>
@@ -2920,7 +2993,7 @@ const renderScheduleView = () => {
                                     <CardHeader className="pb-2">
                                       <div className="flex justify-between items-start">
                                         <div>
-                                          <p className="text-sm font-medium">{course.courseCode}</p>
+                                          <p className="text-sm font-medium">{getDisplayCode(course.courseCode)}</p>
                                           <p className="text-xs text-gray-500 dark:text-gray-400">
                                             {courseDetails.name} - Section {course.section}
                                           </p>
@@ -2974,7 +3047,7 @@ const renderScheduleView = () => {
                                             <div className="space-y-4">
                                               <h4 className="font-medium">Replace Existing Section</h4>
                                               <p className="text-sm">
-                                                You already have {course.courseCode} section {existingCourse?.section}{" "}
+                                                You already have {getDisplayCode(course.courseCode)} section {existingCourse?.section}{" "}
                                                 in your schedule. Do you want to replace it with section{" "}
                                                 {course.section}?
                                               </p>
@@ -3084,8 +3157,8 @@ const renderScheduleView = () => {
                             const key = `${course.courseCode}-${course.section}`
                             const customization = customizations[key] || {}
                             const courseColor = customization.color || DEFAULT_CUSTOM_COLOR
-                            const displayTitle = getSelectedCourseDisplayTitle(course, customization)
-                            const identifierLabel = getSelectedCourseIdentifierLabel(course)
+                            const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode)
+                            const identifierLabel = getSelectedCourseIdentifierLabel(course, getDisplayCode)
 
                             return (
                                 <motion.div
@@ -3286,12 +3359,12 @@ const renderScheduleView = () => {
                             const customization = customizations[key] || {}
                             const courseColor = customization.color || DEFAULT_CUSTOM_COLOR
                             const colorInputValue = customColorInputs[key] ?? courseColor
-                            const displayTitle = getSelectedCourseDisplayTitle(course, customization)
-                            const inputTitleValue = customization.customTitle ?? getDefaultSelectedCourseTitle(course)
+                            const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode)
+                            const inputTitleValue = customization.customTitle ?? getDefaultSelectedCourseTitle(course, getDisplayCode)
                             
                             return (
                               <TableRow key={key}>
-                                <TableCell>{course.courseCode}</TableCell>
+                                <TableCell>{getDisplayCode(course.courseCode)}</TableCell>
                                 <TableCell>
                                   <Popover>
                                     <PopoverTrigger asChild>
@@ -3396,9 +3469,9 @@ const renderScheduleView = () => {
                         const customization = customizations[key] || {}
                         const courseColor = customization.color || DEFAULT_CUSTOM_COLOR
                         const colorInputValue = customColorInputs[key] ?? courseColor
-                        const displayTitle = getSelectedCourseDisplayTitle(course, customization)
-                        const identifierLabel = getSelectedCourseIdentifierLabel(course)
-                        const defaultTitleValue = customization.customTitle ?? getDefaultSelectedCourseTitle(course)
+                        const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode)
+                        const identifierLabel = getSelectedCourseIdentifierLabel(course, getDisplayCode)
+                        const defaultTitleValue = customization.customTitle ?? getDefaultSelectedCourseTitle(course, getDisplayCode)
 
                         return (
                           <Card key={index} className="relative overflow-hidden" style={{

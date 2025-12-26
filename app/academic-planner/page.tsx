@@ -506,12 +506,14 @@ export default function AcademicPlanner() {
   const router = useRouter()
 
   const [courses, setCourses] = useState<Course[]>(initialCourses as unknown as Course[])
+  const [coursesHydrated, setCoursesHydrated] = useState(false)
   const [availableSections, setAvailableSections] = useState<CourseSection[]>([])
   const [savedScheduleSelections, setSavedScheduleSelections] = useState<Record<string, CourseSection>>({})
   const [graduationPlan, setGraduationPlan] = useState<SemesterPlan[]>([])
   const [planDirty, setPlanDirty] = useState(false)
   const [planLocked, setPlanLocked] = useState(false)
   const [lastSavedPlan, setLastSavedPlan] = useState<SavedPlanSnapshot | null>(null)
+  const [displayAliasMap, setDisplayAliasMap] = useState<Map<string, string>>(new Map())
   const [pendingNavigationHref, setPendingNavigationHref] = useState<string | null>(null)
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
   const restoredPlanRef = useRef(false)
@@ -660,6 +662,62 @@ export default function AcademicPlanner() {
     return map
   }, [courses])
 
+  const normalizeAliasState = useCallback(
+    (raw: Record<string, unknown> | null | undefined): Record<string, { canonical: string; displayAlias?: boolean }> => {
+      if (!raw || typeof raw !== "object") return {}
+      const next: Record<string, { canonical: string; displayAlias?: boolean }> = {}
+      Object.entries(raw).forEach(([legacy, value]) => {
+        if (!legacy) return
+        if (typeof value === "string") {
+          next[legacy.toUpperCase()] = { canonical: value.toUpperCase(), displayAlias: true }
+          return
+        }
+        if (value && typeof value === "object" && typeof (value as any).canonical === "string") {
+          const canonical = (value as any).canonical.toUpperCase()
+          const displayAlias = (value as any).displayAlias !== false
+          next[legacy.toUpperCase()] = { canonical, displayAlias }
+        }
+      })
+      return next
+    },
+    [],
+  )
+
+  const registerAliases = useCallback(
+    (aliases: Record<string, { canonical: string; displayAlias?: boolean }>) => {
+      const mappedEntries = Object.entries(aliases || {})
+        .map(([legacy, value]) => {
+          const canonical = value?.canonical
+          return canonical ? [legacy, canonical] : null
+        })
+        .filter((entry): entry is [string, string] => Array.isArray(entry))
+
+      if (mappedEntries.length > 0) {
+        registerCourseCodeAliases(Object.fromEntries(mappedEntries))
+      }
+
+      const map = new Map<string, string>()
+      Object.entries(aliases || {}).forEach(([legacy, value]) => {
+        const canonical = value?.canonical
+        const displayAlias = value?.displayAlias !== false
+        if (!canonical) return
+        const canonicalResolved = resolveCanonicalCourseCode(canonical)
+        map.set(canonicalResolved, displayAlias ? canonicalResolved : legacy.toUpperCase())
+      })
+      setDisplayAliasMap(map)
+    },
+    [],
+  )
+
+  const getDisplayCode = useCallback(
+    (code: string) => {
+      const canonical = resolveCanonicalCourseCode(code || "")
+      const alias = displayAliasMap.get(canonical)
+      return alias ?? canonical
+    },
+    [displayAliasMap],
+  )
+
   useEffect(() => {
     if (!shouldPromptCreditConfirmation) {
       setCreditLimitError(null)
@@ -771,12 +829,13 @@ export default function AcademicPlanner() {
       if (!stored) return
       const parsed = JSON.parse(stored)
       if (parsed && typeof parsed === "object") {
-        registerCourseCodeAliases(parsed)
+        const normalized = normalizeAliasState(parsed)
+        registerAliases(normalized)
       }
     } catch (err) {
       console.error("Failed to load course code aliases", err)
     }
-  }, [])
+  }, [normalizeAliasState, registerAliases])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -909,6 +968,7 @@ export default function AcademicPlanner() {
       }
 
       setLoading(false)
+      setCoursesHydrated(true)
     }
 
     loadData()
@@ -1082,7 +1142,7 @@ export default function AcademicPlanner() {
     graduationPlan.forEach((sem) => sem.courses.forEach((c) => plannedIds.add(c.id)))
 
     const matches = courses.filter((course) => {
-      const haystack = `${course.code} ${course.name}`.toLowerCase()
+      const haystack = `${getDisplayCode(course.code)} ${course.name}`.toLowerCase()
       return haystack.includes(query)
     })
 
@@ -1095,7 +1155,7 @@ export default function AcademicPlanner() {
         return a.code.localeCompare(b.code)
       })
       .slice(0, 8)
-  }, [courses, graduationPlan, searchQuery])
+  }, [courses, graduationPlan, searchQuery, getDisplayCode])
 
   const inferPriorityLabel = (course: { id: string; prerequisites?: string[]; credits?: number } | null | undefined):
     | keyof typeof PRIORITY_WEIGHTS
@@ -1292,7 +1352,7 @@ export default function AcademicPlanner() {
   }
 
   useEffect(() => {
-    if (typeof window === "undefined") return
+    if (typeof window === "undefined" || !coursesHydrated) return
     const key = `${currentYear}-${currentTerm}`
     setPeriodDialogKey(key)
     const hashKey = `${PERIOD_CONFIRM_PREFIX}:${key}:hash`
@@ -1305,7 +1365,7 @@ export default function AcademicPlanner() {
     if (!confirmed) {
       setPeriodDialogOpen(true)
     }
-  }, [currentYear, currentTerm, activeCourseHash])
+  }, [currentYear, currentTerm, activeCourseHash, coursesHydrated])
 
   const finalizePeriodDialogConfirmation = useCallback(() => {
     let nextRegularInfo: { year: number; term: string; courses: Course[] } | null = null
@@ -1578,12 +1638,15 @@ export default function AcademicPlanner() {
 
   // Check if a course has available sections
   const hasAvailableSections = (courseCode: string): boolean => {
-    // If no available sections data, assume it needs petition
-    if (availableSections.length === 0) return false
+    const canonical = resolveCanonicalCourseCode(courseCode)
 
     // Treat full sections as available for matching, even if slots are zero
-    const canonical = resolveCanonicalCourseCode(courseCode)
-    return availableSections.some((section) => resolveCanonicalCourseCode(section.courseCode) === canonical)
+    if (availableSections.some((section) => resolveCanonicalCourseCode(section.courseCode) === canonical)) {
+      return true
+    }
+
+    // Fall back to saved Schedule Maker selections when no live data is present
+    return Object.keys(savedScheduleSelections).some((key) => key.startsWith(`${canonical}__`))
   }
 
   const pickSavedSection = useCallback(
@@ -1638,7 +1701,15 @@ export default function AcademicPlanner() {
     const sections = availableSections.filter(
       (section) => resolveCanonicalCourseCode(section.courseCode) === canonical,
     )
-    return sections.length > 0 ? sections : []
+
+    if (sections.length > 0) return sections
+
+    // If no live sections are available, use the user's saved Schedule Maker choices as fallback
+    const savedSections = Object.entries(savedScheduleSelections)
+      .filter(([key]) => key.startsWith(`${canonical}__`))
+      .map(([, section]) => section)
+
+    return savedSections
   }
 
   const buildSavedPlanSnapshot = useCallback((): SavedPlanSnapshot | null => {
@@ -2889,7 +2960,7 @@ export default function AcademicPlanner() {
                   newConflicts.push({
                     type: "prerequisite",
                     severity: "error",
-                    message: `${course.code} requires ${prereqCourse.code} to be completed at least one term before ${semester.year} ${semester.term}`,
+                    message: `${getDisplayCode(course.code)} requires ${getDisplayCode(prereqCourse.code)} to be completed at least one term before ${semester.year} ${semester.term}`,
                     affectedCourses: [course.id, prereqId],
                   })
                 }
@@ -2899,7 +2970,7 @@ export default function AcademicPlanner() {
             if (!prereqScheduled) {
               newConflicts.push({
                 type: "prerequisite",
-                message: `${course.code} requires ${prereqCourse.code} but it's not scheduled in the plan`,
+                message: `${getDisplayCode(course.code)} requires ${getDisplayCode(prereqCourse.code)} but it's not scheduled in the plan`,
                 severity: "error",
                 affectedCourses: [course.id, prereqId],
               })
@@ -3236,7 +3307,7 @@ export default function AcademicPlanner() {
     if (course) {
       addToMoveHistory({
         type: "single",
-        description: `Moved ${course.code} from ${fromYear} ${fromTerm} to ${targetYear} ${targetTerm}`,
+        description: `Moved ${getDisplayCode(course.code)} from ${fromYear} ${fromTerm} to ${targetYear} ${targetTerm}`,
         changes: [
           {
             courseId,
@@ -3743,7 +3814,7 @@ export default function AcademicPlanner() {
         planData.forEach((semester) => {
           const academic = formatAcademicYear(semester.year)
           semester.courses.forEach((course) => {
-            content += `${academic},${semester.term},"${course.code}","${course.name}",${course.credits},"${course.section}","${course.schedule}","${course.room}"\n`
+            content += `${academic},${semester.term},"${getDisplayCode(course.code)}","${course.name}",${course.credits},"${course.section}","${course.schedule}","${course.room}"\n`
           })
         })
         content += `\n# Credit Preferences\n`
@@ -3764,7 +3835,7 @@ export default function AcademicPlanner() {
           content += `${formatAcademicYear(semester.year)} - ${semester.term}\n`
           content += "=" + "=".repeat(20) + "\n"
           semester.courses.forEach((course) => {
-            content += `${course.code} - ${course.name} (${course.credits} credits)\n`
+            content += `${getDisplayCode(course.code)} - ${course.name} (${course.credits} credits)\n`
             content += `  Section: ${course.section}\n`
             content += `  Schedule: ${course.schedule}\n`
             content += `  Room: ${course.room}\n\n`
@@ -5647,7 +5718,7 @@ export default function AcademicPlanner() {
     // Add to history
     addToMoveHistory({
       type: "single",
-      description: `Added ${course.code} to ${targetYear} ${targetTerm}`,
+      description: `Added ${getDisplayCode(course.code)} to ${targetYear} ${targetTerm}`,
       changes: [
         {
           courseId,
@@ -5705,7 +5776,8 @@ export default function AcademicPlanner() {
           <div key={`column-${columnIndex}`} className="flex flex-col gap-1">
             {columnCourses.map((linkedCourse) => {
               const description = linkedCourse.description?.trim()
-              const courseName = linkedCourse.name?.trim() || linkedCourse.code
+              const displayCode = getDisplayCode(linkedCourse.code)
+              const courseName = linkedCourse.name?.trim() || displayCode
               const tooltip = description ? `${courseName} — ${description}` : courseName
 
               return (
@@ -5717,7 +5789,7 @@ export default function AcademicPlanner() {
                       title={tooltip}
                       aria-label={tooltip}
                     >
-                      {linkedCourse.code}
+                      {displayCode}
                     </Badge>
                   </PopoverTrigger>
                   <PopoverContent
@@ -5725,8 +5797,8 @@ export default function AcademicPlanner() {
                     align="start"
                     className="w-64 space-y-1 text-xs"
                   >
-                    <p className="text-sm font-semibold">{linkedCourse.code}</p>
-                    {courseName && courseName !== linkedCourse.code && (
+                    <p className="text-sm font-semibold">{displayCode}</p>
+                    {courseName && courseName !== displayCode && (
                       <p className="text-sm">{courseName}</p>
                     )}
                     {description && (
@@ -5859,7 +5931,7 @@ export default function AcademicPlanner() {
                     <ul className="space-y-1">
                       {activeCourses.map((course) => (
                         <li key={`active-${course.id}`} className="flex items-center justify-between gap-3">
-                          <span className="font-medium text-blue-900 dark:text-blue-100">{course.code}</span>
+                          <span className="font-medium text-blue-900 dark:text-blue-100">{getDisplayCode(course.code)}</span>
                           <span className="text-muted-foreground truncate">{course.name}</span>
                         </li>
                       ))}
@@ -5884,7 +5956,7 @@ export default function AcademicPlanner() {
                     <ul className="space-y-1">
                       {currentTermPlanCourses.map((course) => (
                         <li key={`term-${course.id}`} className="flex items-center justify-between gap-3">
-                          <span className="font-medium text-emerald-900 dark:text-emerald-100">{course.code}</span>
+                          <span className="font-medium text-emerald-900 dark:text-emerald-100">{getDisplayCode(course.code)}</span>
                           <span className="text-muted-foreground truncate">
                             {course.name} • {course.credits}u
                           </span>
@@ -6015,7 +6087,7 @@ export default function AcademicPlanner() {
                 <ul className="space-y-1">
                   {regularPeriodInfo.courses.map((course) => (
                     <li key={`regular-${course.id}`} className="flex items-center justify-between gap-3">
-                      <span className="font-medium text-emerald-900 dark:text-emerald-100">{course.code}</span>
+                      <span className="font-medium text-emerald-900 dark:text-emerald-100">{getDisplayCode(course.code)}</span>
                       <span className="text-muted-foreground truncate">{course.name}</span>
                     </li>
                   ))}
@@ -7021,7 +7093,7 @@ export default function AcademicPlanner() {
                             <SelectContent>
                               {getAllCoursesInPlan().map((course) => (
                                 <SelectItem key={course.id} value={course.id}>
-                                  {course.code} ({course.location})
+                                  {getDisplayCode(course.code)} ({course.location})
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -7038,7 +7110,7 @@ export default function AcademicPlanner() {
                                 .filter((course) => course.id !== swapCourse1)
                                 .map((course, idx) => (
                                   <SelectItem key={`${course.id}-swap-${idx}`} value={course.id}>
-                                    {course.code} ({course.location})
+                                    {getDisplayCode(course.code)} ({course.location})
                                   </SelectItem>
                                 ))}
                             </SelectContent>
@@ -7211,7 +7283,7 @@ export default function AcademicPlanner() {
 
                             return (
                               <TableRow key={`${course.id}-unscheduled`}>
-                                <TableCell className="font-medium">{course.code}</TableCell>
+                                <TableCell className="font-medium">{getDisplayCode(course.code)}</TableCell>
                                 <TableCell>{course.name}</TableCell>
                                 <TableCell>{course.credits}</TableCell>
                                 <TableCell>
@@ -7380,7 +7452,7 @@ export default function AcademicPlanner() {
                               setSearchQuery("")
                             }}
                           >
-                            <span className="font-semibold">{course.code}</span>
+                            <span className="font-semibold">{getDisplayCode(course.code)}</span>
                             <span className="text-xs text-muted-foreground line-clamp-1">{course.name}</span>
                           </button>
                         ))
@@ -7567,7 +7639,7 @@ export default function AcademicPlanner() {
                                       </TableCell>
                                       <TableCell className="font-medium">
                                         <div className="flex items-center gap-2">
-                                          {course.code}
+                                          {getDisplayCode(course.code)}
                                           {courseIsInternship && (
                                             <Badge variant="outline" className="text-xs">
                                               Internship
@@ -7581,11 +7653,11 @@ export default function AcademicPlanner() {
                                               type="button"
                                               onClick={() =>
                                                 openConflictDialog(
-                                                  `${course.code} • ${formatAcademicYear(semester.year)} ${semester.term}`,
+                                                  `${getDisplayCode(course.code)} • ${formatAcademicYear(semester.year)} ${semester.term}`,
                                                   courseConflictEntries,
                                                 )
                                               }
-                                              aria-label={`View conflicts for ${course.code}`}
+                                              aria-label={`View conflicts for ${getDisplayCode(course.code)}`}
                                             >
                                               <AlertTriangle className="h-3 w-3" />
                                             </Button>
@@ -7974,7 +8046,7 @@ export default function AcademicPlanner() {
                                     .map((course) => (
                                       <div key={course.id} className="flex items-center justify-between text-xs">
                                         <div className="flex-1 min-w-0">
-                                          <div className="font-medium truncate">{course.code}</div>
+                                          <div className="font-medium truncate">{getDisplayCode(course.code)}</div>
                                           <div className="text-gray-500 truncate">{course.name}</div>
                                         </div>
                                         <Badge
@@ -8066,7 +8138,7 @@ export default function AcademicPlanner() {
                               .map((course) => (
                                 <div key={course.id} className="flex items-center justify-between text-xs">
                                   <div className="flex-1 min-w-0">
-                                    <div className="font-medium truncate">{course.code}</div>
+                                    <div className="font-medium truncate">{getDisplayCode(course.code)}</div>
                                     <div className="text-gray-500 truncate">{course.name}</div>
                                   </div>
                                   <Badge

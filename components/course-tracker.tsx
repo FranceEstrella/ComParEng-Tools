@@ -36,6 +36,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Progress } from "@/components/ui/progress"
 import { CircularProgress } from "@/components/ui/circular-progress"
 import { cn } from "@/lib/utils"
+import { Switch } from "@/components/ui/switch"
 import { motion, AnimatePresence } from "framer-motion"
 import { useTheme } from "next-themes"
 import Link from "next/link"
@@ -138,6 +139,10 @@ interface FilterAndSearchControlsProps {
   setViewMode: (v: "card" | "table") => void
   courses: Course[]
   onAddAliases: (aliases: Record<string, string>) => void
+  courseCodeAliases: Record<string, string | { canonical: string; displayAlias?: boolean }>
+  onRemoveAlias: (legacyCode: string) => void
+  onToggleAliasDisplay: (legacyCode: string, displayAlias: boolean) => void
+  getDisplayCode: (code: string) => string
 }
 
 interface OverallProgressProps {
@@ -845,6 +850,10 @@ const FilterAndSearchControls = ({
   setViewMode,
   courses,
   onAddAliases,
+  courseCodeAliases,
+  onRemoveAlias,
+  onToggleAliasDisplay,
+  getDisplayCode,
 }: FilterAndSearchControlsProps) => {
   const [open, setOpen] = useState(false)
   const [suggestions, setSuggestions] = useState<Course[]>([])
@@ -853,6 +862,18 @@ const FilterAndSearchControls = ({
   const [aliasError, setAliasError] = useState<string | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [pendingAlias, setPendingAlias] = useState<{ alias: string; canonical: string } | null>(null)
+  const [missingAliasDialogOpen, setMissingAliasDialogOpen] = useState(false)
+  const [aliasListOpen, setAliasListOpen] = useState(false)
+  const aliasEntries = useMemo(() => {
+    return Object.entries(courseCodeAliases || {})
+      .map(([legacy, value]) => {
+        const canonical = typeof value === "string" ? value : value?.canonical
+        const displayAlias = typeof value === "object" && value !== null ? value.displayAlias !== false : true
+        return { legacy, canonical, displayAlias }
+      })
+      .filter((entry) => Boolean(entry.canonical))
+      .sort((a, b) => a.legacy.localeCompare(b.legacy))
+  }, [courseCodeAliases])
 
   const matchesSearchTerm = useCallback(
     (course: Course, term: string) => {
@@ -894,8 +915,68 @@ const FilterAndSearchControls = ({
       setAliasError("Enter both the old code and the current code.")
       return
     }
+
+    if (rawAlias.length < 7) {
+      setAliasError("Legacy code must be at least 7 characters long.")
+      return
+    }
+
+    if (!/^[A-Z0-9]+$/.test(rawAlias)) {
+      setAliasError("Legacy code must use letters and numbers only.")
+      return
+    }
+
+    if (rawCanonical.length < 7) {
+      setAliasError("Current code must be at least 7 characters long.")
+      return
+    }
+
+    if (!/^[A-Z0-9]+$/.test(rawCanonical)) {
+      setAliasError("Current code must use letters and numbers only.")
+      return
+    }
+
     if (rawAlias === canonical) {
       setAliasError("Alias and canonical code should differ.")
+      return
+    }
+
+    const existingMapping = courseCodeAliases[rawAlias]
+    const existingCanonical = typeof existingMapping === "string" ? existingMapping : existingMapping?.canonical
+    if (existingCanonical) {
+      if (existingCanonical === canonical) {
+        setAliasError("This legacy code is already mapped to that current code.")
+      } else {
+        setAliasError("This legacy code is already mapped. Remove or change it first.")
+      }
+      return
+    }
+
+    const canonicalInUse = Object.entries(courseCodeAliases).find(([legacy, mapped]) => {
+      const mappedCanonical = typeof mapped === "string" ? mapped : mapped?.canonical
+      return mappedCanonical === canonical && legacy !== rawAlias
+    })
+    if (canonicalInUse) {
+      setAliasError(`Current code is already mapped from ${canonicalInUse[0]}. Remove that mapping first.`)
+      return
+    }
+
+    if (courseCodeAliases[canonical]) {
+      setAliasError("Current code is already used as a legacy alias. Clear that mapping first.")
+      return
+    }
+
+    const canonicalIsCurriculumCode = courses.some((course) => (course.code || "").toUpperCase() === canonical)
+    if (canonicalIsCurriculumCode) {
+      setAliasError("Current code is already an existing curriculum code. Choose a different target code or update that course directly.")
+      return
+    }
+
+    const legacyInCurriculum = courses.some((course) => (course.code || "").toUpperCase() === rawAlias)
+
+    if (!legacyInCurriculum) {
+      setAliasError(null)
+      setMissingAliasDialogOpen(true)
       return
     }
 
@@ -923,7 +1004,16 @@ const FilterAndSearchControls = ({
             </Label>
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Popover open={open && suggestions.length > 0} onOpenChange={setOpen}>
+              <Popover
+                open={open && suggestions.length > 0}
+                onOpenChange={(next) => {
+                  setOpen(next)
+                  if (next) {
+                    inputRef.current?.focus()
+                  }
+                }}
+                modal={false}
+              >
                 <PopoverTrigger asChild>
                   <Input
                     id="search-course"
@@ -969,7 +1059,7 @@ const FilterAndSearchControls = ({
                             }}
                             className="cursor-pointer"
                           >
-                            <span className="font-medium">{course.code}</span>
+                            <span className="font-medium">{getDisplayCode(course.code)}</span>
                             <span className="ml-2 text-sm text-muted-foreground">{course.name}</span>
                           </CommandItem>
                         ))}
@@ -1105,6 +1195,11 @@ const FilterAndSearchControls = ({
             </div>
           </div>
           {aliasError && <p className="mt-1 text-xs text-red-500">{aliasError}</p>}
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => setAliasListOpen(true)}>
+              View alias updates
+            </Button>
+          </div>
           <p className="mt-1 text-xs text-muted-foreground">
             Saved aliases are remembered across tools so searches and schedule imports recognize old course codes.
           </p>
@@ -1148,6 +1243,76 @@ const FilterAndSearchControls = ({
             </Button>
             <Button onClick={confirmAliasSave} disabled={!pendingAlias}>
               Confirm and save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={missingAliasDialogOpen} onOpenChange={setMissingAliasDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>No matching course code found</DialogTitle>
+            <DialogDescription>
+              The legacy code you entered is not in your current curriculum. Please double-check the code and try again.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setMissingAliasDialogOpen(false)}>Got it</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={aliasListOpen} onOpenChange={setAliasListOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Saved course code aliases</DialogTitle>
+            <DialogDescription>Legacy codes currently mapped to your active curriculum.</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-80 overflow-y-auto space-y-2">
+            {aliasEntries.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No aliases saved yet.</p>
+            ) : (
+              aliasEntries.map(({ legacy, canonical, displayAlias }) => (
+                <div
+                  key={`${legacy}-${canonical}`}
+                  className="flex items-center justify-between rounded border border-border/60 px-3 py-2 text-sm"
+                >
+                  <div className="flex flex-col">
+                    <span className="text-muted-foreground">Legacy</span>
+                    <span className="font-semibold">{legacy}</span>
+                  </div>
+                  <ArrowRight className="h-4 w-4 text-muted-foreground" />
+                  <div className="flex flex-col text-right">
+                    <span className="text-muted-foreground">Current</span>
+                    <span className="font-semibold">{canonical}</span>
+                  </div>
+                  <div className="flex items-center gap-2 ml-3">
+                    <div className="flex flex-col text-xs text-muted-foreground">
+                      <span>Display new code</span>
+                      <span>{displayAlias ? "On" : "Off"}</span>
+                    </div>
+                    <Switch
+                      checked={displayAlias}
+                      onCheckedChange={(checked) => onToggleAliasDisplay(legacy, checked)}
+                      aria-label={`Toggle display for alias ${legacy}`}
+                    />
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="ml-2"
+                    onClick={() => onRemoveAlias(legacy)}
+                    aria-label={`Remove alias ${legacy}`}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAliasListOpen(false)}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1721,7 +1886,9 @@ const AcademicTimeline = ({
 export default function CourseTracker() {
   const [courses, setCourses] = useState<Course[]>(() => hydrateCourses(initialCourses as unknown as Course[]))
   const [searchTerm, setSearchTerm] = useState("")
-  const [courseCodeAliases, setCourseCodeAliases] = useState<Record<string, string>>({})
+  const [courseCodeAliases, setCourseCodeAliases] = useState<
+    Record<string, string | { canonical: string; displayAlias?: boolean }>
+  >({})
   const [filterStatus, setFilterStatus] = useState<CourseStatus | "all" | "future">("all")
   const [openYears, setOpenYears] = useState<{ [key: number]: boolean }>({ 1: true }) // Start with Year 1 open
   const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null) // Track expanded card
@@ -1814,19 +1981,118 @@ export default function CourseTracker() {
     })
   }, [])
 
-  const handleAddAliases = useCallback((aliases: Record<string, string>) => {
-    if (!aliases || Object.keys(aliases).length === 0) return
-    setCourseCodeAliases((prev) => {
-      const next = { ...prev, ...aliases }
-      try {
-        window.localStorage.setItem("courseCodeAliases", JSON.stringify(next))
-      } catch (err) {
-        console.error("Failed to persist course code aliases", err)
-      }
-      registerCourseCodeAliases(next)
-      return next
+  const displayAliasMap = useMemo(() => {
+    const map = new Map<string, string>()
+    Object.entries(courseCodeAliases || {}).forEach(([legacy, value]) => {
+      const canonical = typeof value === "string" ? value : value?.canonical
+      const displayAlias = typeof value === "object" && value !== null ? value.displayAlias !== false : true
+      if (!canonical) return
+      const canonicalResolved = resolveCanonicalCourseCode(canonical)
+      // When displayAlias is true, show the canonical (new) code; otherwise show the legacy (old) code.
+      map.set(canonicalResolved, displayAlias ? canonicalResolved : legacy.toUpperCase())
     })
+    return map
+  }, [courseCodeAliases])
+
+  const getDisplayCode = useCallback(
+    (code: string) => {
+      const canonical = resolveCanonicalCourseCode(code)
+      const alias = displayAliasMap.get(canonical)
+      return alias ?? canonical
+    },
+    [displayAliasMap],
+  )
+
+  const normalizeAliasState = useCallback(
+    (raw: Record<string, unknown> | null | undefined): Record<string, { canonical: string; displayAlias?: boolean }> => {
+      if (!raw || typeof raw !== "object") return {}
+      const next: Record<string, { canonical: string; displayAlias?: boolean }> = {}
+      Object.entries(raw).forEach(([legacy, value]) => {
+        if (!legacy) return
+        if (typeof value === "string") {
+          next[legacy.toUpperCase()] = { canonical: value.toUpperCase(), displayAlias: true }
+          return
+        }
+        if (value && typeof value === "object" && typeof (value as any).canonical === "string") {
+          const canonical = (value as any).canonical.toUpperCase()
+          const displayAlias = (value as any).displayAlias !== false
+          next[legacy.toUpperCase()] = { canonical, displayAlias }
+        }
+      })
+      return next
+    },
+    [],
+  )
+
+  const registerAliasMap = useCallback((aliases: Record<string, string | { canonical: string; displayAlias?: boolean }>) => {
+    const mappedEntries = Object.entries(aliases || {})
+      .map(([legacy, value]) => {
+        const canonical = typeof value === "string" ? value : value?.canonical
+        return canonical ? [legacy, canonical] : null
+      })
+      .filter((entry): entry is [string, string] => Array.isArray(entry))
+
+    if (mappedEntries.length > 0) {
+      registerCourseCodeAliases(Object.fromEntries(mappedEntries))
+    }
   }, [])
+
+  const handleAddAliases = useCallback(
+    (aliases: Record<string, string>) => {
+      if (!aliases || Object.keys(aliases).length === 0) return
+      setCourseCodeAliases((prev) => {
+        const next = { ...prev }
+        Object.entries(aliases).forEach(([legacy, canonical]) => {
+          next[legacy.toUpperCase()] = { canonical: canonical.toUpperCase(), displayAlias: true }
+        })
+        try {
+          window.localStorage.setItem("courseCodeAliases", JSON.stringify(next))
+        } catch (err) {
+          console.error("Failed to persist course code aliases", err)
+        }
+        registerAliasMap(next)
+        return next
+      })
+    },
+    [registerAliasMap],
+  )
+
+  const handleRemoveAlias = useCallback(
+    (legacyCode: string) => {
+      setCourseCodeAliases((prev) => {
+        if (!prev || !prev[legacyCode]) return prev
+        const next = { ...prev }
+        delete next[legacyCode]
+        try {
+          window.localStorage.setItem("courseCodeAliases", JSON.stringify(next))
+        } catch (err) {
+          console.error("Failed to persist course code aliases", err)
+        }
+        registerAliasMap(next)
+        return next
+      })
+    },
+    [registerAliasMap],
+  )
+
+  const handleToggleAliasDisplay = useCallback(
+    (legacyCode: string, displayAlias: boolean) => {
+      setCourseCodeAliases((prev) => {
+        const existing = prev?.[legacyCode]
+        if (!existing) return prev
+        const canonical = typeof existing === "string" ? existing : existing.canonical
+        const next = { ...prev, [legacyCode]: { canonical, displayAlias } }
+        try {
+          window.localStorage.setItem("courseCodeAliases", JSON.stringify(next))
+        } catch (err) {
+          console.error("Failed to persist course code alias visibility", err)
+        }
+        registerAliasMap(next)
+        return next
+      })
+    },
+    [registerAliasMap],
+  )
 
   const handleCurrentYearLevelChange = useCallback(
     (value: number) => {
@@ -1861,14 +2127,13 @@ export default function CourseTracker() {
       const stored = window.localStorage.getItem("courseCodeAliases")
       if (!stored) return
       const parsed = JSON.parse(stored)
-      if (parsed && typeof parsed === "object") {
-        setCourseCodeAliases(parsed)
-        registerCourseCodeAliases(parsed)
-      }
+      const normalized = normalizeAliasState(parsed)
+      setCourseCodeAliases(normalized)
+      registerAliasMap(normalized)
     } catch (err) {
       console.error("Failed to load course code aliases", err)
     }
-  }, [])
+  }, [normalizeAliasState, registerAliasMap])
 
   useEffect(() => {
     const prefs = loadTrackerPreferences()
@@ -3070,7 +3335,7 @@ export default function CourseTracker() {
   // Download course progress as JSON file
   const downloadProgress = () => {
     const snapshot = {
-      version: 2,
+      version: 3,
       exportedAt: new Date().toISOString(),
       tracker: {
         startYear,
@@ -3078,6 +3343,7 @@ export default function CourseTracker() {
         currentTerm,
       },
       courses,
+      courseCodeAliases,
     }
     const dataStr = JSON.stringify(snapshot, null, 2)
     const dataUri = `data:application/json;charset=utf-8,${encodeURIComponent(dataStr)}`
@@ -3107,6 +3373,28 @@ export default function CourseTracker() {
 
         let parsedCourses: Course[] | null = null
         let parsedTracker: Partial<TrackerPreferences> | null = null
+        let parsedAliases: Record<string, { canonical: string; displayAlias?: boolean }> | null = null
+
+        const parseAliasMap = (
+          candidate: unknown,
+        ): Record<string, { canonical: string; displayAlias?: boolean }> | null => {
+          if (!candidate || typeof candidate !== "object") return null
+          const entries = Object.entries(candidate as Record<string, unknown>).filter(([key]) => typeof key === "string")
+          if (entries.length === 0) return null
+          const next: Record<string, { canonical: string; displayAlias?: boolean }> = {}
+          entries.forEach(([key, value]) => {
+            if (typeof value === "string") {
+              next[key.toUpperCase()] = { canonical: value.toUpperCase(), displayAlias: true }
+              return
+            }
+            if (value && typeof value === "object" && typeof (value as any).canonical === "string") {
+              const canonical = (value as any).canonical.toUpperCase()
+              const displayAlias = (value as any).displayAlias !== false
+              next[key.toUpperCase()] = { canonical, displayAlias }
+            }
+          })
+          return Object.keys(next).length ? next : null
+        }
 
         if (Array.isArray(parsed)) {
           parsedCourses = parsed as Course[]
@@ -3115,6 +3403,9 @@ export default function CourseTracker() {
           if (parsed.tracker && typeof parsed.tracker === "object") {
             parsedTracker = parsed.tracker as Partial<TrackerPreferences>
           }
+          parsedAliases =
+            parseAliasMap((parsed as Record<string, unknown>).courseCodeAliases) ||
+            parseAliasMap((parsed as Record<string, unknown>).aliases)
         }
 
         if (
@@ -3162,6 +3453,16 @@ export default function CourseTracker() {
           }
 
           saveTrackerPreferences({ startYear: nextStartYear, currentYearLevel: nextYearLevel, currentTerm: nextTerm })
+        }
+
+        if (parsedAliases) {
+          setCourseCodeAliases(parsedAliases)
+          registerAliasMap(parsedAliases)
+          try {
+            window.localStorage.setItem("courseCodeAliases", JSON.stringify(parsedAliases))
+          } catch (err) {
+            console.error("Failed to persist course code aliases from import", err)
+          }
         }
 
         setSetupUploadStatus({ fileName, uploadedAt: Date.now() })
@@ -3342,7 +3643,7 @@ export default function CourseTracker() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="font-medium text-slate-900 dark:text-slate-100">{course.code}</p>
+                          <p className="font-medium text-slate-900 dark:text-slate-100">{getDisplayCode(course.code)}</p>
                           <p className="text-xs text-muted-foreground">{course.name}</p>
                         </div>
                         <div className="flex items-center gap-1 text-xs">
@@ -3434,6 +3735,10 @@ export default function CourseTracker() {
           setViewMode={setViewMode}
           courses={courses}
           onAddAliases={handleAddAliases}
+          courseCodeAliases={courseCodeAliases}
+          onRemoveAlias={handleRemoveAlias}
+          onToggleAliasDisplay={handleToggleAliasDisplay}
+          getDisplayCode={getDisplayCode}
         />
 
         {/* Course Display Area */}
@@ -3572,7 +3877,7 @@ export default function CourseTracker() {
                                         <CardHeader className="pb-3">
                                           <div className="flex justify-between items-start gap-2">
                                             <CardTitle className="text-base font-semibold">
-                                              {course.code} - {course.name}
+                                              {getDisplayCode(course.code)} - {course.name}
                                             </CardTitle>
                                             <span className="text-xs font-medium text-muted-foreground whitespace-nowrap flex-shrink-0 pt-1">
                                               {course.credits} Credit{course.credits !== 1 ? "s" : ""}
@@ -3826,7 +4131,7 @@ export default function CourseTracker() {
 
                                   return (
                                     <tr key={course.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{course.code}</td>
+                                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{getDisplayCode(course.code)}</td>
                                       <td className="px-6 py-4 text-sm">{course.name}</td>
                                       <td className="px-6 py-4 whitespace-nowrap text-sm">{course.credits}</td>
                                       <td className="px-6 py-4 text-sm">
@@ -3846,7 +4151,7 @@ export default function CourseTracker() {
                                                     "bg-yellow-50 border-yellow-200 dark:bg-yellow-950/30 dark:border-yellow-700 dark:text-yellow-400",
                                                 )}
                                               >
-                                                {prereq.code}
+                                                {getDisplayCode(prereq.code)}
                                                 {getStatusIcon(prereq.status)}
                                               </Badge>
                                             ))
