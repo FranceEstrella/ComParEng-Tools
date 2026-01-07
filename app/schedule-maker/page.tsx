@@ -2,9 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   ArrowLeft,
@@ -12,7 +11,6 @@ import {
   RefreshCw,
   Plus,
   Trash,
-  AlertCircle,
   BookOpen,
   GraduationCap,
   FileWarning,
@@ -21,14 +19,11 @@ import {
   Check,
   Calendar,
   Download,
-  Edit,
-  ChevronDown,
+  Minus,
   Sun,
   Moon,
-  Palette,
-  Maximize2,
-  Minimize2,
   X,
+  Search,
 } from "lucide-react"
 import Link from "next/link"
 import { useTheme } from "next-themes"
@@ -49,7 +44,7 @@ import {
   registerCourseCodeAliases,
   getAliasesForCanonical,
 } from "@/lib/course-data"
-import { loadCurriculumSignature } from "@/lib/course-storage"
+import { loadCurriculumSignature, loadTrackerPreferences } from "@/lib/course-storage"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -61,6 +56,7 @@ import React from "react"
 import html2canvas from "html2canvas"
 import { format } from "date-fns"
 import { AnimatePresence, motion } from "framer-motion"
+import { Checkbox } from "@/components/ui/checkbox"
 
 // Time slot constants
 const DAYS = ["M", "Tu", "W", "Th", "F", "S"] as const;
@@ -117,6 +113,29 @@ const GROUP_LABELS: Record<GroupByOption, string> = {
   courseCode: "Course Code",
   room: "Room",
 }
+
+type TermName = "Term 1" | "Term 2" | "Term 3"
+
+const TERM_WINDOWS: { term: TermName; months: number[] }[] = [
+  { term: "Term 1", months: [8, 9, 10, 11] },
+  { term: "Term 2", months: [12, 1, 2, 3] },
+  { term: "Term 3", months: [4, 5, 6, 7] },
+]
+
+const deriveTermFromDate = (date = new Date()): TermName => {
+  const month = date.getMonth() + 1
+  const match = TERM_WINDOWS.find((window) => window.months.includes(month))
+  return match?.term ?? "Term 1"
+}
+
+const deriveAcademicYearLabel = (date = new Date()): string => {
+  const month = date.getMonth() + 1
+  const year = date.getFullYear()
+  const startYear = month >= 8 ? year : year - 1
+  return `${startYear}-${startYear + 1}`
+}
+
+const buildTermYearKey = (term: TermName, academicYear: string) => `${academicYear}::${term}`
 
 // Helper to calculate time slot position
 const getTimePosition = (time: string) => {
@@ -192,6 +211,18 @@ interface SelectedCourse extends CourseSection {
 interface CourseCustomization {
   customTitle?: string
   color?: string
+}
+
+interface ScheduleVersion {
+  id: string
+  name: string
+  selectedCourses: SelectedCourse[]
+  customizations: Record<string, CourseCustomization>
+}
+
+interface TermYearVersionState {
+  activeVersionId: string
+  versions: ScheduleVersion[]
 }
 
 const getDefaultSelectedCourseTitle = (course: SelectedCourse, formatCode?: (code: string) => string) => {
@@ -417,7 +448,8 @@ const dayAbbreviationToDay = {
 function parseDays(daysString: string): DayToken[] {
   const tokens: DayToken[] = [];
   let i = 0;
-  const s = daysString.toUpperCase().replace(/\s+/g, '');
+  // Remove whitespace and slashes as separators
+  const s = daysString.toUpperCase().replace(/[\s/]+/g, '');
 
   while (i < s.length) {
     if (s[i] === 'M') {
@@ -461,7 +493,7 @@ function parseDays(daysString: string): DayToken[] {
 // Day string validator
 function validateDayString(days: string): boolean {
   const validPattern = /^([MTWFS]|TU|TH)+$/i;
-  return validPattern.test(days.replace(/\s+/g, ''));
+  return validPattern.test(days.replace(/[\s/]+/g, ''));
 }
 
 // Helper function to determine text color based on background color
@@ -499,18 +531,12 @@ export default function ScheduleMaker() {
   const [noActiveDialogOpen, setNoActiveDialogOpen] = useState(false)
   const [hideNoActiveDialog, setHideNoActiveDialog] = useState(false)
   const [noActiveDialogDismissed, setNoActiveDialogDismissed] = useState(false)
-  const [viewMode, setViewMode] = useState<"card" | "table">("card")
-  const [selectedViewMode, setSelectedViewMode] = useState<"card" | "table">("card")
-  const [selectedPanelVisible, setSelectedPanelVisible] = useState(true)
-  const [selectedPanelCollapsed, setSelectedPanelCollapsed] = useState(false)
-  const [activeTab, setActiveTab] = useState<"available" | "selected" | "schedule">("available")
-  const [showJumpButton, setShowJumpButton] = useState(false)
-  const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
   const scheduleRef = useRef<HTMLDivElement>(null)
-  const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
   const lastAvailableHashRef = useRef<string>("")
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
   const pendingImportFollowUpRef = useRef<(() => void) | null>(null)
+  const loadingVersionRef = useRef<boolean>(false)
+  const hasHydratedVersionRef = useRef<boolean>(false)
   const [showOnlyActive, setShowOnlyActive] = useState(true)
   const [startDate, setStartDate] = useState<Date>(new Date())
   const [searchTerm, setSearchTerm] = useState("")
@@ -523,9 +549,18 @@ export default function ScheduleMaker() {
   const [editingCourse, setEditingCourse] = useState<SelectedCourse | null>(null)
   const [tempCustomTitle, setTempCustomTitle] = useState("")
   const [tempCustomColor, setTempCustomColor] = useState(DEFAULT_CUSTOM_COLOR)
-  const [scheduleTitle, setScheduleTitle] = useState(
-    typeof window !== 'undefined' ? localStorage.getItem('scheduleTitle') || 'Weekly Schedule' : 'Weekly Schedule'
-  )
+  const [currentTerm, setCurrentTerm] = useState<TermName>(() => deriveTermFromDate())
+  const [academicYearLabel, setAcademicYearLabel] = useState<string>(() => deriveAcademicYearLabel())
+  const [currentYearLevel, setCurrentYearLevel] = useState<number>(1)
+  const [departmentTab, setDepartmentTab] = useState<string>("All")
+  const [selectedCourseCodes, setSelectedCourseCodes] = useState<string[]>([])
+  const [versionStore, setVersionStore] = useState<Record<string, TermYearVersionState>>({})
+  const [versionsExpanded, setVersionsExpanded] = useState<boolean>(false)
+  const [addVersionMenuOpen, setAddVersionMenuOpen] = useState(false)
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false)
+  const [zoomLevel, setZoomLevel] = useState<number>(0)
+  const [searchPanelVisible, setSearchPanelVisible] = useState<boolean>(false)
+  const scheduleTitle = "Weekly Schedule"
   const [curriculumSignature, setCurriculumSignature] = useState<string>("")
   const [importStatus, setImportStatus] = useState<null | { type: "success" | "warning" | "error"; message: string }>(null)
   const [displayAliasMap, setDisplayAliasMap] = useState<Map<string, string>>(new Map())
@@ -591,6 +626,7 @@ export default function ScheduleMaker() {
   const [icsDialogStartDate, setIcsDialogStartDate] = useState<string>("")
   const [icsDialogError, setIcsDialogError] = useState<string | null>(null)
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
+  const activeTermYearKey = buildTermYearKey(currentTerm, academicYearLabel)
 
   const scrollToPageTop = useCallback(() => {
     if (typeof window === "undefined") return
@@ -602,6 +638,15 @@ export default function ScheduleMaker() {
       ...prev,
       [groupKey]: !prev[groupKey],
     }))
+  }, [])
+
+  const persistVersionStore = useCallback((next: Record<string, TermYearVersionState>) => {
+    if (typeof window === "undefined") return
+    try {
+      localStorage.setItem("scheduleMakerVersionsV1", JSON.stringify(next))
+    } catch (err) {
+      console.error("Failed to persist version store", err)
+    }
   }, [])
 
 
@@ -713,37 +758,20 @@ export default function ScheduleMaker() {
   }, [])
 
   useEffect(() => {
-    if (typeof window === "undefined") return
-
-    const updateVisibilityStates = () => {
-      setShowJumpButton(window.scrollY > 400)
-
-      if (!bottomNavigationRef.current) {
-        setIsBottomNavVisible(false)
-        return
-      }
-
-      const rect = bottomNavigationRef.current.getBoundingClientRect()
-      const viewportHeight = window.innerHeight || document.documentElement.clientHeight
-      setIsBottomNavVisible(rect.top < viewportHeight && rect.bottom >= 0)
+    const preferences = loadTrackerPreferences()
+    if (preferences?.currentYearLevel && Number.isFinite(preferences.currentYearLevel)) {
+      setCurrentYearLevel(preferences.currentYearLevel)
     }
-
-    updateVisibilityStates()
-    window.addEventListener("scroll", updateVisibilityStates)
-    window.addEventListener("resize", updateVisibilityStates)
-
-    return () => {
-      window.removeEventListener("scroll", updateVisibilityStates)
-      window.removeEventListener("resize", updateVisibilityStates)
+    if (preferences?.currentTerm) {
+      const normalized = (preferences.currentTerm as TermName) || deriveTermFromDate()
+      setCurrentTerm(normalized)
     }
   }, [])
 
   useEffect(() => {
-    if (selectedCourses.length === 0) {
-      setSelectedPanelCollapsed(false)
-      setSelectedPanelVisible(true)
-    }
-  }, [selectedCourses.length])
+    const codes = Array.from(new Set(selectedCourses.map((course) => getSelectedCourseCanonicalCode(course))))
+    setSelectedCourseCodes(codes)
+  }, [selectedCourses])
 
   // Load data from localStorage only on the client side
   const clearScheduleSelections = useCallback(() => {
@@ -757,6 +785,136 @@ export default function ScheduleMaker() {
       }
     }
   }, [])
+
+  const ensureActiveVersion = useCallback(() => {
+    setVersionStore((prev) => {
+      const existing = prev[activeTermYearKey]
+      const baseVersion: ScheduleVersion = {
+        id: existing?.versions?.[0]?.id || "v1",
+        name: existing?.versions?.[0]?.name || "Version A",
+        selectedCourses,
+        customizations,
+      }
+
+      const versions = existing?.versions?.length ? existing.versions : [baseVersion]
+      const activeVersionId = existing?.activeVersionId || versions[0].id
+      const normalizedVersions = versions.map((version) =>
+        version.id === activeVersionId
+          ? { ...version, selectedCourses, customizations }
+          : version,
+      )
+
+      const nextStore = {
+        ...prev,
+        [activeTermYearKey]: {
+          activeVersionId,
+          versions: normalizedVersions,
+        },
+      }
+
+      persistVersionStore(nextStore)
+      return nextStore
+    })
+  }, [activeTermYearKey, customizations, persistVersionStore, selectedCourses])
+
+  const setActiveVersion = useCallback(
+    (versionId: string) => {
+      setVersionStore((prev) => {
+        const entry = prev[activeTermYearKey]
+        if (!entry) return prev
+        const target = entry.versions.find((version) => version.id === versionId)
+        if (!target) return prev
+
+        setSelectedCourses(target.selectedCourses.map(normalizeSelectedCourse))
+        hasHydratedVersionRef.current = true
+        setCustomizations(target.customizations || {})
+
+        const nextStore = {
+          ...prev,
+          [activeTermYearKey]: { ...entry, activeVersionId: versionId },
+        }
+        persistVersionStore(nextStore)
+        return nextStore
+      })
+    },
+    [activeTermYearKey, persistVersionStore],
+  )
+
+  const createVersion = useCallback(
+    (mode: "new" | "duplicate" = "new") => {
+      setVersionStore((prev) => {
+        const entry = prev[activeTermYearKey]
+        const versions = entry?.versions ?? []
+        const nextId = `v${versions.length + 1}`
+        const name = `Version ${String.fromCharCode(65 + versions.length)}`
+        const basePayload = mode === "duplicate"
+          ? { selectedCourses, customizations }
+          : { selectedCourses: [] as SelectedCourse[], customizations: {} as Record<string, CourseCustomization> }
+
+        const nextVersion: ScheduleVersion = {
+          id: nextId,
+          name,
+          selectedCourses: basePayload.selectedCourses,
+          customizations: basePayload.customizations,
+        }
+
+        const nextEntry: TermYearVersionState = {
+          activeVersionId: nextId,
+          versions: [...versions, nextVersion],
+        }
+
+        const nextStore = {
+          ...prev,
+          [activeTermYearKey]: nextEntry,
+        }
+
+        setSelectedCourses(nextVersion.selectedCourses)
+        setCustomizations(nextVersion.customizations)
+        persistVersionStore(nextStore)
+        return nextStore
+      })
+    },
+    [activeTermYearKey, customizations, persistVersionStore, selectedCourses],
+  )
+
+  const deleteVersion = useCallback(
+    (versionId: string) => {
+      setVersionStore((prev) => {
+        const entry = prev[activeTermYearKey]
+        if (!entry || entry.versions.length <= 1) return prev
+
+        const filtered = entry.versions.filter((version) => version.id !== versionId)
+        const nextActive = entry.activeVersionId === versionId ? filtered[0]?.id : entry.activeVersionId
+
+        const nextStore = {
+          ...prev,
+          [activeTermYearKey]: {
+            activeVersionId: nextActive,
+            versions: filtered,
+          },
+        }
+
+        const activeVersion = filtered.find((version) => version.id === nextActive)
+        if (activeVersion) {
+          setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
+          setCustomizations(activeVersion.customizations || {})
+        }
+
+        persistVersionStore(nextStore)
+        return nextStore
+      })
+    },
+    [activeTermYearKey, persistVersionStore],
+  )
+
+  const confirmDeleteVersion = useCallback(
+    (versionId: string) => {
+      if (window.confirm("Delete this version?")) {
+        deleteVersion(versionId)
+      }
+    },
+    [deleteVersion],
+  )
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -801,6 +959,32 @@ export default function ScheduleMaker() {
     }
   }, [clearScheduleSelections])
 
+  useEffect(() => {
+    if (!isClient) return
+    try {
+      const raw = localStorage.getItem("scheduleMakerVersionsV1")
+      if (!raw) {
+        ensureActiveVersion()
+        return
+      }
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === "object") {
+        setVersionStore(parsed)
+        const entry = parsed[activeTermYearKey]
+        const activeId = entry?.activeVersionId
+        const activeVersion = entry?.versions?.find((v: ScheduleVersion) => v.id === activeId) || entry?.versions?.[0]
+        if (activeVersion) {
+          setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
+          setCustomizations(activeVersion.customizations || {})
+        }
+      }
+    } catch (err) {
+      console.error("Failed to restore versions", err)
+      ensureActiveVersion()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isClient])
+
   // Save to localStorage whenever selectedCourses or customizations change
   useEffect(() => {
     if (typeof window !== "undefined" && isClient) {
@@ -823,6 +1007,131 @@ export default function ScheduleMaker() {
       }
     }
   }, [selectedCourses, customizations, isClient, curriculumSignature])
+
+  const normalizeSelectedCourse = (course: any): SelectedCourse => {
+    const rangeSource = course?.meetingTime ?? `${course?.timeStart ?? ""}-${course?.timeEnd ?? ""}`
+    const derivedRange = parseTimeRange(rangeSource)
+    const canonicalCode =
+      typeof course?.canonicalCode === "string" && course.canonicalCode.trim() !== ""
+        ? getCanonicalCourseCode(course.canonicalCode)
+        : getCanonicalCourseCode(course?.courseCode ?? "")
+
+    const startLabelCandidate = course?.timeStart ?? derivedRange.start
+    const endLabelCandidate = course?.timeEnd ?? derivedRange.end
+
+    const timeStart = startLabelCandidate && startLabelCandidate.trim() !== ""
+      ? startLabelCandidate.trim()
+      : "00:00"
+    const timeEnd = endLabelCandidate && endLabelCandidate.trim() !== ""
+      ? endLabelCandidate.trim()
+      : "00:00"
+
+    const startMinutes =
+      typeof course?.startMinutes === "number" && !Number.isNaN(course.startMinutes)
+        ? course.startMinutes
+        : (!Number.isNaN(derivedRange.startMinutes)
+            ? derivedRange.startMinutes
+            : parseTimeToMinutes(timeStart))
+
+    const endMinutes =
+      typeof course?.endMinutes === "number" && !Number.isNaN(course.endMinutes)
+        ? course.endMinutes
+        : (!Number.isNaN(derivedRange.endMinutes)
+            ? derivedRange.endMinutes
+            : parseTimeToMinutes(timeEnd))
+
+    const parsedDays =
+      Array.isArray(course?.parsedDays) && course.parsedDays.length > 0
+        ? course.parsedDays
+        : parseDays(course?.meetingDays ?? "")
+
+    const { name: defaultName, credits: defaultCredits } = getCourseNameAndCredits(course?.courseCode ?? canonicalCode)
+    const normalizedName =
+      typeof course?.name === "string" && course.name.trim() !== ""
+        ? course.name
+        : defaultName
+    const normalizedCredits =
+      typeof course?.credits === "number" && !Number.isNaN(course.credits)
+        ? course.credits
+        : defaultCredits
+
+    return {
+      ...course,
+      canonicalCode,
+      name: normalizedName,
+      credits: normalizedCredits,
+      timeStart,
+      timeEnd,
+      startMinutes,
+      endMinutes,
+      parsedDays,
+      displayTime: course?.displayTime ?? cleanTimeString(course?.meetingTime ?? `${timeStart}-${timeEnd}`),
+      displayRoom: course?.displayRoom ?? cleanRoomString(course?.room ?? ""),
+    } as SelectedCourse
+  }
+
+  useEffect(() => {
+    if (!isClient) return
+    if (loadingVersionRef.current) return
+
+    const entry = versionStore[activeTermYearKey]
+    if (!entry) {
+      ensureActiveVersion()
+      return
+    }
+
+    const activeVersion =
+      entry.versions.find((version) => version.id === entry.activeVersionId) || entry.versions[0]
+    if (!activeVersion) return
+
+    const currentCourseKeys = JSON.stringify(
+      selectedCourses.map((course) => course.id || `${course.courseCode}-${course.section}`),
+    )
+    const versionCourseKeys = JSON.stringify(
+      activeVersion.selectedCourses.map((course) => course.id || `${course.courseCode}-${course.section}`),
+    )
+
+    const shouldHydrateFromVersion =
+      selectedCourses.length === 0 &&
+      activeVersion.selectedCourses.length > 0 &&
+      !hasHydratedVersionRef.current
+
+    if (shouldHydrateFromVersion) {
+      loadingVersionRef.current = true
+      hasHydratedVersionRef.current = true
+      setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
+      setCustomizations(activeVersion.customizations || {})
+      loadingVersionRef.current = false
+      return
+    }
+
+    if (currentCourseKeys !== versionCourseKeys) {
+      ensureActiveVersion()
+      return
+    }
+
+    const versionCustomizations = activeVersion.customizations || {}
+    const currentCustomizationsStr = JSON.stringify(customizations || {})
+    const versionCustomizationsStr = JSON.stringify(versionCustomizations)
+
+    if (currentCustomizationsStr !== versionCustomizationsStr) {
+      ensureActiveVersion()
+    } else if (selectedCourses.length === 0 && activeVersion.selectedCourses.length === 0) {
+      hasHydratedVersionRef.current = true
+    }
+  }, [
+    activeTermYearKey,
+    customizations,
+    ensureActiveVersion,
+    isClient,
+    normalizeSelectedCourse,
+    selectedCourses,
+    versionStore,
+  ])
+
+  useEffect(() => {
+    hasHydratedVersionRef.current = false
+  }, [activeTermYearKey])
 
   // Convert 24-hour time to 12-hour format
   const convertTo12Hour = (time24: string): string => {
@@ -940,78 +1249,26 @@ export default function ScheduleMaker() {
     }
   }
 
-  const normalizeSelectedCourse = (course: any): SelectedCourse => {
-    const rangeSource = course?.meetingTime ?? `${course?.timeStart ?? ""}-${course?.timeEnd ?? ""}`
-    const derivedRange = parseTimeRange(rangeSource)
-    const canonicalCode =
-      typeof course?.canonicalCode === "string" && course.canonicalCode.trim() !== ""
-        ? getCanonicalCourseCode(course.canonicalCode)
-        : getCanonicalCourseCode(course?.courseCode ?? "")
-
-    const startLabelCandidate = course?.timeStart ?? derivedRange.start
-    const endLabelCandidate = course?.timeEnd ?? derivedRange.end
-
-    const timeStart = startLabelCandidate && startLabelCandidate.trim() !== ""
-      ? startLabelCandidate.trim()
-      : "00:00"
-    const timeEnd = endLabelCandidate && endLabelCandidate.trim() !== ""
-      ? endLabelCandidate.trim()
-      : "00:00"
-
-    const startMinutes =
-      typeof course?.startMinutes === "number" && !Number.isNaN(course.startMinutes)
-        ? course.startMinutes
-        : (!Number.isNaN(derivedRange.startMinutes)
-            ? derivedRange.startMinutes
-            : parseTimeToMinutes(timeStart))
-
-    const endMinutes =
-      typeof course?.endMinutes === "number" && !Number.isNaN(course.endMinutes)
-        ? course.endMinutes
-        : (!Number.isNaN(derivedRange.endMinutes)
-            ? derivedRange.endMinutes
-            : parseTimeToMinutes(timeEnd))
-
-    const parsedDays =
-      Array.isArray(course?.parsedDays) && course.parsedDays.length > 0
-        ? course.parsedDays
-        : parseDays(course?.meetingDays ?? "")
-
-    const { name: defaultName, credits: defaultCredits } = getCourseNameAndCredits(course?.courseCode ?? canonicalCode)
-    const normalizedName =
-      typeof course?.name === "string" && course.name.trim() !== ""
-        ? course.name
-        : defaultName
-    const normalizedCredits =
-      typeof course?.credits === "number" && !Number.isNaN(course.credits)
-        ? course.credits
-        : defaultCredits
-
-    return {
-      ...course,
-      canonicalCode,
-      name: normalizedName,
-      credits: normalizedCredits,
-      timeStart,
-      timeEnd,
-      startMinutes,
-      endMinutes,
-      parsedDays,
-      displayTime: course?.displayTime ?? cleanTimeString(course?.meetingTime ?? `${timeStart}-${timeEnd}`),
-      displayRoom: course?.displayRoom ?? cleanRoomString(course?.room ?? ""),
-    } as SelectedCourse
-  }
-
   useEffect(() => {
-    if (availableCourses.length === 0) return
+    console.log('[syncEffect] Running - availableCourses count:', availableCourses.length, 'selectedCourses count:', selectedCourses.length)
+    
+    if (availableCourses.length === 0) {
+      console.log('[syncEffect] No available courses, returning')
+      return
+    }
 
     const lookup = new Map<string, CourseSection>()
     availableCourses.forEach((course) => {
-      lookup.set(buildCourseLookupKey(course.courseCode, course.section), course)
+      const key = buildCourseLookupKey(course.courseCode, course.section)
+      lookup.set(key, course)
+      console.log('[syncEffect] Added to lookup:', key)
     })
 
     setSelectedCourses((prev) => {
+      console.log('[syncEffect] State update callback - prev length:', prev.length)
+      
       if (prev.length === 0) {
+        console.log('[syncEffect] No selected courses, returning')
         return prev
       }
 
@@ -1019,8 +1276,11 @@ export default function ScheduleMaker() {
 
       const updated = prev.map((selected) => {
         const key = buildCourseLookupKey(selected.canonicalCode || selected.courseCode, selected.section)
+        console.log('[syncEffect] Looking for key:', key, 'exists in lookup:', lookup.has(key))
+        
         const latest = lookup.get(key)
         if (!latest) {
+          console.log('[syncEffect] Not found in lookup, keeping original')
           return selected
         }
 
@@ -1054,9 +1314,11 @@ export default function ScheduleMaker() {
           selected.displayRoom !== displayRoom
 
         if (!needsUpdate) {
+          console.log('[syncEffect] No update needed for', key)
           return selected
         }
 
+        console.log('[syncEffect] Updating', key)
         changed = true
         return {
           ...selected,
@@ -1074,6 +1336,7 @@ export default function ScheduleMaker() {
         }
       })
 
+      console.log('[syncEffect] Changed:', changed, 'returning length:', updated.length)
       return changed ? updated : prev
     })
   }, [availableCourses, setSelectedCourses])
@@ -1218,12 +1481,16 @@ export default function ScheduleMaker() {
 
   // Add a course to the selected courses
   const addCourse = (course: CourseSection) => {
+    console.log('[addCourse] Called with:', { courseCode: course.courseCode, section: course.section })
+    
     const canonicalCode = getCanonicalCourseCode(course.courseCode)
-    const existingCourse = selectedCourses.find((selected) => getSelectedCourseCanonicalCode(selected) === canonicalCode)
+    console.log('[addCourse] Canonical code:', canonicalCode)
 
     const { start, end, startMinutes, endMinutes } = parseTimeRange(course.meetingTime)
     const parsedDays = parseDays(course.meetingDays)
     const metadata = getCourseNameAndCredits(course.courseCode)
+    
+    console.log('[addCourse] Metadata:', { name: metadata.name, credits: metadata.credits })
     
     const newCourse: SelectedCourse = {
       ...course,
@@ -1239,14 +1506,50 @@ export default function ScheduleMaker() {
       displayRoom: cleanRoomString(course.room),
     }
 
-    if (existingCourse) {
-      setSelectedCourses((prev) =>
-        prev.map((selected) =>
-          getSelectedCourseCanonicalCode(selected) === canonicalCode ? newCourse : selected
-        )
+    console.log('[addCourse] About to set selected courses. Current count:', selectedCourses.length)
+    console.log('[addCourse] New course object:', newCourse)
+    
+    setSelectedCourses((prev) => {
+      console.log('[addCourse] State update callback - prev length:', prev.length)
+      
+      // Check for duplicates using the latest state (prev), not the stale closure
+      const existingSection = prev.find(
+        (selected) => 
+          getCanonicalCourseCode(selected.courseCode) === canonicalCode && 
+          selected.section === course.section
       )
+
+      if (existingSection) {
+        console.log('[addCourse] Section already exists in state, returning unchanged')
+        return prev
+      }
+      
+      const next = [...prev, newCourse]
+      console.log('[addCourse] After add - next length:', next.length)
+      return next
+    })
+  }
+
+  const toggleCourseSelection = (courseCode: string) => {
+    const canonical = getCanonicalCourseCode(courseCode)
+    setSelectedCourseCodes((prev) => {
+      const next = new Set(prev)
+      if (next.has(canonical)) {
+        next.delete(canonical)
+      } else {
+        next.add(canonical)
+      }
+      return Array.from(next)
+    })
+  }
+
+  const toggleSectionSelection = (section: CourseSection, checked: boolean) => {
+    if (checked) {
+      addCourse(section)
+      const canonical = getCanonicalCourseCode(section.courseCode)
+      setSelectedCourseCodes((prev) => Array.from(new Set([...prev, canonical])))
     } else {
-      setSelectedCourses((prev) => [...prev, newCourse])
+      removeCourse(section.courseCode, section.section)
     }
   }
 
@@ -1939,6 +2242,12 @@ export default function ScheduleMaker() {
   }, [isClient, fetchData])
 
   useEffect(() => {
+    if (!error) {
+      setErrorDialogOpen(false)
+    }
+  }, [error])
+
+  useEffect(() => {
     if (!isClient) return
 
     const intervalMs = hasRealCourseData ? 60 * 1000 : 1 * 1000
@@ -2058,6 +2367,73 @@ export default function ScheduleMaker() {
     return Array.from(departments).sort()
   }, [availableCourses])
 
+  const courseCatalog = React.useMemo(() => {
+    const map = new Map<string, { code: string; name: string; credits: number; department: string; sections: CourseSection[]; year?: number; term?: string }>()
+
+    initialCourses.forEach((course) => {
+      const canonical = getCanonicalCourseCode(course.code)
+      map.set(canonical, {
+        code: canonical,
+        name: course.name,
+        credits: course.credits,
+        department: extractDepartmentCode(course.code),
+        sections: [],
+        year: course.year,
+        term: course.term,
+      })
+    })
+
+    availableCourses.forEach((section) => {
+      const canonical = getCanonicalCourseCode(section.courseCode)
+      const existing = map.get(canonical) ?? {
+        code: canonical,
+        name: getCourseNameAndCredits(section.courseCode).name,
+        credits: getCourseNameAndCredits(section.courseCode).credits,
+        department: extractDepartmentCode(section.courseCode),
+        sections: [],
+      }
+      existing.sections = [...existing.sections, section]
+      map.set(canonical, existing)
+    })
+
+    return Array.from(map.values()).sort((a, b) => a.code.localeCompare(b.code))
+  }, [availableCourses])
+
+  const departmentTabs = React.useMemo(() => {
+    const dynamic = new Set<string>(courseCatalog.map((course) => course.department))
+    const ordered = ["All", "GED", "NSTP", "CPE", ...Array.from(dynamic).sort()]
+    return Array.from(new Set(ordered))
+  }, [courseCatalog])
+
+  const academicYearOptions = React.useMemo(() => {
+    const current = deriveAcademicYearLabel()
+    const baseStart = Number.parseInt(current.slice(0, 4), 10)
+    const next = `${baseStart + 1}-${baseStart + 2}`
+    const prev = `${baseStart - 1}-${baseStart}`
+    return [current, next, prev]
+  }, [])
+
+  const suggestedCourses = React.useMemo(() => {
+    return courseCatalog
+      .filter((course) => course.year === currentYearLevel && course.term === currentTerm)
+      .slice(0, 10)
+  }, [courseCatalog, currentYearLevel, currentTerm])
+
+  const filteredCatalog = React.useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase()
+    return courseCatalog.filter((course) => {
+      const matchesDept = departmentTab === "All" || course.department === departmentTab
+      const matchesSearch =
+        normalizedSearch.length === 0 ||
+        course.code.toLowerCase().includes(normalizedSearch) ||
+        course.name.toLowerCase().includes(normalizedSearch)
+      return matchesDept && matchesSearch
+    })
+  }, [courseCatalog, departmentTab, searchTerm])
+
+  const activeVersionState = versionStore[activeTermYearKey]
+  const versions = activeVersionState?.versions ?? []
+
 const downloadScheduleImage = async () => {
   if (!scheduleRef.current) return;
   
@@ -2141,125 +2517,67 @@ const downloadScheduleImage = async () => {
     return customizations[key]?.color || DEFAULT_CUSTOM_COLOR // Default blue
   }
 
-  // Editable title component
-  const EditableTitle = () => {
-    const [isEditing, setIsEditing] = useState(false)
-    const [tempTitle, setTempTitle] = useState(scheduleTitle)
+  const zoomedHourHeight = React.useMemo(() => {
+    const base = 80
+    const step = 22
+    return Math.max(36, Math.min(120, base + (zoomLevel - 1) * step))
+  }, [zoomLevel])
 
-    const handleSave = () => {
-      setScheduleTitle(tempTitle)
-      localStorage.setItem('scheduleTitle', tempTitle)
-      setIsEditing(false)
-    }
-
-    return (
-      <div className="flex items-center justify-center gap-2 mb-4">
-        {isEditing ? (
-          <div className="flex items-center gap-2">
-            <Input
-              value={tempTitle}
-              onChange={(e) => setTempTitle(e.target.value)}
-              className="text-center text-lg font-bold w-64"
-            />
-            <Button size="sm" onClick={handleSave}>Save</Button>
-            <Button size="sm" variant="outline" onClick={() => setIsEditing(false)}>Cancel</Button>
-          </div>
-        ) : (
-          <>
-            <h2 className="text-lg font-bold">{scheduleTitle}</h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setIsEditing(true)}
-              className="text-gray-500 hover:text-gray-700"
-            >
-              <Edit className="h-4 w-4" />
-            </Button>
-          </>
-        )}
-      </div>
-    )
-  }
+  const zoomOut = () => setZoomLevel((prev) => Math.max(0, prev - 1))
+  const zoomIn = () => setZoomLevel((prev) => Math.min(2, prev + 1))
 
 const renderScheduleView = () => {
   // Constants for precise alignment
   const HEADER_HEIGHT = 44; // Height of header row in pixels
-  const HOUR_HEIGHT = 80; // Each hour = 80px tall
+  const HOUR_HEIGHT = zoomedHourHeight; // Each hour height adjusts with zoom
   const FIRST_HOUR = 7; // Schedule starts at 7AM
 
   return (
     <div>
-      {/* Header controls */}
-      <div className="mb-4 flex justify-between items-center">
-        <div className="flex items-center space-x-4">
-          <Label htmlFor="start-date">Start Date:</Label>
-          <Input
-            type="date"
-            id="start-date"
-            value={startDate.toISOString().split('T')[0]}
-            onChange={(e) => setStartDate(new Date(e.target.value))}
-          />
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={openIcsDialog}
-            className="flex items-center gap-2"
-          >
-            <Calendar className="h-4 w-4" />
-            Export as ICS
-          </Button>
-          <Button
-            variant="default"
-            size="sm"
-            onClick={downloadScheduleImage}
-            className="flex items-center gap-2"
-          >
-            <Download className="h-4 w-4" />
-            Download as Image
-          </Button>
-        </div>
-      </div>
-
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4" ref={scheduleRef}>
-        <EditableTitle />
-
-        <div className="overflow-x-auto relative">
+      <div
+        className="rounded-xl border border-slate-200 bg-white/90 p-3 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-900/70"
+        ref={scheduleRef}
+      >
+        <div className="relative overflow-x-auto">
           {/* Header row - fixed at top */}
-          <div className="grid grid-cols-7 gap-1 min-w-[800px] sticky top-0 z-20">
-            <div className="font-medium p-2 bg-gray-100 dark:bg-gray-700 text-center">Time</div>
-            {DAYS.map(day => (
-              <div key={day} className="font-medium p-2 bg-gray-100 dark:bg-gray-700 text-center">
+          <div className="sticky top-0 z-20 grid min-w-[780px] grid-cols-7 gap-1">
+            <div className="day-header rounded-md bg-gray-100 p-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+              Time
+            </div>
+            {DAYS.map((day) => (
+              <div
+                key={day}
+                className="day-header rounded-md bg-gray-100 p-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300"
+              >
                 {getFullDayName(day)}
               </div>
             ))}
           </div>
 
           {/* Time slots - absolutely positioned */}
-          <div className="relative min-w-[800px]" style={{ height: `${HOUR_HEIGHT * 15}px` }}>
+          <div className="relative min-w-[780px]" style={{ height: `${HOUR_HEIGHT * 15}px` }}>
             {/* Hour markers */}
             {Array.from({ length: 15 }).map((_, i) => {
-              const hour = FIRST_HOUR + i;
-              const timeString = `${hour % 12 || 12}:00 ${hour < 12 ? 'AM' : 'PM'}`;
+              const hour = FIRST_HOUR + i
+              const timeString = `${hour % 12 || 12}:00 ${hour < 12 ? "AM" : "PM"}`
               return (
-                <div 
+                <div
                   key={hour}
-                  className="absolute left-0 right-0 border-t border-gray-200 dark:border-gray-700"
+                  className="absolute left-0 right-0 border-t border-slate-200 dark:border-slate-700"
                   style={{ top: `${i * HOUR_HEIGHT}px` }}
                 >
-                  <div className="absolute left-0 p-1 text-xs font-medium">
+                  <div className="absolute left-0 px-2 py-1 text-[11px] font-medium text-slate-500">
                     {timeString}
                   </div>
                 </div>
-              );
+              )
             })}
 
             {/* Half-hour markers */}
             {Array.from({ length: 14 }).map((_, i) => (
-              <div 
+              <div
                 key={`half-${i}`}
-                className="absolute left-0 right-0 border-t border-gray-100 dark:border-gray-700"
+                className="absolute left-0 right-0 border-t border-slate-100 dark:border-slate-700"
                 style={{ top: `${(i + 0.5) * HOUR_HEIGHT}px` }}
               />
             ))}
@@ -2348,7 +2666,7 @@ const renderScheduleView = () => {
 };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+    <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 transition-colors duration-200 dark:bg-gray-900 dark:text-gray-100">
       <Dialog open={noDataDialogOpen} onOpenChange={handleNoDataDialogOpenChange}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -2474,6 +2792,27 @@ const renderScheduleView = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog
+        open={Boolean(error) && errorDialogOpen}
+        onOpenChange={(nextOpen) => setErrorDialogOpen(nextOpen)}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Something went wrong</DialogTitle>
+            <DialogDescription>
+              We couldn&apos;t refresh the latest course data.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="text-sm text-slate-600 dark:text-slate-300">
+            {error}
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setErrorDialogOpen(false)}>
+              Dismiss
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={icsDialogOpen} onOpenChange={(nextOpen) => { if (!nextOpen) handleCloseIcsDialog() }}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -2505,1114 +2844,459 @@ const renderScheduleView = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <div className="container mx-auto px-4 py-8">
-        <div className="mb-6 space-y-4">
-          <QuickNavigation />
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h1 className="text-3xl font-bold">Schedule Maker</h1>
-              <p className="text-gray-600 dark:text-gray-400 mt-2">
-                Create your perfect class schedule with available course sections
-              </p>
+      <div className="flex-1 overflow-hidden px-4 pb-4 pt-3 lg:px-8">
+        <div className="mb-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <h1 className="text-2xl font-semibold">Schedule Maker</h1>
+            <div className="flex flex-1 justify-center">
+              <QuickNavigation />
             </div>
-            <div className="flex items-center gap-2 self-start md:self-auto">
+            <div className="flex flex-shrink-0 items-center gap-2">
+              <Button variant="outline" size="icon" onClick={zoomOut} aria-label="Zoom out" className="h-8 w-8">
+                <Minus className="h-3.5 w-3.5" />
+              </Button>
+              <Button variant="outline" size="icon" onClick={zoomIn} aria-label="Zoom in" className="h-8 w-8">
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => fetchData()}
                 disabled={loading}
-                className="flex items-center gap-2"
+                className="flex h-8 items-center gap-2 px-3 text-sm"
               >
-                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                Refresh Data
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                Refresh
               </Button>
               <Button
                 variant="outline"
                 size="icon"
                 onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
                 aria-label="Toggle theme"
-                className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                className="h-8 w-8 rounded-full border-slate-300 bg-white/70 text-slate-900 transition-colors hover:bg-white dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
               >
-                <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-                <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+                <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+                <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
               </Button>
+              {error && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setErrorDialogOpen(true)}
+                  aria-label="Show error details"
+                  className="h-8 w-8 border-amber-400/70 text-amber-600 transition-colors hover:bg-amber-100/60 dark:border-amber-400/40 dark:text-amber-300 dark:hover:bg-amber-500/10"
+                >
+                  <FileWarning className="h-3.5 w-3.5" />
+                </Button>
+              )}
             </div>
           </div>
-          {lastUpdated && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              Last updated: {lastUpdated.toLocaleString()}
-            </p>
-          )}
         </div>
 
-        {error && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertCircle className="h-4 w-4" />
-            <AlertTitle>Error</AlertTitle>
-            <AlertDescription>
-              {error}
-              <div className="mt-4">
-                <Button onClick={handleStudentPortalLaunch} className="flex items-center gap-2">
-                  <ExternalLink className="h-4 w-4" />
-                  Open Student Portal Course Offerings
-                </Button>
-              </div>
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {/* Note about Course Tracker integration */}
-        <Alert className="mb-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Course Tracker Integration</AlertTitle>
-          <AlertDescription>
-            The Schedule Maker shows available sections for courses marked as "Active" in the Course Tracker. If you
-            don't see your desired courses, go back to the Course Tracker and mark them as active.
-          </AlertDescription>
-        </Alert>
-
-        {/* Courses Needing Petition */}
-        {coursesNeedingPetition.length > 0 && showOnlyActive && (
-          <Alert className="mb-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-300">
-            <FileWarning className="h-4 w-4" />
-            <AlertTitle>Courses Needing Petition</AlertTitle>
-            <AlertDescription>
-              <p className="mb-2">
-                The following active courses don't have available sections. You may need to file a petition for these
-                courses:
-              </p>
-              <div className="mt-2 overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Course Code</TableHead>
-                      <TableHead>Course Name</TableHead>
-                      <TableHead>Credits</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {coursesNeedingPetition.map((course) => (
-                      <TableRow key={course.id}>
-                        <TableCell className="font-medium">{course.code}</TableCell>
-                        <TableCell>{course.name}</TableCell>
-                        <TableCell>{course.credits}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {loading ? (
-          <div className="text-center py-10">
-            <p className="text-gray-600 dark:text-gray-400">Loading available courses...</p>
-          </div>
-        ) : (
-          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="w-full">
-            <TabsList className="mb-4 w-full h-auto flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-2">
-              <TabsTrigger value="available" className="flex-1 min-w-[10rem] whitespace-normal">
-                Available Courses
-              </TabsTrigger>
-              <TabsTrigger value="selected" className="flex-1 min-w-[10rem] whitespace-normal">
-                Selected Courses ({selectedCourses.length})
-              </TabsTrigger>
-              <TabsTrigger value="schedule" className="flex-1 min-w-[10rem] whitespace-normal">
-                Schedule View
-              </TabsTrigger>
-            </TabsList>
-
-            {/* Available Courses Tab */}
-            <TabsContent value="available">
-              <div>
-                <div className="mb-4 flex flex-col md:flex-row gap-4 items-end">
-                  <div className="w-full md:w-1/4">
-                    <Label htmlFor="search-courses">Search Courses</Label>
+        <div className="grid h-full gap-4 lg:grid-cols-[300px_minmax(0,1fr)_300px] xl:grid-cols-[320px_minmax(0,1fr)_320px]">
+          {/* Left Sidebar */}
+          <div className="flex min-h-0 flex-col gap-3">
+            {/* Combined card for search and selected courses */}
+            <Card className="flex flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
+              <CardHeader className="space-y-2 pb-3">
+                <div className="flex items-center gap-2">
+                  <Search className="h-3.5 w-3.5 text-slate-500" />
+                  <CardTitle className="text-base font-semibold">Courses</CardTitle>
+                </div>
+                {/* Search with floating results */}
+                <div className="relative">
+                  <div className="relative">
                     <Input
-                      id="search-courses"
-                      placeholder="Search by code or name..."
+                      placeholder="Search courses"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.currentTarget.value)}
+                      onFocus={() => setSearchPanelVisible(true)}
+                      className="h-9 rounded-md border-slate-200 pl-9 text-sm shadow-none focus-visible:ring-0 dark:border-slate-700"
                     />
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
                   </div>
-                  <div className="w-full md:w-1/4">
-                    <Label htmlFor="department-filter">Department</Label>
-                    <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
-                      <SelectTrigger id="department-filter">
-                        <SelectValue placeholder="Select department..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All Departments</SelectItem>
-                        {departmentCodes.map((dept) => (
-                          <SelectItem key={dept} value={dept}>
-                            {dept}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="w-full md:w-1/4">
-                    <Label htmlFor="sort-by">Sort By</Label>
-                    <Select value={sortBy} onValueChange={setSortBy}>
-                      <SelectTrigger id="sort-by">
-                        <SelectValue placeholder="Sort by..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="department">Department</SelectItem>
-                        <SelectItem value="courseCode">Course Code</SelectItem>
-                        <SelectItem value="section">Section</SelectItem>
-                        <SelectItem value="remainingSlots">Available Slots</SelectItem>
-                        <SelectItem value="meetingDays">Meeting Days</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="w-full md:w-1/4">
-                    <Label htmlFor="sort-order">Order</Label>
-                    <Select value={sortOrder} onValueChange={setSortOrder}>
-                      <SelectTrigger id="sort-order">
-                        <SelectValue placeholder="Sort order..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="asc">Ascending</SelectItem>
-                        <SelectItem value="desc">Descending</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="w-full md:w-1/4">
-                    <Label htmlFor="group-by">Group By</Label>
-                    <Select value={groupBy} onValueChange={(value) => setGroupBy(value as GroupByOption)}>
-                      <SelectTrigger id="group-by">
-                        <SelectValue placeholder="Group by..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {GROUP_BY_OPTIONS.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                <div className="mb-4">
-                  <Label className="mb-2 block">Filter by Days</Label>
-                  <div className="flex flex-wrap gap-2">
-                    {DAY_FILTER_OPTIONS.map((option) => {
-                      const isSelected = dayFilters.includes(option.value)
-                      return (
-                        <Button
-                          key={option.value}
-                          type="button"
-                          variant={isSelected ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => toggleDayFilter(option.value)}
-                          title={`Show classes meeting on ${option.longLabel}`}
-                          className={`${isSelected ? "" : "bg-transparent dark:bg-transparent text-slate-900 dark:text-slate-100"} px-3`}
-                        >
-                          {option.label}
-                        </Button>
-                      )
-                    })}
-                    {dayFilters.length > 0 && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={clearDayFilters}
-                        className="px-3"
-                      >
-                        Clear
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-                  <div className="flex items-center space-x-2">
-                    <Switch id="show-active-only" checked={showOnlyActive} onCheckedChange={setShowOnlyActive} />
-                    <Label htmlFor="show-active-only">Show only active courses from Course Tracker</Label>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setViewMode(viewMode === "card" ? "table" : "card")}
-                    className="self-start sm:self-auto"
-                  >
-                    {viewMode === "card" ? "Switch to Table View" : "Switch to Card View"}
-                  </Button>
-                </div>
-
-                <p className="mb-4">
-                  Found {filteredAndSortedCourses.length} course sections
-                  {showOnlyActive ? " for your active courses" : ""} (out of {availableCourses.length} total extracted
-                  courses).
-                </p>
-
-                {filteredAndSortedCourses.length === 0 ? (
-                  <div className="bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-400 dark:border-yellow-700 text-yellow-700 dark:text-yellow-400 px-4 py-3 rounded mb-4">
-                    <p>
-                      No courses match your current filters. Try adjusting your search criteria or department filter.
-                    </p>
-                    {showOnlyActive && (
-                      <div className="mt-4">
-                        <Link href="/course-tracker">
-                          <Button className="flex items-center gap-2">
-                            <BookOpen className="h-4 w-4" />
-                            Go to Course Tracker
-                          </Button>
-                        </Link>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <>
-                    {groupedCourses.length > 0 && (
-                      <div className="flex justify-end mb-4">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={areAllGroupsCollapsed ? expandAllGroups : collapseAllGroups}
-                          className="flex items-center gap-2"
-                        >
-                          {areAllGroupsCollapsed ? (
-                            <>
-                              <Maximize2 className="h-4 w-4" />
-                              Expand all groups
-                            </>
-                          ) : (
-                            <>
-                              <Minimize2 className="h-4 w-4" />
-                              Collapse all groups
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                    )}
-
-                    {viewMode === "table" && (
-                      <div className="overflow-x-auto">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Department</TableHead>
-                              <TableHead>Course Code</TableHead>
-                              <TableHead>Course Name</TableHead>
-                              <TableHead>Section</TableHead>
-                              <TableHead>Schedule</TableHead>
-                              <TableHead>Room</TableHead>
-                              <TableHead>Slots</TableHead>
-                              <TableHead>Action</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {groupedCourses.map(({ value, courses }) => {
-                              const groupKey = `${groupBy}-${value}`
-                              const isCollapsed = collapsedGroups[groupKey] ?? false
-
-                              return (
-                                <React.Fragment key={groupKey}>
-                                  <TableRow className="bg-gray-100 dark:bg-gray-700">
-                                    <TableCell colSpan={8} className="font-medium p-0">
-                                      <button
-                                        type="button"
-                                        className="w-full px-4 py-2 flex items-center justify-between text-left"
-                                        onClick={() => toggleGroupCollapse(groupKey)}
-                                        aria-expanded={!isCollapsed}
-                                        aria-controls={`${groupKey}-table-rows`}
-                                      >
-                                        <span>
-                                          {currentGroupLabel}: {getGroupDisplayValue(value, courses)}
-                                        </span>
-                                        <ChevronDown
-                                          className={`h-4 w-4 transition-transform ${
-                                            isCollapsed ? "-rotate-90" : "rotate-0"
-                                          }`}
-                                        />
-                                      </button>
-                                    </TableCell>
-                                  </TableRow>
-                                  {!isCollapsed && (
-                                    <React.Fragment>
-                                      {courses.map((course, index) => {
-                                  const canonicalCode = getCanonicalCourseCode(course.courseCode)
-                                  const activeCourseDetails = activeCourses.find(
-                                    (active) => getCanonicalCourseCode(active.code) === canonicalCode,
-                                  )
-                                  const fallbackDetails = getCourseDetails(course.courseCode)
-                                  const courseDetails = activeCourseDetails || {
-                                    name: fallbackDetails?.name || "Unknown Course",
-                                    credits: fallbackDetails?.credits || 3,
-                                  }
-                                  const departmentValue = extractDepartmentCode(course.courseCode)
-                                  const isConflict = hasScheduleConflict(course)
-                                  const isAlreadySelected = selectedCourses.some(
-                                    (selected) =>
-                                      getSelectedCourseCanonicalCode(selected) === canonicalCode &&
-                                      selected.section === course.section,
-                                  )
-                                  const hasSameCode = hasSameCourseCode(course) && !isAlreadySelected
-                                  const existingCourse = hasSameCode ? getSelectedCourseWithSameCode(course) : null
-
-                                        return (
-                                          <TableRow key={`${course.courseCode}-${course.section}-${index}`}>
-                                            <TableCell>{departmentValue}</TableCell>
-                                            <TableCell>{getDisplayCode(course.courseCode)}</TableCell>
-                                            <TableCell>{courseDetails.name}</TableCell>
-                                            <TableCell>{course.section}</TableCell>
-                                            <TableCell>
-                                              {cleanTimeString(course.meetingTime)} ({course.meetingDays})
-                                            </TableCell>
-                                            <TableCell>{cleanRoomString(course.room)}</TableCell>
-                                            <TableCell>
-                                              <Badge
-                                                variant={course.hasSlots ? "secondary" : "destructive"}
-                                                className={`px-2 py-1 text-xs font-semibold ${
-                                                  course.hasSlots
-                                                    ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                                                    : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                                                }`}
-                                              >
-                                                {course.hasSlots ? `${course.remainingSlots}/${course.classSize}` : "Full"}
-                                              </Badge>
-                                            </TableCell>
-                                            <TableCell>
-                                              {hasSameCode ? (
-                                                <Popover>
-                                                  <PopoverTrigger asChild>
-                                                    <Button
-                                                      size="sm"
-                                                      variant="outline"
-                                                      className="bg-yellow-50 border-yellow-200 text-yellow-700 hover:bg-yellow-100"
-                                                    >
-                                                      Replace Section
-                                                    </Button>
-                                                  </PopoverTrigger>
-                                                  <PopoverContent className="w-80">
-                                                    <div className="space-y-4">
-                                                      <h4 className="font-medium">Replace Existing Section</h4>
-                                                      <p className="text-sm">
-                                                        You already have {getDisplayCode(course.courseCode)} section {existingCourse?.section}{" "}
-                                                        in your schedule. Do you want to replace it with section{" "}
-                                                        {course.section}?
-                                                      </p>
-                                                      <div className="flex justify-end gap-2">
-                                                        <Button size="sm" variant="outline" onClick={() => addCourse(course)}>
-                                                          <Check className="h-4 w-4 mr-1" /> Yes, Replace
-                                                        </Button>
-                                                      </div>
-                                                    </div>
-                                                  </PopoverContent>
-                                                </Popover>
-                                              ) : (
-                                                <Button
-                                                  size="sm"
-                                                  variant={
-                                                    isAlreadySelected ? "destructive" : isConflict ? "outline" : "default"
-                                                  }
-                                                  disabled={isConflict && !isAlreadySelected}
-                                                  onClick={() => {
-                                                    if (isAlreadySelected) {
-                                                      removeCourse(course.courseCode, course.section)
-                                                    } else {
-                                                      addCourse(course)
-                                                    }
-                                                  }}
-                                                >
-                                                  {isAlreadySelected ? "Remove" : "Add"}
-                                                </Button>
-                                              )}
-                                            </TableCell>
-                                          </TableRow>
-                                        )
-                                      })}
-                                    </React.Fragment>
-                                  )}
-                                </React.Fragment>
-                              )
-                            })}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    )}
-                    {viewMode === "card" && (
-                      <div className="space-y-6">
-                        {groupedCourses.map(({ value, courses }) => {
-                          const groupKey = `${groupBy}-${value}`
-                          const isCollapsed = collapsedGroups[groupKey] ?? false
-
-                          return (
-                            <div key={groupKey} className="border rounded-lg overflow-hidden">
-                              <button
-                                type="button"
-                                className="w-full bg-gray-100 dark:bg-gray-700 px-4 py-2 font-medium flex items-center justify-between gap-3 text-left"
-                                onClick={() => toggleGroupCollapse(groupKey)}
-                                aria-expanded={!isCollapsed}
-                                aria-controls={`${groupKey}-courses`}
-                              >
-                                <span>
-                                  {currentGroupLabel}: {getGroupDisplayValue(value, courses)}
-                                </span>
-                                <ChevronDown
-                                  className={`h-4 w-4 transition-transform ${isCollapsed ? "-rotate-90" : "rotate-0"}`}
-                                />
-                              </button>
-                              {!isCollapsed && (
-                                <div
-                                  id={`${groupKey}-courses`}
-                                  className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4"
-                                >
-                              {courses.map((course, index) => {
-                                const canonicalCode = getCanonicalCourseCode(course.courseCode)
-                                const activeCourseDetails = activeCourses.find(
-                                  (active) => getCanonicalCourseCode(active.code) === canonicalCode,
-                                )
-                                const fallbackDetails = getCourseDetails(course.courseCode)
-                                const courseDetails = activeCourseDetails || {
-                                  name: fallbackDetails?.name || "Unknown Course",
-                                  credits: fallbackDetails?.credits || 3,
-                                }
-                                const isConflict = hasScheduleConflict(course)
-                                const isAlreadySelected = selectedCourses.some(
-                                  (selected) =>
-                                    getSelectedCourseCanonicalCode(selected) === canonicalCode &&
-                                    selected.section === course.section,
-                                )
-                                const hasSameCode = hasSameCourseCode(course) && !isAlreadySelected
-                                const existingCourse = hasSameCode ? getSelectedCourseWithSameCode(course) : null
-
-                                return (
-                                  <Card
-                                    key={index}
-                                    className={`bg-white dark:bg-gray-800 shadow-md transition-shadow ${
-                                      isConflict ? "border-red-300 dark:border-red-700" : ""
-                                    }`}
-                                  >
-                                    <CardHeader className="pb-2">
-                                      <div className="flex justify-between items-start">
+                  
+                  {/* Floating search results panel */}
+                  {searchPanelVisible && (
+                    <>
+                      {/* Backdrop to close dropdown */}
+                      <div 
+                        className="fixed inset-0 z-10" 
+                        onClick={() => setSearchPanelVisible(false)}
+                      />
+                      
+                      {/* Dropdown card */}
+                      <div className="absolute left-0 right-0 top-full mt-2 z-20 rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                        <div className="p-3 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Filter by department</p>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => setSearchPanelVisible(false)}
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <Select value={departmentTab} onValueChange={setDepartmentTab}>
+                            <SelectTrigger className="h-8 border border-slate-200 bg-white px-2 text-left text-sm font-medium shadow-none transition hover:bg-slate-50 focus:ring-0 focus:ring-offset-0 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800">
+                              <SelectValue placeholder="Department" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {departmentTabs.map((dept) => (
+                                <SelectItem key={dept} value={dept}>
+                                  {dept}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        
+                        <div className="max-h-[420px] overflow-y-auto border-t border-slate-200 dark:border-slate-700">
+                          <div className="p-3 space-y-2">
+                            {searchTerm.trim() === "" && suggestedCourses.length > 0 && (
+                              <div className="space-y-2 mb-3">
+                                <p className="text-xs uppercase tracking-wide text-slate-500">Suggested</p>
+                                {suggestedCourses.slice(0, 5).map((course) => {
+                                  const isSelected = selectedCourseCodes.includes(course.code)
+                                  return (
+                                    <button
+                                      key={`s-${course.code}`}
+                                      type="button"
+                                      onClick={() => {
+                                        toggleCourseSelection(course.code)
+                                        setSearchPanelVisible(false)
+                                      }}
+                                      className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-blue-400 hover:bg-blue-50/70 dark:hover:bg-blue-900/30 ${
+                                        isSelected ? "border-blue-500 bg-blue-50/80 dark:bg-blue-900/30" : "border-slate-200 dark:border-slate-700"
+                                      }`}
+                                    >
+                                      <div className="flex items-center justify-between">
                                         <div>
-                                          <p className="text-sm font-medium">{getDisplayCode(course.courseCode)}</p>
-                                          <p className="text-xs text-gray-500 dark:text-gray-400">
-                                            {courseDetails.name} - Section {course.section}
-                                          </p>
+                                          <p className="font-semibold text-sm">{course.code}</p>
+                                          <p className="text-xs text-slate-500 line-clamp-1">{course.name}</p>
                                         </div>
-                                        <Badge
-                                          variant={course.hasSlots ? "secondary" : "destructive"}
-                                          className={`px-2 py-1 text-xs font-semibold ${
-                                            course.hasSlots
-                                              ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                                              : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                                          }`}
-                                        >
-                                          {course.hasSlots ? `${course.remainingSlots}/${course.classSize}` : "Full"}
+                                        <Badge variant={isSelected ? "secondary" : "outline"} className="text-[11px]">
+                                          {course.sections.length || 0} sections
                                         </Badge>
                                       </div>
-                                    </CardHeader>
-                                    <CardContent>
-                                      <div className="space-y-2 text-sm">
-                                        {shouldShowAvailableCardCredits && (
-                                          <div className="flex justify-between">
-                                            <span className="font-medium">Credits:</span>
-                                            <span>{courseDetails.credits}</span>
-                                          </div>
-                                        )}
-                                        <div className="flex justify-between">
-                                          <span className="font-medium">Days:</span>
-                                          <span>{course.meetingDays}</span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                          <span className="font-medium">Time:</span>
-                                          <span>{cleanTimeString(course.meetingTime)}</span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                          <span className="font-medium">Room:</span>
-                                          <span>{cleanRoomString(course.room)}</span>
-                                        </div>
-                                      </div>
-                                    </CardContent>
-                                    <CardFooter>
-                                      {hasSameCode ? (
-                                        <Popover>
-                                          <PopoverTrigger asChild>
-                                            <Button
-                                              variant="outline"
-                                              className="bg-yellow-50 border-yellow-200 text-yellow-700 hover:bg-yellow-100 w-full"
-                                            >
-                                              Replace Section
-                                            </Button>
-                                          </PopoverTrigger>
-                                          <PopoverContent className="w-80">
-                                            <div className="space-y-4">
-                                              <h4 className="font-medium">Replace Existing Section</h4>
-                                              <p className="text-sm">
-                                                You already have {getDisplayCode(course.courseCode)} section {existingCourse?.section}{" "}
-                                                in your schedule. Do you want to replace it with section{" "}
-                                                {course.section}?
-                                              </p>
-                                              <div className="flex justify-end gap-2">
-                                                <Button size="sm" variant="outline" onClick={() => addCourse(course)}>
-                                                  <Check className="h-4 w-4 mr-1" /> Yes, Replace
-                                                </Button>
-                                              </div>
-                                            </div>
-                                          </PopoverContent>
-                                        </Popover>
-                                      ) : (
-                                        <Button
-                                          className="w-full"
-                                          variant={
-                                            isAlreadySelected ? "destructive" : isConflict ? "outline" : "default"
-                                          }
-                                          disabled={isConflict && !isAlreadySelected}
-                                          onClick={() => {
-                                            if (isAlreadySelected) {
-                                              removeCourse(course.courseCode, course.section)
-                                            } else {
-                                              addCourse(course)
-                                            }
-                                          }}
-                                        >
-                                          {isAlreadySelected ? (
-                                            <>
-                                              <Trash className="h-4 w-4 mr-2" />
-                                              Remove from Schedule
-                                            </>
-                                          ) : isConflict ? (
-                                            <>
-                                              <AlertCircle className="h-4 w-4 mr-2" />
-                                              Conflicts
-                                            </>
-                                          ) : (
-                                            <>
-                                              <Plus className="h-4 w-4 mr-2" />
-                                              Add to Schedule
-                                            </>
-                                          )}
-                                        </Button>
-                                      )}
-                                    </CardFooter>
-                                  </Card>
-                                )
-                                  })}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            )}
+                            {filteredCatalog.map((course) => {
+                              const isSelected = selectedCourseCodes.includes(course.code)
+                              return (
+                                <button
+                                  key={course.code}
+                                  type="button"
+                                  onClick={() => {
+                                    toggleCourseSelection(course.code)
+                                    setSearchPanelVisible(false)
+                                  }}
+                                  className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-blue-400 hover:bg-blue-50/60 dark:hover:bg-blue-900/20 ${
+                                    isSelected ? "border-blue-500 bg-blue-50/70 dark:bg-blue-900/20" : "border-slate-200 dark:border-slate-700"
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div>
+                                      <p className="font-semibold text-sm">{course.code}</p>
+                                      <p className="text-xs text-slate-500 line-clamp-1">{course.name}</p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Badge variant="outline" className="text-[11px]">
+                                        {course.sections.length} sections
+                                      </Badge>
+                                      {isSelected && <Badge variant="secondary" className="text-[11px]">Added</Badge>}
+                                    </div>
+                                  </div>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </CardHeader>
+
+              {/* Selected courses section */}
+              <CardContent className="border-t border-slate-200 pt-3 dark:border-slate-700">
+                <div className="mb-3">
+                  <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Selected courses</h3>
+                  <p className="text-xs text-slate-500">Pick sections to send them to the calendar.</p>
+                </div>
+                <div className="space-y-3 max-h-[560px] overflow-y-auto">
+                {selectedCourseCodes.length === 0 && (
+                  <p className="text-sm text-slate-500">No courses selected yet.</p>
+                )}
+                {selectedCourseCodes.map((code) => {
+                  const course = courseCatalog.find((c) => c.code === code)
+                  if (!course) return null
+                  const activeSections = selectedCourses.filter(
+                    (section) => getSelectedCourseCanonicalCode(section) === code,
+                  )
+                  return (
+                    <div key={code} className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold">{course.code}</p>
+                          <p className="text-xs text-slate-500 line-clamp-1">{course.name}</p>
+                        </div>
+                        <Badge variant="outline" className="text-[11px]">
+                          {course.credits} units
+                        </Badge>
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {course.sections.length === 0 && (
+                          <p className="text-xs text-amber-600 dark:text-amber-300">No extracted sections yet.</p>
+                        )}
+                        {course.sections.map((section) => {
+                          const isSelectedSection = activeSections.some(
+                            (selected) => selected.section === section.section,
+                          )
+                          return (
+                            <div
+                              key={`${section.courseCode}-${section.section}`}
+                              className="flex items-start gap-3 rounded-md border border-slate-200/70 p-2 dark:border-slate-700"
+                            >
+                              <Checkbox
+                                id={`${section.courseCode}-${section.section}`}
+                                checked={isSelectedSection}
+                                onCheckedChange={(checked) => toggleSectionSelection(section, Boolean(checked))}
+                              />
+                              <div className="flex-1 text-sm">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-semibold">{section.section}</span>
+                                  <Badge variant={section.hasSlots ? "secondary" : "destructive"} className="text-[11px]">
+                                    {section.hasSlots ? `${section.remainingSlots}/${section.classSize}` : "Full"}
+                                  </Badge>
                                 </div>
-                              )}
+                                <p className="text-xs text-slate-500">{cleanTimeString(section.meetingTime)}</p>
+                                <p className="text-xs text-slate-500">{cleanRoomString(section.room)}</p>
+                              </div>
                             </div>
                           )
                         })}
                       </div>
-                    )}
-                  </>
-                )}
-              </div>
-
-              <AnimatePresence>
-                {selectedCourses.length > 0 && selectedPanelVisible && (
-                  <motion.div
-                    key="selected-panel"
-                    initial={{ opacity: 0, y: 24 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 24 }}
-                    transition={{ duration: 0.25, ease: "easeInOut" }}
-                    className="fixed bottom-20 right-4 left-4 sm:left-auto sm:w-[24rem] sm:bottom-24 sm:right-6 z-[10000]"
-                  >
-                    <div className="rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900">
-                      <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-2 dark:border-slate-700">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                            Selected Courses ({selectedCourses.length})
-                          </p>
-                          <p className="text-xs text-slate-500 dark:text-slate-400">
-                            Total credits: {totalSelectedCredits}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => setSelectedPanelCollapsed((prev) => !prev)}
-                            aria-label={selectedPanelCollapsed ? "Expand selected courses" : "Collapse selected courses"}
-                          >
-                            <ChevronDown
-                              className={`h-4 w-4 transition-transform ${selectedPanelCollapsed ? "-rotate-90" : "rotate-0"}`}
-                            />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => setSelectedPanelVisible(false)}
-                            aria-label="Hide selected courses panel"
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
-                      {!selectedPanelCollapsed && (
-                        <div className="max-h-[26rem] overflow-y-auto p-4 space-y-3">
-                          <AnimatePresence initial={false}>
-                            {selectedCourses.map((course) => {
-                            const key = `${course.courseCode}-${course.section}`
-                            const customization = customizations[key] || {}
-                            const courseColor = customization.color || DEFAULT_CUSTOM_COLOR
-                            const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode)
-                            const identifierLabel = getSelectedCourseIdentifierLabel(course, getDisplayCode)
-
-                            return (
-                                <motion.div
-                                  layout
-                                  key={key}
-                                  initial={{ opacity: 0, scale: 0.95 }}
-                                  animate={{ opacity: 1, scale: 1 }}
-                                  exit={{ opacity: 0, scale: 0.95 }}
-                                  transition={{ duration: 0.18, ease: "easeInOut" }}
-                                  className="rounded-lg border border-slate-200 p-3 shadow-sm dark:border-slate-700"
-                                  style={{ borderLeft: `4px solid ${courseColor}` }}
-                                >
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div>
-                                      <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                                        {displayTitle}
-                                      </p>
-                                      <p className="text-xs text-slate-500 dark:text-slate-400">{identifierLabel}</p>
-                                    </div>
-                                    <Badge variant={course.hasSlots ? "secondary" : "destructive"}>
-                                      {course.hasSlots ? `${course.remainingSlots} slots` : "Full"}
-                                    </Badge>
-                                  </div>
-                                  <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-300">
-                                    <dt className="font-semibold">Section</dt>
-                                    <dd>{course.section}</dd>
-                                    <dt className="font-semibold">Credits</dt>
-                                    <dd>{course.credits}</dd>
-                                    <dt className="font-semibold">Days</dt>
-                                    <dd>{course.meetingDays}</dd>
-                                    <dt className="font-semibold">Time</dt>
-                                    <dd>{course.displayTime}</dd>
-                                    <dt className="font-semibold">Room</dt>
-                                    <dd>{course.displayRoom}</dd>
-                                  </dl>
-                                </motion.div>
-                              )
-                            })}
-                          </AnimatePresence>
-                        </div>
-                      )}
                     </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              <AnimatePresence>
-                {selectedCourses.length > 0 && !selectedPanelVisible && (
-                  <motion.div
-                    key="selected-panel-toggle"
-                    initial={{ opacity: 0, y: 16 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 16 }}
-                    transition={{ duration: 0.2, ease: "easeInOut" }}
-                    className="fixed bottom-20 right-4 sm:bottom-24 sm:right-6 z-[10000]"
-                  >
-                    <Button type="button" size="sm" className="shadow-lg" onClick={() => setSelectedPanelVisible(true)}>
-                      Show selected courses ({selectedCourses.length})
-                    </Button>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </TabsContent>
-
-            <AnimatePresence>
-              {activeTab === "available" && showJumpButton && !isBottomNavVisible && (
-                <motion.div
-                  key="available-floating-back-to-top"
-                  initial={{ opacity: 0, y: 12, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 12, scale: 0.95 }}
-                  transition={{ duration: 0.2, ease: "easeInOut" }}
-                  className="pointer-events-none fixed bottom-4 right-32 z-[10000] sm:bottom-6 sm:right-40"
-                >
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    className="pointer-events-auto shadow-lg shadow-slate-500/30"
-                    onClick={scrollToPageTop}
-                    aria-label="Back to top"
-                  >
-                    <ArrowUp className="h-4 w-4" />
-                    Back to top
-                  </Button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Selected Courses Tab */}
-            <TabsContent value="selected">
-              <Dialog open={Boolean(importErrorDialog)} onOpenChange={(isOpen) => !isOpen && closeImportDialog()}>
-                <DialogContent className="sm:max-w-md">
-                  <DialogHeader>
-                    <DialogTitle>{importErrorDialog?.title || "Import error"}</DialogTitle>
-                    <DialogDescription>
-                      Make sure you upload the JSON file exported from Schedule Maker so we can restore your selections safely.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <p className="text-sm text-slate-600 dark:text-slate-300">{importErrorDialog?.message}</p>
-                  <DialogFooter>
-                    <Button onClick={closeImportDialog}>Got it</Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-              <input
-                type="file"
-                accept="application/json"
-                ref={importFileInputRef}
-                className="hidden"
-                onChange={handleImportSelectedCourses}
-              />
-              {importStatus && (
-                <Alert
-                  className="mb-4"
-                  variant={importStatus.type === "error" ? "destructive" : "default"}
-                >
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>
-                    {importStatus.type === "success"
-                      ? "Transfer complete"
-                      : importStatus.type === "warning"
-                        ? "Transfer finished with notices"
-                        : "Transfer issue"}
-                  </AlertTitle>
-                  <AlertDescription>{importStatus.message}</AlertDescription>
-                </Alert>
-              )}
-              {staleImportNotice && (
-                <Alert className="mb-4 border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/20 dark:text-amber-50">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>Extracted data missing</AlertTitle>
-                  <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <span>{staleImportNotice}</span>
-                    <Button variant="outline" size="sm" onClick={dismissStaleImportNotice}>
-                      Dismiss
-                    </Button>
-                  </AlertDescription>
-                </Alert>
-              )}
-              {selectedCourses.length === 0 ? (
-                <div className="bg-blue-100 dark:bg-blue-900/30 border border-blue-400 dark:border-blue-700 text-blue-700 dark:text-blue-400 px-4 py-3 rounded mb-4">
-                  <p>No courses selected yet. Add courses from the Available Courses tab to build your schedule.</p>
-                  <div className="mt-3 flex gap-2">
-                    <Button variant="outline" size="sm" onClick={triggerImportSelectedCourses}>
-                      Import selection
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={handleExportSelectedCourses} disabled>
-                      Export selection
-                    </Button>
-                  </div>
+                  )
+                })}
                 </div>
-              ) : (
-                <>
-                  <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="flex flex-col gap-2 items-start lg:items-start">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button variant="outline" size="sm" onClick={triggerImportSelectedCourses}>
-                          Import selection
-                        </Button>
-                        <Button variant="outline" size="sm" onClick={handleExportSelectedCourses}>
-                          Export selection
-                        </Button>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Center Panel */}
+          <div className="flex min-h-0 flex-col">
+            <Card className="flex min-h-0 flex-1 flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
+              <CardHeader className="flex flex-wrap items-center justify-between gap-4 sm:flex-nowrap">
+                <div>
+                  <CardTitle className="text-lg font-semibold">{scheduleTitle}</CardTitle>
+                </div>
+                <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
+                  <Select value={currentTerm} onValueChange={(value) => setCurrentTerm(value as TermName)}>
+                    <SelectTrigger className="h-8 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400">
+                      <SelectValue placeholder="Term" />
+                    </SelectTrigger>
+                    <SelectContent align="end" className="w-36">
+                      <SelectItem value="Term 1">1st Term</SelectItem>
+                      <SelectItem value="Term 2">2nd Term</SelectItem>
+                      <SelectItem value="Term 3">3rd Term</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <span className="text-slate-300 dark:text-slate-600">•</span>
+                  <Select value={academicYearLabel} onValueChange={setAcademicYearLabel}>
+                    <SelectTrigger className="h-8 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400">
+                      <SelectValue placeholder="Academic Year" />
+                    </SelectTrigger>
+                    <SelectContent align="end" className="w-40">
+                      {academicYearOptions.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {option}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardHeader>
+              <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
+                <div className="flex-1 overflow-auto px-4 pb-4 pt-2">
+                  {renderScheduleView()}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Right Sidebar */}
+          <div className="flex min-h-0 flex-col gap-3">
+            <Card className="flex flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
+              <CardHeader className="flex items-center justify-between py-3">
+                <CardTitle className="text-base font-semibold">Versions</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 pt-0 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  {versions.map((version) => {
+                    const isActive = version.id === activeVersionState?.activeVersionId
+                    const nameParts = version.name.trim().split(" ")
+                    const label = nameParts[nameParts.length - 1]?.charAt(0) || version.name.charAt(0)
+                    return (
+                      <div key={version.id} className="relative group">
+                        <button
+                          type="button"
+                          onClick={() => setActiveVersion(version.id)}
+                          aria-label={`Activate ${version.name}`}
+                          aria-pressed={isActive}
+                          className={`flex h-9 w-9 items-center justify-center rounded-xl border text-xs font-semibold transition ${
+                            isActive
+                              ? "border-rose-500 bg-rose-500/20 text-rose-600 dark:border-rose-400 dark:bg-rose-500/20 dark:text-rose-100"
+                              : "border-slate-300 bg-white text-slate-600 hover:border-slate-400 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-600 dark:hover:bg-slate-800"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                        {versions.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              confirmDeleteVersion(version.id)
+                            }}
+                            className="absolute -top-1 -right-1 hidden h-5 w-5 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-500 transition group-hover:flex hover:border-rose-500 hover:bg-rose-500 hover:text-white dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-rose-400 dark:hover:bg-rose-500/80 dark:hover:text-white"
+                            aria-label={`Delete ${version.name}`}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
                       </div>
-                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                        Total credits selected: {totalSelectedCredits}
-                      </span>
-                    </div>
-                    <div className="flex items-center space-x-2 self-start lg:self-auto">
-                      <Button
-                        variant="outline"
-                        onClick={() => setSelectedViewMode(selectedViewMode === "card" ? "table" : "card")}
-                        className="flex items-center gap-2"
+                    )
+                  })}
+                  <Popover open={addVersionMenuOpen} onOpenChange={setAddVersionMenuOpen}>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="flex h-9 w-9 items-center justify-center rounded-xl border border-dashed border-slate-300 text-slate-500 transition hover:border-blue-500 hover:text-blue-500 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-400 dark:hover:text-blue-200"
+                        aria-label="Create version"
                       >
-                        {selectedViewMode === "card" ? "Table View" : "Card View"}
+                        <Plus className="h-4 w-4" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-56 space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Add version
+                      </p>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        className="w-full justify-start"
+                        onClick={() => {
+                          createVersion("new")
+                          setAddVersionMenuOpen(false)
+                        }}
+                      >
+                        Start fresh
                       </Button>
-                    </div>
-                  </div>
-
-                  {selectedViewMode === "table" ? (
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Course Code</TableHead>
-                            <TableHead>Custom Title</TableHead>
-                            <TableHead>Credits</TableHead>
-                            <TableHead>Section</TableHead>
-                            <TableHead>Schedule</TableHead>
-                            <TableHead>Room</TableHead>
-                            <TableHead>Slots</TableHead>
-                            <TableHead>Actions</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {selectedCourses.map((course) => {
-                            const key = `${course.courseCode}-${course.section}`
-                            const customization = customizations[key] || {}
-                            const courseColor = customization.color || DEFAULT_CUSTOM_COLOR
-                            const colorInputValue = customColorInputs[key] ?? courseColor
-                            const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode)
-                            const inputTitleValue = customization.customTitle ?? getDefaultSelectedCourseTitle(course, getDisplayCode)
-                            
-                            return (
-                              <TableRow key={key}>
-                                <TableCell>{getDisplayCode(course.courseCode)}</TableCell>
-                                <TableCell>
-                                  <Popover>
-                                    <PopoverTrigger asChild>
-                                      <Button variant="ghost" size="sm" className="flex items-center gap-1">
-                                        {displayTitle}
-                                        <Edit className="h-3 w-3" />
-                                      </Button>
-                                    </PopoverTrigger>
-                                    <PopoverContent className="w-80">
-                                      <div className="space-y-4">
-                                        <h4 className="font-medium">Customize Course</h4>
-                                        <div>
-                                          <Label>Display Name</Label>
-                                          <Input
-                                            value={inputTitleValue}
-                                            onChange={(e) => {
-                                              setCustomizations(prev => ({
-                                                ...prev,
-                                                [key]: {
-                                                  ...prev[key],
-                                                  customTitle: e.target.value,
-                                                },
-                                              }))
-                                            }}
-                                          />
-                                        </div>
-                                        <div>
-                                          <Label>Color</Label>
-                                          <div className="flex flex-col gap-2">
-                                            <HexColorPicker
-                                              color={courseColor}
-                                              onChange={(color) => {
-                                                setCustomizations(prev => ({
-                                                  ...prev,
-                                                  [key]: {
-                                                    ...prev[key],
-                                                    color,
-                                                  },
-                                                }))
-                                                setCustomColorInputs(prev => ({
-                                                  ...prev,
-                                                  [key]: color,
-                                                }))
-                                              }}
-                                              className="w-full"
-                                            />
-                                            <div className="flex items-center gap-2">
-                                              <Input
-                                                value={colorInputValue}
-                                                onChange={(e) => handleHexInputChange(key, e.currentTarget.value)}
-                                                onBlur={(e) => applyHexColorValue(key, e.currentTarget.value, courseColor)}
-                                                onKeyDown={(e) => {
-                                                  if (e.key === "Enter") {
-                                                    e.preventDefault()
-                                                    applyHexColorValue(key, e.currentTarget.value, courseColor)
-                                                  }
-                                                }}
-                                                maxLength={7}
-                                                className="font-mono text-xs"
-                                                placeholder="#3B82F6"
-                                                aria-label="Hex color"
-                                              />
-                                              <span className="text-[0.7rem] text-slate-500">6-digit hex</span>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </PopoverContent>
-                                  </Popover>
-                                </TableCell>
-                                  <TableCell>{course.credits}</TableCell>
-                                <TableCell>{course.section}</TableCell>
-                                <TableCell>
-                                  {course.displayTime} ({course.meetingDays})
-                                </TableCell>
-                                <TableCell>{course.displayRoom}</TableCell>
-                                <TableCell>
-                                  <Badge variant={course.hasSlots ? "secondary" : "destructive"}>
-                                    {course.hasSlots ? `${course.remainingSlots}/${course.classSize}` : "Full"}
-                                  </Badge>
-                                </TableCell>
-                                <TableCell>
-                                  <Button
-                                    variant="destructive"
-                                    size="sm"
-                                    onClick={() => removeCourse(course.courseCode, course.section)}
-                                  >
-                                    <Trash className="h-4 w-4 mr-1" />
-                                    Remove
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            )
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {selectedCourses.map((course, index) => {
-                        const key = `${course.courseCode}-${course.section}`
-                        const customization = customizations[key] || {}
-                        const courseColor = customization.color || DEFAULT_CUSTOM_COLOR
-                        const colorInputValue = customColorInputs[key] ?? courseColor
-                        const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode)
-                        const identifierLabel = getSelectedCourseIdentifierLabel(course, getDisplayCode)
-                        const defaultTitleValue = customization.customTitle ?? getDefaultSelectedCourseTitle(course, getDisplayCode)
-
-                        return (
-                          <Card key={index} className="relative overflow-hidden" style={{
-                            borderLeft: `4px solid ${courseColor}`
-                          }}>
-                            <CardHeader className="pb-2">
-                              <div className="flex justify-between items-start">
-                                <div>
-                                  <CardTitle className="text-lg font-bold">
-                                    {displayTitle}
-                                  </CardTitle>
-                                  <p className="text-sm font-medium">{identifierLabel}</p>
-                                </div>
-                                <Badge variant={course.hasSlots ? "secondary" : "destructive"}>
-                                  {course.hasSlots ? `${course.remainingSlots} slots` : "Full"}
-                                </Badge>
-                              </div>
-                              <p className="text-sm text-gray-600 dark:text-gray-400">Section: {course.section}</p>
-                              <p className="text-sm text-gray-600 dark:text-gray-400">Credits: {course.credits}</p>
-                            </CardHeader>
-
-                            <CardContent>
-                              <div className="space-y-2 text-sm">
-                                <div className="flex justify-between">
-                                  <span className="font-medium">Days:</span>
-                                  <span>{course.meetingDays}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span className="font-medium">Time:</span>
-                                  <span>{course.displayTime}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span className="font-medium">Room:</span>
-                                  <span>{course.displayRoom}</span>
-                                </div>
-                              </div>
-                            </CardContent>
-
-                            <CardFooter className="flex gap-2">
-                              <Popover>
-                                <PopoverTrigger asChild>
-                                  <Button variant="outline" size="sm" className="flex-1">
-                                    <Palette className="h-4 w-4 mr-1" />
-                                    Customize
-                                  </Button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-80">
-                                  <div className="space-y-4">
-                                    <h4 className="font-medium">Customize Course</h4>
-                                    <div>
-                                      <Label>Display Name</Label>
-                                      <Input
-                                        defaultValue={defaultTitleValue}
-                                        onChange={(e) => {
-                                          setCustomizations(prev => ({
-                                            ...prev,
-                                            [key]: {
-                                              ...prev[key],
-                                              customTitle: e.target.value
-                                            }
-                                          }))
-                                        }}
-                                      />
-                                    </div>
-                                    <div>
-                                      <Label>Color</Label>
-                                      <div className="flex flex-col gap-2">
-                                        <HexColorPicker
-                                          color={courseColor}
-                                          onChange={(color) => {
-                                            setCustomizations(prev => ({
-                                              ...prev,
-                                              [key]: {
-                                                ...prev[key],
-                                                color
-                                              }
-                                            }))
-                                            setCustomColorInputs(prev => ({
-                                              ...prev,
-                                              [key]: color
-                                            }))
-                                          }}
-                                          className="w-full"
-                                        />
-                                        <div className="flex items-center gap-2">
-                                          <Input
-                                            value={colorInputValue}
-                                            onChange={(e) => handleHexInputChange(key, e.currentTarget.value)}
-                                            onBlur={(e) => applyHexColorValue(key, e.currentTarget.value, courseColor)}
-                                            onKeyDown={(e) => {
-                                              if (e.key === "Enter") {
-                                                e.preventDefault()
-                                                applyHexColorValue(key, e.currentTarget.value, courseColor)
-                                              }
-                                            }}
-                                            maxLength={7}
-                                            className="font-mono text-xs"
-                                            placeholder="#3B82F6"
-                                            aria-label="Hex color"
-                                          />
-                                          <span className="text-[0.7rem] text-slate-500">6-digit hex</span>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </PopoverContent>
-                              </Popover>
-                              <Button
-                                variant="destructive"
-                                size="sm"
-                                onClick={() => removeCourse(course.courseCode, course.section)}
-                                className="flex-1"
-                              >
-                                <Trash className="h-4 w-4 mr-1" />
-                                Remove
-                              </Button>
-                            </CardFooter>
-                          </Card>
-                        )
-                      })}
-                    </div>
-                  )}
-                </>
-              )}
-            </TabsContent>
-
-            {/* Schedule View Tab */}
-            <TabsContent value="schedule">
-              {selectedCourses.length === 0 ? (
-                <div className="bg-blue-100 dark:bg-blue-900/30 border border-blue-400 dark:border-blue-700 text-blue-700 dark:text-blue-400 px-4 py-3 rounded mb-4">
-                  <p>No courses selected yet. Add courses from the Available Courses tab to build your schedule.</p>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="w-full justify-start"
+                        onClick={() => {
+                          createVersion("duplicate")
+                          setAddVersionMenuOpen(false)
+                        }}
+                      >
+                        Duplicate current
+                      </Button>
+                    </PopoverContent>
+                  </Popover>
                 </div>
-              ) : (
-                renderScheduleView()
-              )}
-            </TabsContent>
-          </Tabs>
-        )}
+                {versionsExpanded && versions.length > 0 && (
+                  <div className="space-y-2">
+                    {versions.map((version) => {
+                      const isActive = version.id === activeVersionState?.activeVersionId
+                      return (
+                        <div
+                          key={`${version.id}-expanded`}
+                          className={`flex items-center justify-between rounded-lg border px-3 py-2 ${
+                            isActive
+                              ? "border-blue-500 bg-blue-50/70 dark:bg-blue-900/20"
+                              : "border-slate-200 dark:border-slate-700"
+                          }`}
+                        >
+                          <div>
+                            <p className="text-sm font-semibold">{version.name}</p>
+                            <p className="text-xs text-slate-500">{version.selectedCourses.length} sections</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {!isActive && (
+                              <Button variant="ghost" size="sm" onClick={() => setActiveVersion(version.id)}>
+                                Activate
+                              </Button>
+                            )}
+                            {versions.length > 1 && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => confirmDeleteVersion(version.id)}
+                                aria-label="Delete version"
+                              >
+                                <Trash className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+                {!versionsExpanded && versions.length === 0 && (
+                  <p className="text-sm text-slate-500">No versions yet. Use + to add one.</p>
+                )}
+                {versions.length > 0 && (
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setVersionsExpanded((prev) => !prev)}
+                      className="text-xs font-medium text-slate-500 transition hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                    >
+                      {versionsExpanded ? "See less" : "See more"}
+                    </button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
-        <div className="mt-12" ref={bottomNavigationRef}>
-          <QuickNavigation showBackToTop />
+            <Card className="bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
+              <CardHeader className="py-3">
+                <CardTitle className="text-base font-semibold">Summary</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1.5 pt-0 text-sm">
+                <div className="flex justify-between"><span>Total units</span><span>{totalSelectedCredits}</span></div>
+                <div className="flex justify-between"><span>Courses selected</span><span>{selectedCourseCodes.length}</span></div>
+                <div className="flex justify-between"><span>Sections added</span><span>{selectedCourses.length}</span></div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
+              <CardHeader className="py-3">
+                <CardTitle className="text-base font-semibold">Exports & actions</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 pt-0">
+                <Button variant="outline" className="h-9 w-full justify-start gap-2 text-sm" onClick={downloadScheduleImage}>
+                  <Download className="h-3.5 w-3.5" /> Download schedule
+                </Button>
+                <Button variant="outline" className="h-9 w-full justify-start gap-2 text-sm" onClick={openIcsDialog}>
+                  <Calendar className="h-3.5 w-3.5" /> Export to calendar
+                </Button>
+                <Button variant="ghost" className="h-9 w-full justify-start gap-2 text-sm" disabled>
+                  <ExternalLink className="h-3.5 w-3.5" /> Add to SOLAR-OSES (soon)
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       </div>
     </div>
