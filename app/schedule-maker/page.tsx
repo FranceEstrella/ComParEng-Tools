@@ -2643,6 +2643,26 @@ const downloadScheduleImage = async () => {
       height: (header as HTMLElement).style.height
     }));
 
+    // Relax line clamps to avoid descender clipping during export
+    const clampedTextNodes = Array.from(scheduleEl.querySelectorAll('.line-clamp-1, .line-clamp-2')) as HTMLElement[]
+    const originalClampStyles = clampedTextNodes.map((el) => ({
+      el,
+      lineClamp: (el.style as any).webkitLineClamp,
+      display: el.style.display,
+      overflow: el.style.overflow,
+      boxOrient: (el.style as any).webkitBoxOrient,
+      whiteSpace: el.style.whiteSpace,
+      maxHeight: el.style.maxHeight,
+    }))
+    clampedTextNodes.forEach((el) => {
+      ;(el.style as any).webkitLineClamp = 'unset'
+      ;(el.style as any).webkitBoxOrient = 'unset'
+      el.style.display = 'block'
+      el.style.overflow = 'visible'
+      el.style.whiteSpace = 'normal'
+      el.style.maxHeight = 'none'
+    })
+
     // Apply temporary styles for perfect centering during capture
     dayHeaders.forEach(header => {
       const el = header as HTMLElement;
@@ -2704,6 +2724,15 @@ const downloadScheduleImage = async () => {
       style.element.style.justifyContent = style.justifyContent;
       style.element.style.height = style.height;
     });
+
+    originalClampStyles.forEach((style) => {
+      ;(style.el.style as any).webkitLineClamp = style.lineClamp
+      ;(style.el.style as any).webkitBoxOrient = style.boxOrient
+      style.el.style.display = style.display
+      style.el.style.overflow = style.overflow
+      style.el.style.whiteSpace = style.whiteSpace
+      style.el.style.maxHeight = style.maxHeight
+    })
 
     // Restore the edit buttons
     editButtons.forEach(button => (button as HTMLElement).style.display = '');
@@ -3527,8 +3556,8 @@ const renderScheduleView = () => {
                 <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
                   <Select value={currentTerm} onValueChange={(value) => setCurrentTerm(value as TermName)}>
                     <SelectTrigger
-                      className="h-8 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400"
-                      style={{ paddingTop: 4, paddingBottom: 4 }}
+                      className="h-9 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium leading-tight shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400"
+                      style={{ paddingTop: 6, paddingBottom: 6, lineHeight: "1.25" }}
                     >
                       <SelectValue placeholder="Term" />
                     </SelectTrigger>
@@ -3541,8 +3570,8 @@ const renderScheduleView = () => {
                   <span className="text-slate-300 dark:text-slate-600">•</span>
                   <Select value={academicYearLabel} onValueChange={setAcademicYearLabel}>
                     <SelectTrigger
-                      className="h-8 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400"
-                      style={{ paddingTop: 4, paddingBottom: 4 }}
+                      className="h-9 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium leading-tight shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400"
+                      style={{ paddingTop: 6, paddingBottom: 6, lineHeight: "1.25" }}
                     >
                       <SelectValue placeholder="Academic Year" />
                     </SelectTrigger>

@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X } from "lucide-react"
 import PatchNotesButton from "@/components/patch-notes"
 import { ThemeProvider } from "@/components/theme-provider"
@@ -36,6 +36,24 @@ export default function Home() {
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(false)
   const [shouldAutoOpenWhatsNew, setShouldAutoOpenWhatsNew] = useState(false)
   const [showExtensionCard, setShowExtensionCard] = useState(true)
+  const disclaimerRef = useRef<HTMLDivElement | null>(null)
+  
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const updateOffset = () => {
+      const height = disclaimerRef.current?.offsetHeight ?? 0
+      document.documentElement.style.setProperty("--install-banner-offset", `${height}px`)
+    }
+
+    updateOffset()
+    window.addEventListener("resize", updateOffset)
+    return () => {
+      window.removeEventListener("resize", updateOffset)
+      document.documentElement.style.removeProperty("--install-banner-offset")
+    }
+  }, [])
   
 
   useEffect(() => {
@@ -159,7 +177,7 @@ export default function Home() {
             </Alert>
           </div>
         )}
-        <div className="fixed inset-x-0 top-0 z-40">
+        <div className="fixed inset-x-0 top-0 z-50" ref={disclaimerRef}>
           <div className="w-full bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 p-2 text-center text-xs md:text-sm">
             <span className="font-semibold">Disclaimer:</span> This is a personal project and is NOT officially affiliated with FEU Tech or the FEU Tech CpE Department.
           </div>

@@ -137,7 +137,11 @@ export default function InstallBanner() {
   }
 
   return (
-    <div className="sticky top-0 z-40 w-full bg-emerald-600 text-white shadow-md" data-install-banner>
+    <div
+      className="sticky z-40 w-full bg-emerald-600 text-white shadow-md"
+      style={{ top: "var(--install-banner-offset, 0px)" }}
+      data-install-banner
+    >
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
           <Smartphone className="mt-1 h-6 w-6 flex-shrink-0" />
