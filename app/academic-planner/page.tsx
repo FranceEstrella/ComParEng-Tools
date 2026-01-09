@@ -7627,9 +7627,11 @@ export default function AcademicPlanner() {
                                   return (
                                     <TableRow
                                       key={`${semesterKey}-${course.id}`}
-                                      className={`${isSelected ? "bg-blue-50 dark:bg-blue-900/20" : ""} ${
-                                        hasConflict ? "border-l-4 border-red-500" : ""
-                                      } ${courseIsInternship ? "bg-purple-50 dark:bg-purple-900/10" : ""}`}
+                                      className={`group relative ${
+                                        isSelected ? "bg-blue-50 dark:bg-blue-900/20" : ""
+                                      } ${hasConflict ? "border-l-4 border-red-500" : ""} ${
+                                        courseIsInternship ? "bg-purple-50 dark:bg-purple-900/10" : ""
+                                      }`}
                                     >
                                       <TableCell>
                                         <Checkbox
@@ -7662,19 +7664,22 @@ export default function AcademicPlanner() {
                                               <AlertTriangle className="h-3 w-3" />
                                             </Button>
                                           )}
-                                          <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={() => removeCourseFromPlan(course.id)}
-                                            className="h-6 w-6 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
-                                            title="Remove from plan"
-                                          >
-                                            <X className="h-3 w-3" />
-                                          </Button>
                                         </div>
                                       </TableCell>
                                       <TableCell>{course.name}</TableCell>
-                                      <TableCell>{course.credits}</TableCell>
+                                      <TableCell className="relative pr-12">
+                                        {course.credits}
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => removeCourseFromPlan(course.id)}
+                                          className="absolute right-0 -top-2 h-7 w-7 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                          title="Remove from plan"
+                                          aria-label={`Remove ${getDisplayCode(course.code)} from plan`}
+                                        >
+                                          <X className="h-3 w-3" />
+                                        </Button>
+                                      </TableCell>
                                       {semesterIsCurrent ? (
                                         <>
                                           <TableCell>
@@ -7800,7 +7805,7 @@ export default function AcademicPlanner() {
                                           )
                                         })()}
                                       </TableCell>
-                                      <TableCell>
+                                      <TableCell className="relative group/actions">
                                         <div className="flex items-center gap-2">
                                           <Select
                                             key={`${course.id}-${moveSelectResetCounter}`}

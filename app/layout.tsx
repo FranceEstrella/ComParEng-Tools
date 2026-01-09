@@ -6,6 +6,7 @@ import { ThemeProvider } from "@/components/theme-provider"
 import InstallBanner from "@/components/install-banner"
 import ServiceWorkerRegister from "@/components/service-worker-register"
 import ReportIssueButton from "@/components/report-issue-button"
+import NavigationOverlay from "@/components/navigation-overlay"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -72,12 +73,10 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
-          <div className="bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 p-2 text-center text-xs md:text-sm">
-            <strong>Disclaimer:</strong> This is a personal project and is NOT officially affiliated with FEU Tech or the FEU Tech CpE Department.
-          </div>
           <InstallBanner />
           <ServiceWorkerRegister />
           {children}
+          <NavigationOverlay />
           <ReportIssueButton />
         </ThemeProvider>
       </body>

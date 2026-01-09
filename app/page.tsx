@@ -159,7 +159,12 @@ export default function Home() {
             </Alert>
           </div>
         )}
-        <div className="container mx-auto px-4 py-12">
+        <div className="fixed inset-x-0 top-0 z-40">
+          <div className="w-full bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 p-2 text-center text-xs md:text-sm">
+            <span className="font-semibold">Disclaimer:</span> This is a personal project and is NOT officially affiliated with FEU Tech or the FEU Tech CpE Department.
+          </div>
+        </div>
+        <div className="container mx-auto px-4 pb-12 pt-16">
           <div className="max-w-5xl mx-auto">
             {/* Header with Dark Mode Toggle */}
             <div className="relative mb-8 text-center md:pt-12">

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from "react"
+import { createPortal } from "react-dom"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -10,6 +11,7 @@ import {
   ArrowUp,
   RefreshCw,
   Plus,
+  Pencil,
   Trash,
   BookOpen,
   GraduationCap,
@@ -218,6 +220,7 @@ interface ScheduleVersion {
   name: string
   selectedCourses: SelectedCourse[]
   customizations: Record<string, CourseCustomization>
+  scheduleTitle?: string
 }
 
 interface TermYearVersionState {
@@ -286,6 +289,7 @@ interface SelectedCourseExportPayload {
 const SELECTED_COURSE_EXPORT_VERSION = 1
 const STALE_IMPORT_NOTICE_STORAGE_KEY = "scheduleMaker.staleImportNotice"
 const DEFAULT_CUSTOM_COLOR = "#3b82f6"
+const DEFAULT_SCHEDULE_TITLE = "Weekly Schedule"
 const HEX_COLOR_PATTERN = /^[0-9A-Fa-f]{6}$/
 
 const sanitizeHexColor = (value: string): string | null => {
@@ -553,6 +557,9 @@ export default function ScheduleMaker() {
   const [academicYearLabel, setAcademicYearLabel] = useState<string>(() => deriveAcademicYearLabel())
   const [currentYearLevel, setCurrentYearLevel] = useState<number>(1)
   const [departmentTab, setDepartmentTab] = useState<string>("All")
+  const [sectionFilter, setSectionFilter] = useState<string>("all")
+  const [dayFilter, setDayFilter] = useState<string>("all")
+  const [timeFilter, setTimeFilter] = useState<string>("all")
   const [selectedCourseCodes, setSelectedCourseCodes] = useState<string[]>([])
   const [versionStore, setVersionStore] = useState<Record<string, TermYearVersionState>>({})
   const [versionsExpanded, setVersionsExpanded] = useState<boolean>(false)
@@ -560,10 +567,29 @@ export default function ScheduleMaker() {
   const [errorDialogOpen, setErrorDialogOpen] = useState(false)
   const [zoomLevel, setZoomLevel] = useState<number>(0)
   const [searchPanelVisible, setSearchPanelVisible] = useState<boolean>(false)
-  const scheduleTitle = "Weekly Schedule"
+  const [scheduleTitle, setScheduleTitle] = useState(DEFAULT_SCHEDULE_TITLE)
+  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [scheduleTitleDraft, setScheduleTitleDraft] = useState(DEFAULT_SCHEDULE_TITLE)
   const [curriculumSignature, setCurriculumSignature] = useState<string>("")
   const [importStatus, setImportStatus] = useState<null | { type: "success" | "warning" | "error"; message: string }>(null)
   const [displayAliasMap, setDisplayAliasMap] = useState<Map<string, string>>(new Map())
+
+  const startEditingScheduleTitle = useCallback(() => {
+    setScheduleTitleDraft(scheduleTitle)
+    setIsEditingTitle(true)
+  }, [scheduleTitle])
+
+  const cancelEditingScheduleTitle = useCallback(() => {
+    setScheduleTitleDraft(scheduleTitle)
+    setIsEditingTitle(false)
+  }, [scheduleTitle])
+
+  const saveScheduleTitle = useCallback(() => {
+    const nextTitle = scheduleTitleDraft.trim() || DEFAULT_SCHEDULE_TITLE
+    setScheduleTitle(nextTitle)
+    setScheduleTitleDraft(nextTitle)
+    setIsEditingTitle(false)
+  }, [scheduleTitleDraft])
 
   const normalizeAliasState = useCallback(
     (raw: Record<string, unknown> | null | undefined): Record<string, { canonical: string; displayAlias?: boolean }> => {
@@ -626,6 +652,7 @@ export default function ScheduleMaker() {
   const [icsDialogStartDate, setIcsDialogStartDate] = useState<string>("")
   const [icsDialogError, setIcsDialogError] = useState<string | null>(null)
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
+  const [showMobilePrompt, setShowMobilePrompt] = useState(false)
   const activeTermYearKey = buildTermYearKey(currentTerm, academicYearLabel)
 
   const scrollToPageTop = useCallback(() => {
@@ -766,11 +793,41 @@ export default function ScheduleMaker() {
       const normalized = (preferences.currentTerm as TermName) || deriveTermFromDate()
       setCurrentTerm(normalized)
     }
+
+    if (typeof window !== "undefined") {
+      const suppressed = window.localStorage.getItem("scheduleMaker.hideMobilePrompt") === "true"
+      const isMobile = window.matchMedia && window.matchMedia("(max-width: 768px)").matches
+      if (isMobile && !suppressed) {
+        setShowMobilePrompt(true)
+      }
+    }
   }, [])
 
   useEffect(() => {
-    const codes = Array.from(new Set(selectedCourses.map((course) => getSelectedCourseCanonicalCode(course))))
-    setSelectedCourseCodes(codes)
+    if (typeof window === "undefined") return
+    const media = window.matchMedia("(max-width: 768px)")
+
+    const handleChange = (event: MediaQueryListEvent | MediaQueryList) => {
+      const suppressed = window.localStorage.getItem("scheduleMaker.hideMobilePrompt") === "true"
+      if (!event.matches) {
+        setShowMobilePrompt(false)
+      } else if (!suppressed) {
+        setShowMobilePrompt(true)
+      }
+    }
+
+    handleChange(media)
+    media.addEventListener("change", handleChange)
+    return () => media.removeEventListener("change", handleChange)
+  }, [])
+
+  useEffect(() => {
+    // Keep previously picked courses in the list even if their sections are temporarily cleared
+    setSelectedCourseCodes((prev) => {
+      const next = new Set(prev)
+      selectedCourses.forEach((course) => next.add(getSelectedCourseCanonicalCode(course)))
+      return Array.from(next)
+    })
   }, [selectedCourses])
 
   // Load data from localStorage only on the client side
@@ -794,13 +851,14 @@ export default function ScheduleMaker() {
         name: existing?.versions?.[0]?.name || "Version A",
         selectedCourses,
         customizations,
+        scheduleTitle,
       }
 
       const versions = existing?.versions?.length ? existing.versions : [baseVersion]
       const activeVersionId = existing?.activeVersionId || versions[0].id
       const normalizedVersions = versions.map((version) =>
         version.id === activeVersionId
-          ? { ...version, selectedCourses, customizations }
+            ? { ...version, selectedCourses, customizations, scheduleTitle }
           : version,
       )
 
@@ -828,6 +886,9 @@ export default function ScheduleMaker() {
         setSelectedCourses(target.selectedCourses.map(normalizeSelectedCourse))
         hasHydratedVersionRef.current = true
         setCustomizations(target.customizations || {})
+        const nextTitle = target.scheduleTitle || DEFAULT_SCHEDULE_TITLE
+        setScheduleTitle(nextTitle)
+        setScheduleTitleDraft(nextTitle)
 
         const nextStore = {
           ...prev,
@@ -856,6 +917,7 @@ export default function ScheduleMaker() {
           name,
           selectedCourses: basePayload.selectedCourses,
           customizations: basePayload.customizations,
+          scheduleTitle: mode === "duplicate" ? scheduleTitle : DEFAULT_SCHEDULE_TITLE,
         }
 
         const nextEntry: TermYearVersionState = {
@@ -870,11 +932,13 @@ export default function ScheduleMaker() {
 
         setSelectedCourses(nextVersion.selectedCourses)
         setCustomizations(nextVersion.customizations)
+        setScheduleTitle(nextVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE)
+        setScheduleTitleDraft(nextVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE)
         persistVersionStore(nextStore)
         return nextStore
       })
     },
-    [activeTermYearKey, customizations, persistVersionStore, selectedCourses],
+    [activeTermYearKey, customizations, persistVersionStore, scheduleTitle, selectedCourses],
   )
 
   const deleteVersion = useCallback(
@@ -898,6 +962,9 @@ export default function ScheduleMaker() {
         if (activeVersion) {
           setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
           setCustomizations(activeVersion.customizations || {})
+          const nextTitle = activeVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE
+          setScheduleTitle(nextTitle)
+          setScheduleTitleDraft(nextTitle)
         }
 
         persistVersionStore(nextStore)
@@ -915,6 +982,13 @@ export default function ScheduleMaker() {
     },
     [deleteVersion],
   )
+
+  const dismissMobilePrompt = useCallback((remember: boolean) => {
+    setShowMobilePrompt(false)
+    if (remember && typeof window !== "undefined") {
+      window.localStorage.setItem("scheduleMaker.hideMobilePrompt", "true")
+    }
+  }, [])
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -999,6 +1073,7 @@ export default function ScheduleMaker() {
             version: 1,
             selectedCourses,
             customizations,
+            scheduleTitle,
             curriculumSignature: latestSignature,
           }),
         )
@@ -1006,7 +1081,7 @@ export default function ScheduleMaker() {
         console.error("Error saving to localStorage:", err)
       }
     }
-  }, [selectedCourses, customizations, isClient, curriculumSignature])
+  }, [selectedCourses, customizations, isClient, curriculumSignature, scheduleTitle])
 
   const normalizeSelectedCourse = (course: any): SelectedCourse => {
     const rangeSource = course?.meetingTime ?? `${course?.timeStart ?? ""}-${course?.timeEnd ?? ""}`
@@ -1532,15 +1607,57 @@ export default function ScheduleMaker() {
 
   const toggleCourseSelection = (courseCode: string) => {
     const canonical = getCanonicalCourseCode(courseCode)
+    let shouldRemoveSections = false
+
     setSelectedCourseCodes((prev) => {
       const next = new Set(prev)
       if (next.has(canonical)) {
         next.delete(canonical)
+        shouldRemoveSections = true
       } else {
         next.add(canonical)
       }
       return Array.from(next)
     })
+
+    if (shouldRemoveSections) {
+      setSelectedCourses((prevCourses) => {
+        const [remaining, removed] = prevCourses.reduce<[
+          SelectedCourse[],
+          SelectedCourse[]
+        ]>(
+          (acc, course) => {
+            if (getSelectedCourseCanonicalCode(course) === canonical) {
+              acc[1].push(course)
+            } else {
+              acc[0].push(course)
+            }
+            return acc
+          },
+          [[], []],
+        )
+
+        if (removed.length > 0) {
+          setCustomizations((prev) => {
+            const next = { ...prev }
+            removed.forEach((course) => {
+              delete next[`${course.courseCode}-${course.section}`]
+            })
+            return next
+          })
+
+          setCustomColorInputs((prev) => {
+            const next = { ...prev }
+            removed.forEach((course) => {
+              delete next[`${course.courseCode}-${course.section}`]
+            })
+            return next
+          })
+        }
+
+        return remaining
+      })
+    }
   }
 
   const toggleSectionSelection = (section: CourseSection, checked: boolean) => {
@@ -1851,7 +1968,7 @@ export default function ScheduleMaker() {
       "CALSCALE:GREGORIAN",
       "METHOD:PUBLISH",
       "PRODID:-//ComParEng Tools//Schedule Maker//EN",
-      `X-WR-CALNAME:${escapeText(scheduleTitle || "Weekly Schedule")}`,
+      `X-WR-CALNAME:${escapeText(scheduleTitle || DEFAULT_SCHEDULE_TITLE)}`,
       `X-WR-TIMEZONE:${timezone}`,
       ...events,
       "END:VCALENDAR",
@@ -2405,12 +2522,24 @@ export default function ScheduleMaker() {
     return Array.from(new Set(ordered))
   }, [courseCatalog])
 
+  const sectionOptions = React.useMemo(() => {
+    const sections = new Set<string>()
+    courseCatalog.forEach((course) => {
+      course.sections.forEach((section) => {
+        const code = (section.section || "").trim().toUpperCase()
+        if (code) sections.add(code)
+      })
+    })
+    return Array.from(sections).sort()
+  }, [courseCatalog])
+
   const academicYearOptions = React.useMemo(() => {
     const current = deriveAcademicYearLabel()
     const baseStart = Number.parseInt(current.slice(0, 4), 10)
-    const next = `${baseStart + 1}-${baseStart + 2}`
-    const prev = `${baseStart - 1}-${baseStart}`
-    return [current, next, prev]
+    return Array.from({ length: 4 }, (_, i) => {
+      const start = baseStart - 1 + i
+      return `${start}-${start + 1}`
+    })
   }, [])
 
   const suggestedCourses = React.useMemo(() => {
@@ -2423,13 +2552,31 @@ export default function ScheduleMaker() {
     const normalizedSearch = searchTerm.trim().toLowerCase()
     return courseCatalog.filter((course) => {
       const matchesDept = departmentTab === "All" || course.department === departmentTab
+      const matchesSection =
+        sectionFilter === "all" ||
+        course.sections.some((section) => (section.section || "").trim().toUpperCase() === sectionFilter)
+      const matchesDay =
+        dayFilter === "all" ||
+        course.sections.some((section) => parseDays(section.meetingDays).includes(dayFilter as DayToken))
+      const matchesTime = (() => {
+        if (timeFilter === "all") return true
+        return course.sections.some((section) => {
+          const { startMinutes } = parseTimeRange(section.meetingTime)
+          if (Number.isNaN(startMinutes)) return false
+          const hour = startMinutes / 60
+          if (timeFilter === "morning") return hour < 12
+          if (timeFilter === "afternoon") return hour >= 12 && hour < 17
+          if (timeFilter === "evening") return hour >= 17
+          return true
+        })
+      })()
       const matchesSearch =
         normalizedSearch.length === 0 ||
         course.code.toLowerCase().includes(normalizedSearch) ||
         course.name.toLowerCase().includes(normalizedSearch)
-      return matchesDept && matchesSearch
+      return matchesDept && matchesSection && matchesDay && matchesTime && matchesSearch
     })
-  }, [courseCatalog, departmentTab, searchTerm])
+  }, [courseCatalog, departmentTab, sectionFilter, dayFilter, timeFilter, searchTerm])
 
   const activeVersionState = versionStore[activeTermYearKey]
   const versions = activeVersionState?.versions ?? []
@@ -2437,7 +2584,55 @@ export default function ScheduleMaker() {
 const downloadScheduleImage = async () => {
   if (!scheduleRef.current) return;
   
+  // Capture at max zoom for clarity
+  const prevZoom = zoomLevel
+  setZoomLevel(2)
+  // Allow layout to update before capture
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+
   try {
+    const cardEl = scheduleRef.current.closest('[data-schedule-card]') as HTMLElement | null
+    if (!cardEl) return
+
+    // Hide edit/chevron icons in header during capture
+    const headerEl = cardEl.querySelector('.schedule-card-header') as HTMLElement | null
+    const renameButton = headerEl?.querySelector('[aria-label="Rename schedule title"]') as HTMLElement | null
+    const headerSvgs = Array.from(headerEl?.querySelectorAll('svg') ?? []) as HTMLElement[]
+    const originalRenameDisplay = renameButton?.style.display
+    const svgDisplays = headerSvgs.map((el) => el.style.display)
+    if (renameButton) renameButton.style.display = 'none'
+    headerSvgs.forEach((el) => { el.style.display = 'none' })
+
+    // Temporarily expand and unclip the schedule area for full capture
+    const scheduleEl = scheduleRef.current
+    const parentEl = scheduleEl.parentElement as HTMLElement | null
+    const scrollEl = scheduleEl.querySelector('[data-schedule-scroll]') as HTMLElement | null
+    const originalScheduleHeight = scheduleEl.style.height
+    const originalScheduleOverflow = scheduleEl.style.overflow
+    const originalScheduleWidth = scheduleEl.style.width
+    const originalCardWidth = cardEl.style.width
+    const originalCardHeight = cardEl.style.height
+    const originalParentOverflow = parentEl?.style.overflow
+    const originalScrollOverflow = scrollEl?.style.overflow
+    const originalScrollWidth = scrollEl?.style.width
+    const originalScrollHeight = scrollEl?.style.height
+    const originalScrollMaxHeight = scrollEl?.style.maxHeight
+    scheduleEl.style.height = `${scheduleEl.scrollHeight}px`
+    scheduleEl.style.overflow = "visible"
+    if (parentEl) parentEl.style.overflow = "visible"
+    if (scrollEl) {
+      const fullWidth = scrollEl.scrollWidth || scrollEl.clientWidth
+      const fullHeight = Math.max(scrollEl.scrollHeight, scheduleEl.scrollHeight, cardEl.scrollHeight)
+      scrollEl.style.overflow = "visible"
+      scrollEl.style.width = `${fullWidth}px`
+      scrollEl.style.height = `${fullHeight + 160}px`
+      scrollEl.style.maxHeight = `${fullHeight + 160}px`
+      scheduleEl.style.width = `${fullWidth}px`
+      scheduleEl.style.height = `${fullHeight + (headerEl?.offsetHeight ?? 0) + 200}px`
+      cardEl.style.width = `${fullWidth + 32}px` // add padding margin headroom
+      cardEl.style.height = `${fullHeight + (headerEl?.offsetHeight ?? 0) + 240}px`
+    }
+
     // Store original styles
     const dayHeaders = scheduleRef.current.querySelectorAll('.day-header');
     const originalStyles = Array.from(dayHeaders).map(header => ({
@@ -2464,16 +2659,43 @@ const downloadScheduleImage = async () => {
     // Small delay to ensure styles are applied
     await new Promise(resolve => setTimeout(resolve, 50));
 
-    const canvas = await html2canvas(scheduleRef.current, {
-      scale: 2,
+    const captureWidth = scrollEl?.scrollWidth || cardEl.scrollWidth
+    const captureHeight = Math.max(
+      scrollEl?.scrollHeight || 0,
+      scheduleEl.scrollHeight,
+      cardEl.scrollHeight,
+    ) + (headerEl?.offsetHeight ?? 0) + 160
+
+    const canvas = await html2canvas(cardEl, {
+      scale: 2.5,
       useCORS: true,
       logging: false,
       backgroundColor: 'white',
       scrollX: 0,
       scrollY: 0,
-      windowWidth: scheduleRef.current.scrollWidth,
-      windowHeight: scheduleRef.current.scrollHeight
+      windowWidth: captureWidth,
+      windowHeight: captureHeight,
+      width: captureWidth,
+      height: captureHeight
     });
+
+    // Restore overflow/height
+    scheduleEl.style.height = originalScheduleHeight;
+    scheduleEl.style.overflow = originalScheduleOverflow;
+    scheduleEl.style.width = originalScheduleWidth;
+    if (parentEl && originalParentOverflow !== undefined) parentEl.style.overflow = originalParentOverflow;
+    if (scrollEl) {
+      scrollEl.style.overflow = originalScrollOverflow ?? "";
+      scrollEl.style.width = originalScrollWidth ?? "";
+      scrollEl.style.height = originalScrollHeight ?? ""
+      scrollEl.style.maxHeight = originalScrollMaxHeight ?? ""
+    }
+    cardEl.style.width = originalCardWidth;
+    cardEl.style.height = originalCardHeight;
+
+    // Restore header icons
+    if (renameButton) renameButton.style.display = originalRenameDisplay ?? ''
+    headerSvgs.forEach((el, idx) => { el.style.display = svgDisplays[idx] })
 
     // Restore all original styles
     originalStyles.forEach(style => {
@@ -2493,6 +2715,9 @@ const downloadScheduleImage = async () => {
 
   } catch (err) {
     console.error('Error generating image:', err);
+  } finally {
+    // Restore user zoom
+    setZoomLevel(prevZoom)
   }
 };
 
@@ -2517,30 +2742,56 @@ const downloadScheduleImage = async () => {
     return customizations[key]?.color || DEFAULT_CUSTOM_COLOR // Default blue
   }
 
+  const MIN_ZOOM_LEVEL = -2
+  const MAX_ZOOM_LEVEL = 2
+  const BASE_HOUR_HEIGHT = 76
+  const HOUR_HEIGHT_STEP = 22
+  const MIN_HOUR_HEIGHT = 30
+  const MAX_HOUR_HEIGHT = 120
+
   const zoomedHourHeight = React.useMemo(() => {
-    const base = 80
-    const step = 22
-    return Math.max(36, Math.min(120, base + (zoomLevel - 1) * step))
+    const computed = BASE_HOUR_HEIGHT + (zoomLevel - 1) * HOUR_HEIGHT_STEP
+    return Math.max(MIN_HOUR_HEIGHT, Math.min(MAX_HOUR_HEIGHT, computed))
   }, [zoomLevel])
 
-  const zoomOut = () => setZoomLevel((prev) => Math.max(0, prev - 1))
-  const zoomIn = () => setZoomLevel((prev) => Math.min(2, prev + 1))
+  const zoomOut = () => setZoomLevel((prev) => Math.max(MIN_ZOOM_LEVEL, prev - 1))
+  const zoomIn = () => setZoomLevel((prev) => Math.min(MAX_ZOOM_LEVEL, prev + 1))
 
 const renderScheduleView = () => {
   // Constants for precise alignment
   const HEADER_HEIGHT = 44; // Height of header row in pixels
   const HOUR_HEIGHT = zoomedHourHeight; // Each hour height adjusts with zoom
   const FIRST_HOUR = 7; // Schedule starts at 7AM
+  const TIME_COL_WIDTH = 80; // Narrower time column to maximize course space
+  const DAY_COUNT = 6; // Monday–Saturday
+
+  const gridVars: React.CSSProperties = {
+    // Space for time column, remaining width split across day columns
+    ['--time-col' as string]: `${TIME_COL_WIDTH}px`,
+    ['--day-width' as string]: `calc((100% - ${TIME_COL_WIDTH}px) / ${DAY_COUNT})`,
+  }
 
   return (
-    <div>
+    <div className="h-full flex flex-col">
       <div
-        className="rounded-xl border border-slate-200 bg-white/90 p-3 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-900/70"
+        className="rounded-xl border border-slate-200 bg-white/90 p-3 shadow-sm dark:border-slate-700 dark:bg-slate-900/70"
         ref={scheduleRef}
       >
-        <div className="relative overflow-x-auto">
+        <div
+          className="relative h-full overflow-auto hide-scrollbar"
+          data-schedule-scroll
+          style={{
+            ...gridVars,
+            minWidth: "640px",
+            height: "calc(100vh - 160px)",
+            maxHeight: "calc(100vh - 160px)",
+          }}
+        >
           {/* Header row - fixed at top */}
-          <div className="sticky top-0 z-20 grid min-w-[780px] grid-cols-7 gap-1">
+          <div
+            className="sticky top-0 z-30 grid min-w-[720px] gap-1 border-b border-slate-200/70 bg-white/95 dark:border-slate-700/80 dark:bg-slate-900/95"
+            style={{ gridTemplateColumns: `var(--time-col) repeat(${DAY_COUNT}, minmax(0, 1fr))` }}
+          >
             <div className="day-header rounded-md bg-gray-100 p-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300">
               Time
             </div>
@@ -2555,7 +2806,7 @@ const renderScheduleView = () => {
           </div>
 
           {/* Time slots - absolutely positioned */}
-          <div className="relative min-w-[780px]" style={{ height: `${HOUR_HEIGHT * 15}px` }}>
+          <div className="relative min-w-[720px]" style={{ height: `${HOUR_HEIGHT * 15}px`, ...gridVars }}>
             {/* Hour markers */}
             {Array.from({ length: 15 }).map((_, i) => {
               const hour = FIRST_HOUR + i
@@ -2619,6 +2870,11 @@ const renderScheduleView = () => {
                 (adjustedEndMinute / 60 * HOUR_HEIGHT);
               
               const height = endTop - startTop;
+              const showTime = height >= 64;
+              const showRoom = height >= 88;
+              const compactTitle = height < 72;
+              const blockPadding = height < 56 ? '4px 8px' : '6px 10px 12px';
+              const justifyContent = showTime || showRoom ? 'space-between' : 'center';
 
               return course.parsedDays.map(day => {
                 const dayIndex = DAYS.indexOf(day);
@@ -2629,31 +2885,36 @@ const renderScheduleView = () => {
                     key={`${key}-${day}`}
                     className="absolute rounded p-1"
                     style={{
-                      left: `${(dayIndex + 1) * (100 / 7)}%`,
+                      left: `calc(var(--time-col) + var(--day-width) * ${dayIndex})`,
                       top: `${startTop}px`,
                       height: `${height}px`,
                       backgroundColor: bgColor,
                       color: textColor,
-                      width: `calc(${100 / 7}% - 4px)`,
+                      width: `calc(var(--day-width) - 4px)`,
                       zIndex: 10,
                       margin: '0 2px',
                       display: 'flex',
                       flexDirection: 'column',
-                      justifyContent: 'space-between',
-                      padding: '5px 10px 15px',
+                      justifyContent,
+                      padding: blockPadding,
                       boxSizing: 'border-box',
-                      overflow: 'visible'
+                      overflow: 'hidden',
+                      gap: showTime || showRoom ? 4 : 0,
                     }}
                   >
-                    <div className="font-bold text-sm leading-tight break-words">
+                    <div className={`font-bold leading-tight break-words ${compactTitle ? 'text-[11px] line-clamp-2' : 'text-[12px] line-clamp-2'}`}>
                       {displayTitle}
                     </div>
-                    <div className="text-xs leading-tight break-words">
-                      {course.displayTime}
-                    </div>
-                    <div className="text-xs leading-tight break-words">
-                      {course.displayRoom}
-                    </div>
+                    {showTime && (
+                      <div className="text-[11px] leading-tight break-words">
+                        {course.displayTime}
+                      </div>
+                    )}
+                    {showRoom && (
+                      <div className="text-[11px] leading-tight break-words">
+                        {course.displayRoom}
+                      </div>
+                    )}
                   </div>
                 );
               });
@@ -2666,7 +2927,26 @@ const renderScheduleView = () => {
 };
 
   return (
-    <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 transition-colors duration-200 dark:bg-gray-900 dark:text-gray-100">
+    <div className="flex h-screen flex-col overflow-hidden bg-gray-50 text-gray-900 transition-colors duration-200 dark:bg-gray-900 dark:text-gray-100">
+      <Dialog open={showMobilePrompt} onOpenChange={(open) => setShowMobilePrompt(open)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Best viewed on desktop</DialogTitle>
+            <DialogDescription>
+              For the smoothest experience (dragging, exporting, and wide calendar view), please switch to a desktop or larger tablet. You can continue on mobile, but some layouts may be constrained.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button variant="secondary" className="w-full sm:w-auto" onClick={() => dismissMobilePrompt(true)}>
+              Don&apos;t show again
+            </Button>
+            <Button className="w-full sm:w-auto" onClick={() => dismissMobilePrompt(false)}>
+              Continue on this device
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={noDataDialogOpen} onOpenChange={handleNoDataDialogOpenChange}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -2844,8 +3124,8 @@ const renderScheduleView = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <div className="flex-1 overflow-hidden px-4 pb-4 pt-3 lg:px-8">
-        <div className="mb-4">
+      <div className="flex-1 overflow-hidden px-4 pb-4 pt-3 lg:px-8 flex flex-col min-h-0">
+        <div className="mb-4 shrink-0">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h1 className="text-2xl font-semibold">Schedule Maker</h1>
             <div className="flex flex-1 justify-center">
@@ -2893,133 +3173,204 @@ const renderScheduleView = () => {
           </div>
         </div>
 
-        <div className="grid h-full gap-4 lg:grid-cols-[300px_minmax(0,1fr)_300px] xl:grid-cols-[320px_minmax(0,1fr)_320px]">
+  <div className="grid flex-1 min-h-0 max-h-full gap-2 overflow-hidden lg:grid-cols-[280px_minmax(0,1fr)_280px] xl:grid-cols-[300px_minmax(0,1fr)_300px]">
           {/* Left Sidebar */}
-          <div className="flex min-h-0 flex-col gap-3">
+          <div className="flex min-h-0 h-full flex-col gap-3 overflow-auto pr-1 hide-scrollbar">
             {/* Combined card for search and selected courses */}
             <Card className="flex flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
               <CardHeader className="space-y-2 pb-3">
                 <div className="flex items-center gap-2">
-                  <Search className="h-3.5 w-3.5 text-slate-500" />
-                  <CardTitle className="text-base font-semibold">Courses</CardTitle>
+                  <CardTitle className="text-base font-semibold">My Courses</CardTitle>
                 </div>
                 {/* Search with floating results */}
-                <div className="relative">
+                  <div className="relative text-[13px]">
                   <div className="relative">
                     <Input
                       placeholder="Search courses"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.currentTarget.value)}
                       onFocus={() => setSearchPanelVisible(true)}
-                      className="h-9 rounded-md border-slate-200 pl-9 text-sm shadow-none focus-visible:ring-0 dark:border-slate-700"
+                      className="h-9 rounded-md border-slate-200 pl-9 text-[13px] shadow-none focus-visible:ring-0 dark:border-slate-700"
                     />
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
                   </div>
                   
-                  {/* Floating search results panel */}
-                  {searchPanelVisible && (
-                    <>
-                      {/* Backdrop to close dropdown */}
-                      <div 
-                        className="fixed inset-0 z-10" 
-                        onClick={() => setSearchPanelVisible(false)}
-                      />
-                      
-                      {/* Dropdown card */}
-                      <div className="absolute left-0 right-0 top-full mt-2 z-20 rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
-                        <div className="p-3 space-y-3">
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Filter by department</p>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7"
+                  {/* Floating search results panel (portal to body so it overlays all columns) */}
+                  {isClient &&
+                    createPortal(
+                      <AnimatePresence>
+                        {searchPanelVisible && (
+                          <motion.div
+                            className="fixed inset-0 z-50 flex items-start justify-center pt-24 px-3"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.18, ease: "easeInOut" }}
+                          >
+                            <div
+                              className="absolute inset-0 bg-black/5 dark:bg-black/30"
                               onClick={() => setSearchPanelVisible(false)}
+                            />
+                            <motion.div
+                              className="relative z-50 w-[min(780px,calc(100vw-32px))] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900"
+                              initial={{ opacity: 0, scale: 0.97, y: -6 }}
+                              animate={{ opacity: 1, scale: 1, y: 0 }}
+                              exit={{ opacity: 0, scale: 0.97, y: -6 }}
+                              transition={{ duration: 0.18, ease: "easeInOut" }}
                             >
-                              <X className="h-4 w-4" />
-                            </Button>
-                          </div>
-                          <Select value={departmentTab} onValueChange={setDepartmentTab}>
-                            <SelectTrigger className="h-8 border border-slate-200 bg-white px-2 text-left text-sm font-medium shadow-none transition hover:bg-slate-50 focus:ring-0 focus:ring-offset-0 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800">
-                              <SelectValue placeholder="Department" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {departmentTabs.map((dept) => (
-                                <SelectItem key={dept} value={dept}>
-                                  {dept}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        
-                        <div className="max-h-[420px] overflow-y-auto border-t border-slate-200 dark:border-slate-700">
-                          <div className="p-3 space-y-2">
-                            {searchTerm.trim() === "" && suggestedCourses.length > 0 && (
-                              <div className="space-y-2 mb-3">
-                                <p className="text-xs uppercase tracking-wide text-slate-500">Suggested</p>
-                                {suggestedCourses.slice(0, 5).map((course) => {
-                                  const isSelected = selectedCourseCodes.includes(course.code)
-                                  return (
-                                    <button
-                                      key={`s-${course.code}`}
-                                      type="button"
-                                      onClick={() => {
-                                        toggleCourseSelection(course.code)
-                                        setSearchPanelVisible(false)
-                                      }}
-                                      className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-blue-400 hover:bg-blue-50/70 dark:hover:bg-blue-900/30 ${
-                                        isSelected ? "border-blue-500 bg-blue-50/80 dark:bg-blue-900/30" : "border-slate-200 dark:border-slate-700"
-                                      }`}
-                                    >
-                                      <div className="flex items-center justify-between">
-                                        <div>
-                                          <p className="font-semibold text-sm">{course.code}</p>
-                                          <p className="text-xs text-slate-500 line-clamp-1">{course.name}</p>
-                                        </div>
-                                        <Badge variant={isSelected ? "secondary" : "outline"} className="text-[11px]">
-                                          {course.sections.length || 0} sections
-                                        </Badge>
-                                      </div>
-                                    </button>
-                                  )
-                                })}
-                              </div>
-                            )}
-                            {filteredCatalog.map((course) => {
-                              const isSelected = selectedCourseCodes.includes(course.code)
-                              return (
-                                <button
-                                  key={course.code}
-                                  type="button"
-                                  onClick={() => {
-                                    toggleCourseSelection(course.code)
-                                    setSearchPanelVisible(false)
-                                  }}
-                                  className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-blue-400 hover:bg-blue-50/60 dark:hover:bg-blue-900/20 ${
-                                    isSelected ? "border-blue-500 bg-blue-50/70 dark:bg-blue-900/20" : "border-slate-200 dark:border-slate-700"
-                                  }`}
-                                >
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div>
-                                      <p className="font-semibold text-sm">{course.code}</p>
-                                      <p className="text-xs text-slate-500 line-clamp-1">{course.name}</p>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <Badge variant="outline" className="text-[11px]">
-                                        {course.sections.length} sections
-                                      </Badge>
-                                      {isSelected && <Badge variant="secondary" className="text-[11px]">Added</Badge>}
-                                    </div>
+                              <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-3 py-3 text-[13px] backdrop-blur-sm dark:border-slate-700 dark:bg-slate-900/95 rounded-t-lg">
+                                <div className="flex items-center gap-2">
+                                  <div className="relative flex-1">
+                                    <Input
+                                      placeholder="Search courses"
+                                      value={searchTerm}
+                                      onChange={(e) => setSearchTerm(e.currentTarget.value)}
+                                      autoFocus
+                                      className="h-9 rounded-md border-slate-200 pl-9 text-[13px] shadow-none focus-visible:ring-0 dark:border-slate-700"
+                                    />
+                                    <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                                   </div>
-                                </button>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      </div>
-                    </>
-                  )}
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8"
+                                    onClick={() => setSearchPanelVisible(false)}
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                                <div className="mt-3 space-y-2">
+                                  <p className="text-[12px] font-semibold text-slate-700 dark:text-slate-300">Filter by</p>
+                                  <div className="flex flex-nowrap items-center gap-2 overflow-x-auto hide-scrollbar">
+                                    <Select value={departmentTab} onValueChange={setDepartmentTab}>
+                                      <SelectTrigger className="h-9 min-w-[120px] border border-slate-200 bg-white px-2 text-left text-[13px] font-medium shadow-none transition hover:bg-slate-50 focus:ring-0 focus:ring-offset-0 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800">
+                                        <SelectValue placeholder="Department" />
+                                      </SelectTrigger>
+                                      <SelectContent className="text-[13px]">
+                                        {departmentTabs.map((dept) => (
+                                          <SelectItem key={dept} value={dept}>
+                                            {dept}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+
+                                    <Select value={sectionFilter} onValueChange={setSectionFilter}>
+                                      <SelectTrigger className="h-9 min-w-[110px] border border-slate-200 bg-white px-2 text-left text-[13px] font-medium shadow-none transition hover:bg-slate-50 focus:ring-0 focus:ring-offset-0 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800">
+                                        <SelectValue placeholder="Section" />
+                                      </SelectTrigger>
+                                      <SelectContent className="text-[13px]">
+                                        <SelectItem value="all">Section</SelectItem>
+                                        {sectionOptions.map((section) => (
+                                          <SelectItem key={section} value={section}>
+                                            {section}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+
+                                    <Select value={dayFilter} onValueChange={setDayFilter}>
+                                      <SelectTrigger className="h-9 min-w-[110px] border border-slate-200 bg-white px-2 text-left text-[13px] font-medium shadow-none transition hover:bg-slate-50 focus:ring-0 focus:ring-offset-0 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800">
+                                        <SelectValue placeholder="Day" />
+                                      </SelectTrigger>
+                                      <SelectContent className="text-[13px]">
+                                        <SelectItem value="all">Day</SelectItem>
+                                        {DAYS.map((day) => (
+                                          <SelectItem key={day} value={day}>
+                                            {getFullDayName(day)}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+
+                                    <Select value={timeFilter} onValueChange={setTimeFilter}>
+                                      <SelectTrigger className="h-9 min-w-[120px] border border-slate-200 bg-white px-2 text-left text-[13px] font-medium shadow-none transition hover:bg-slate-50 focus:ring-0 focus:ring-offset-0 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800">
+                                        <SelectValue placeholder="Time" />
+                                      </SelectTrigger>
+                                      <SelectContent className="text-[13px]">
+                                        <SelectItem value="all">Time</SelectItem>
+                                        <SelectItem value="morning">Morning</SelectItem>
+                                        <SelectItem value="afternoon">Afternoon</SelectItem>
+                                        <SelectItem value="evening">Evening</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="max-h-[420px] overflow-y-auto hide-scrollbar">
+                                <div className="p-3 space-y-2 text-[13px]">
+                                  {searchTerm.trim() === "" && suggestedCourses.length > 0 && (
+                                    <div className="space-y-2 mb-3">
+                                      <p className="text-[11px] uppercase tracking-wide text-slate-500">Suggested</p>
+                                      {suggestedCourses.slice(0, 5).map((course) => {
+                                        const isSelected = selectedCourseCodes.includes(course.code)
+                                        return (
+                                          <button
+                                            key={`s-${course.code}`}
+                                            type="button"
+                                            onClick={() => {
+                                              toggleCourseSelection(course.code)
+                                              setSearchPanelVisible(false)
+                                            }}
+                                            className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-blue-400 hover:bg-blue-50/70 dark:hover:bg-blue-900/30 ${
+                                              isSelected ? "border-blue-500 bg-blue-50/80 dark:bg-blue-900/30" : "border-slate-200 dark:border-slate-700"
+                                            }`}
+                                          >
+                                            <div className="flex items-start justify-between gap-3 text-[13px]">
+                                              <div className="min-w-0">
+                                                <p className="font-semibold text-[13px] leading-snug">{course.code}</p>
+                                                <p className="text-[11px] text-slate-500 leading-snug break-words">{course.name}</p>
+                                              </div>
+                                              <Badge
+                                                variant={isSelected ? "secondary" : "outline"}
+                                                className="text-[11px] min-w-[74px] justify-center px-3"
+                                              >
+                                                {course.sections.length || 0} sections
+                                              </Badge>
+                                            </div>
+                                          </button>
+                                        )
+                                      })}
+                                    </div>
+                                  )}
+                                  {filteredCatalog.map((course) => {
+                                    const isSelected = selectedCourseCodes.includes(course.code)
+                                    return (
+                                      <button
+                                        key={course.code}
+                                        type="button"
+                                        onClick={() => {
+                                          toggleCourseSelection(course.code)
+                                          setSearchPanelVisible(false)
+                                        }}
+                                        className={`w-full rounded-lg border px-3 py-2 text-left text-[13px] transition hover:border-blue-400 hover:bg-blue-50/60 dark:hover:bg-blue-900/20 ${
+                                          isSelected ? "border-blue-500 bg-blue-50/70 dark:bg-blue-900/20" : "border-slate-200 dark:border-slate-700"
+                                        }`}
+                                      >
+                                        <div className="flex items-start justify-between gap-3">
+                                          <div className="min-w-0">
+                                            <p className="font-semibold text-[13px] leading-snug">{course.code}</p>
+                                            <p className="text-[11px] text-slate-500 leading-snug break-words">{course.name}</p>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <Badge variant="outline" className="text-[11px] min-w-[74px] justify-center px-3">
+                                              {course.sections.length} sections
+                                            </Badge>
+                                            {isSelected && <Badge variant="secondary" className="text-[11px]">Added</Badge>}
+                                          </div>
+                                        </div>
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                            </motion.div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>,
+                      document.body
+                    )}
                 </div>
               </CardHeader>
 
@@ -3029,7 +3380,7 @@ const renderScheduleView = () => {
                   <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Selected courses</h3>
                   <p className="text-xs text-slate-500">Pick sections to send them to the calendar.</p>
                 </div>
-                <div className="space-y-3 max-h-[560px] overflow-y-auto">
+                <div className="space-y-2 max-h-[560px] overflow-y-auto">
                 {selectedCourseCodes.length === 0 && (
                   <p className="text-sm text-slate-500">No courses selected yet.</p>
                 )}
@@ -3039,20 +3390,42 @@ const renderScheduleView = () => {
                   const activeSections = selectedCourses.filter(
                     (section) => getSelectedCourseCanonicalCode(section) === code,
                   )
+                  const sectionsCount = course.sections.length
                   return (
-                    <div key={code} className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
-                      <div className="flex items-center justify-between gap-2">
+                    <div
+                      key={code}
+                      className="group relative space-y-1.5 border-l border-slate-200 pl-2 dark:border-slate-700"
+                    >
+                      <div className="flex items-start justify-between gap-2">
                         <div>
-                          <p className="text-sm font-semibold">{course.code}</p>
-                          <p className="text-xs text-slate-500 line-clamp-1">{course.name}</p>
+                          <p className="text-[13px] font-semibold leading-tight flex items-center gap-1.5">
+                            {course.code}
+                            <span className="text-[11px] font-medium text-slate-500">({course.credits}U)</span>
+                          </p>
+                          <p className="text-[11px] text-slate-500 leading-snug break-words">{course.name}</p>
                         </div>
-                        <Badge variant="outline" className="text-[11px]">
-                          {course.credits} units
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                            {sectionsCount} section{sectionsCount === 1 ? "" : "s"}
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setSelectedCourses((prev) => prev.filter((c) => getSelectedCourseCanonicalCode(c) !== code))
+                              setSelectedCourseCodes((prev) => prev.filter((c) => c !== code))
+                            }}
+                            className="h-7 w-7 rounded-full p-0 text-slate-500 hover:text-red-600 hover:bg-red-50"
+                            title="Remove course from selected list"
+                            aria-label={`Remove ${course.code} from selected courses`}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="mt-3 space-y-2">
-                        {course.sections.length === 0 && (
-                          <p className="text-xs text-amber-600 dark:text-amber-300">No extracted sections yet.</p>
+                      <div className="space-y-1.5">
+                        {sectionsCount === 0 && (
+                          <p className="text-[11px] text-amber-600 dark:text-amber-300">No extracted sections yet.</p>
                         )}
                         {course.sections.map((section) => {
                           const isSelectedSection = activeSections.some(
@@ -3061,22 +3434,22 @@ const renderScheduleView = () => {
                           return (
                             <div
                               key={`${section.courseCode}-${section.section}`}
-                              className="flex items-start gap-3 rounded-md border border-slate-200/70 p-2 dark:border-slate-700"
+                              className="flex items-start gap-2 rounded-sm px-1.5 py-1.5"
                             >
                               <Checkbox
                                 id={`${section.courseCode}-${section.section}`}
                                 checked={isSelectedSection}
                                 onCheckedChange={(checked) => toggleSectionSelection(section, Boolean(checked))}
                               />
-                              <div className="flex-1 text-sm">
+                              <div className="flex-1 text-[12px] leading-snug">
                                 <div className="flex items-center justify-between">
-                                  <span className="font-semibold">{section.section}</span>
-                                  <Badge variant={section.hasSlots ? "secondary" : "destructive"} className="text-[11px]">
+                                  <span className="font-semibold text-[12px]">{section.section}</span>
+                                  <Badge variant={section.hasSlots ? "secondary" : "destructive"} className="text-[10px] px-2">
                                     {section.hasSlots ? `${section.remainingSlots}/${section.classSize}` : "Full"}
                                   </Badge>
                                 </div>
-                                <p className="text-xs text-slate-500">{cleanTimeString(section.meetingTime)}</p>
-                                <p className="text-xs text-slate-500">{cleanRoomString(section.room)}</p>
+                                <p className="text-[11px] text-slate-500">{cleanTimeString(section.meetingTime)}</p>
+                                <p className="text-[11px] text-slate-500">{cleanRoomString(section.room)}</p>
                               </div>
                             </div>
                           )
@@ -3091,15 +3464,72 @@ const renderScheduleView = () => {
           </div>
 
           {/* Center Panel */}
-          <div className="flex min-h-0 flex-col">
-            <Card className="flex min-h-0 flex-1 flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
-              <CardHeader className="flex flex-wrap items-center justify-between gap-4 sm:flex-nowrap">
-                <div>
-                  <CardTitle className="text-lg font-semibold">{scheduleTitle}</CardTitle>
+          <div className="flex min-h-0 h-full flex-col overflow-hidden">
+            <Card
+              data-schedule-card
+              className="flex min-h-0 h-full flex-1 flex-col overflow-hidden bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50"
+            >
+              <CardHeader className="schedule-card-header flex flex-row flex-wrap items-center justify-between gap-4 space-y-0 p-6 sm:flex-nowrap">
+                <div className="flex items-center gap-2">
+                  {isEditingTitle ? (
+                    <>
+                      <Input
+                        value={scheduleTitleDraft}
+                        onChange={(e) => setScheduleTitleDraft(e.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault()
+                            saveScheduleTitle()
+                          }
+                          if (event.key === "Escape") {
+                            event.preventDefault()
+                            cancelEditingScheduleTitle()
+                          }
+                        }}
+                        autoFocus
+                        className="h-9 w-56"
+                        aria-label="Schedule title"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={saveScheduleTitle}
+                        aria-label="Save schedule title"
+                        className="h-8 w-8 text-emerald-600 hover:text-emerald-700 dark:text-emerald-300 dark:hover:text-emerald-200"
+                      >
+                        <Check className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={cancelEditingScheduleTitle}
+                        aria-label="Cancel renaming schedule"
+                        className="h-8 w-8 text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <CardTitle className="text-left text-xl font-semibold leading-tight">{scheduleTitle}</CardTitle>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={startEditingScheduleTitle}
+                        aria-label="Rename schedule title"
+                        className="h-8 w-8 text-slate-500 transition hover:text-slate-800 dark:text-slate-300 dark:hover:text-white"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
                   <Select value={currentTerm} onValueChange={(value) => setCurrentTerm(value as TermName)}>
-                    <SelectTrigger className="h-8 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400">
+                    <SelectTrigger
+                      className="h-8 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400"
+                      style={{ paddingTop: 4, paddingBottom: 4 }}
+                    >
                       <SelectValue placeholder="Term" />
                     </SelectTrigger>
                     <SelectContent align="end" className="w-36">
@@ -3110,7 +3540,10 @@ const renderScheduleView = () => {
                   </Select>
                   <span className="text-slate-300 dark:text-slate-600">•</span>
                   <Select value={academicYearLabel} onValueChange={setAcademicYearLabel}>
-                    <SelectTrigger className="h-8 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400">
+                    <SelectTrigger
+                      className="h-8 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400"
+                      style={{ paddingTop: 4, paddingBottom: 4 }}
+                    >
                       <SelectValue placeholder="Academic Year" />
                     </SelectTrigger>
                     <SelectContent align="end" className="w-40">
@@ -3124,7 +3557,7 @@ const renderScheduleView = () => {
                 </div>
               </CardHeader>
               <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
-                <div className="flex-1 overflow-auto px-4 pb-4 pt-2">
+                <div className="flex-1 min-h-0 overflow-hidden px-0 pb-0 pt-0">
                   {renderScheduleView()}
                 </div>
               </CardContent>
@@ -3132,10 +3565,10 @@ const renderScheduleView = () => {
           </div>
 
           {/* Right Sidebar */}
-          <div className="flex min-h-0 flex-col gap-3">
+          <div className="flex min-h-0 h-full flex-col gap-3 overflow-auto pl-1 hide-scrollbar">
             <Card className="flex flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
-              <CardHeader className="flex items-center justify-between py-3">
-                <CardTitle className="text-base font-semibold">Versions</CardTitle>
+              <CardHeader className="flex items-start justify-start py-3">
+                <CardTitle className="text-base font-semibold text-left">Versions</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 pt-0 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
@@ -3256,7 +3689,7 @@ const renderScheduleView = () => {
                   <p className="text-sm text-slate-500">No versions yet. Use + to add one.</p>
                 )}
                 {versions.length > 0 && (
-                  <div className="flex justify-end">
+                  <div className="flex justify-center">
                     <button
                       type="button"
                       onClick={() => setVersionsExpanded((prev) => !prev)}

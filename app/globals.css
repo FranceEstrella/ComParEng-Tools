@@ -14,6 +14,15 @@ body {
   .animate-shake {
     animation: confirm-button-shake 0.45s ease;
   }
+
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 @keyframes confirm-button-shake {

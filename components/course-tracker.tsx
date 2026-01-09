@@ -3521,7 +3521,7 @@ export default function CourseTracker() {
 
         <div className="p-4 md:p-6 lg:p-8 w-full max-w-[95rem] mx-auto font-sans">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl md:text-3xl font-bold text-center">FEU TECH Computer Engineering Course Tracker</h1>
+          <h1 className="text-2xl md:text-3xl font-bold text-center">Course Tracker</h1>
           <ThemeToggle />
         </div>
 
