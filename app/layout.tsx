@@ -71,8 +71,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={inter.className}>
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
+      <body className={`${inter.className} page-fade-in theme-transition`}>
+        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
           <InstallBanner />
           <ServiceWorkerRegister />
           {children}

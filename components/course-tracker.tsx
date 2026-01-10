@@ -55,6 +55,7 @@ import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import NonCpeNotice from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   Dialog,
   DialogContent,
@@ -66,6 +67,117 @@ import {
 import { orderedPatchNotes } from "@/lib/patch-notes"
 
 const APP_VERSION = orderedPatchNotes[0]?.version ?? "Dev"
+
+const fireConfetti = async (preset: "term" | "year") => {
+  if (typeof window === "undefined") return
+  const mod = await import("canvas-confetti")
+  const confetti = mod.default
+
+  if (preset === "year") {
+    confetti({
+      particleCount: 220,
+      spread: 80,
+      startVelocity: 55,
+      decay: 0.92,
+      scalar: 1.05,
+      disableForReducedMotion: true,
+      zIndex: 999999,
+      origin: { y: 0.65 },
+    })
+    confetti({
+      particleCount: 140,
+      spread: 110,
+      startVelocity: 40,
+      decay: 0.94,
+      scalar: 0.95,
+      disableForReducedMotion: true,
+      zIndex: 999999,
+      origin: { x: 0.18, y: 0.65 },
+    })
+    confetti({
+      particleCount: 140,
+      spread: 110,
+      startVelocity: 40,
+      decay: 0.94,
+      scalar: 0.95,
+      disableForReducedMotion: true,
+      zIndex: 999999,
+      origin: { x: 0.82, y: 0.65 },
+    })
+    return
+  }
+
+  confetti({
+    particleCount: 110,
+    spread: 70,
+    startVelocity: 42,
+    decay: 0.93,
+    scalar: 0.95,
+    disableForReducedMotion: true,
+    zIndex: 999999,
+    origin: { y: 0.7 },
+  })
+}
+
+const fireConfettiRain = async (durationMs = 5000) => {
+  if (typeof window === "undefined") return
+  const mod = await import("canvas-confetti")
+  const confetti = mod.default
+
+  const intervalMs = 90
+  const endAt = Date.now() + durationMs
+  const colors = ["#0f6fee", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4", "#f97316"]
+
+  const intervalId = window.setInterval(() => {
+    const timeLeft = endAt - Date.now()
+    if (timeLeft <= 0) return
+
+    const completion = Math.max(0, Math.min(1, timeLeft / durationMs))
+    const particleCount = Math.max(36, Math.round(70 * completion))
+
+    // Falling "rain" from random points across the top.
+    confetti({
+      particleCount,
+      angle: 90,
+      spread: 78,
+      startVelocity: 18,
+      decay: 0.92,
+      gravity: 1.12,
+      ticks: 320,
+      scalar: 1.05,
+      colors,
+      shapes: ["square"],
+      zIndex: 999999,
+      disableForReducedMotion: true,
+      origin: { x: Math.random(), y: -0.05 },
+    })
+
+    // Extra stream to make it feel "heavier".
+    confetti({
+      particleCount: Math.max(18, Math.round(particleCount * 0.55)),
+      angle: 90,
+      spread: 85,
+      startVelocity: 16,
+      decay: 0.93,
+      gravity: 1.08,
+      ticks: 300,
+      scalar: 0.95,
+      colors,
+      shapes: ["square"],
+      zIndex: 999999,
+      disableForReducedMotion: true,
+      origin: { x: Math.random(), y: -0.05 },
+    })
+  }, intervalMs)
+
+  // Resolve only after the interval is stopped so callers can reliably track "active" state.
+  await new Promise<void>((resolve) => {
+    window.setTimeout(() => {
+      window.clearInterval(intervalId)
+      resolve()
+    }, durationMs + intervalMs)
+  })
+}
 
 // --- Types and Interfaces ---
 
@@ -995,6 +1107,7 @@ const FilterAndSearchControls = ({
   const [open, setOpen] = useState(false)
   const [suggestions, setSuggestions] = useState<Course[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
+  const [aliasFormOpen, setAliasFormOpen] = useState(false)
   const [aliasForm, setAliasForm] = useState({ alias: "", canonical: "" })
   const [aliasError, setAliasError] = useState<string | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -1290,12 +1403,27 @@ const FilterAndSearchControls = ({
         </div>
       </div>
 
-      <Card className="bg-white dark:bg-gray-800 shadow-md">
-        <CardHeader>
-          <CardTitle>Update Course Code Alias</CardTitle>
-          <CardDescription>Link an old course code to the current one so search, imports, and planning stay in sync.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2">
+      <Collapsible open={aliasFormOpen} onOpenChange={setAliasFormOpen} className="bg-white dark:bg-gray-800 shadow-md rounded-lg">
+        <Card className="bg-transparent border-0 shadow-none">
+          <CardHeader className="flex flex-row items-start justify-between gap-3">
+            <div className="space-y-1">
+              <CardTitle>Update Course Code Alias</CardTitle>
+              <CardDescription>Link an old course code to the current one so search, imports, and planning stay in sync.</CardDescription>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <Button variant="outline" size="sm" onClick={() => setAliasListOpen(true)}>
+                View alias updates
+              </Button>
+              <CollapsibleTrigger asChild>
+                <Button variant="ghost" size="sm" className="gap-2">
+                  {aliasFormOpen ? "Hide" : "Show"}
+                  {aliasFormOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </Button>
+              </CollapsibleTrigger>
+            </div>
+          </CardHeader>
+          <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
+            <CardContent className="space-y-2">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
             <div>
               <Label htmlFor="alias-input" className="text-sm font-medium mb-1 block">
@@ -1332,16 +1460,13 @@ const FilterAndSearchControls = ({
             </div>
           </div>
           {aliasError && <p className="mt-1 text-xs text-red-500">{aliasError}</p>}
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={() => setAliasListOpen(true)}>
-              View alias updates
-            </Button>
-          </div>
           <p className="mt-1 text-xs text-muted-foreground">
             Saved aliases are remembered across tools so searches and schedule imports recognize old course codes.
           </p>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </CollapsibleContent>
+        </Card>
+      </Collapsible>
 
       <Dialog
         open={confirmOpen}
@@ -1459,6 +1584,28 @@ const FilterAndSearchControls = ({
 }
 
 // Update the OverallProgress component to show courses instead of credits
+const AnimatedLinearBar = ({
+  value,
+  gradient,
+  className,
+}: {
+  value: number
+  gradient: string
+  className?: string
+}) => {
+  const clamped = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0))
+
+  return (
+    <motion.div
+      className={cn("h-full rounded-full will-change-[width]", className)}
+      style={{ background: gradient }}
+      initial={{ width: "0%" }}
+      animate={{ width: `${clamped}%` }}
+      transition={{ duration: 0.7, ease: "easeOut" }}
+    />
+  )
+}
+
 const OverallProgress = ({
   overallProgress,
   showDetailedProgress,
@@ -1469,35 +1616,6 @@ const OverallProgress = ({
   isFloating,
 }: OverallProgressProps) => {
   const [expandedYears, setExpandedYears] = useState<{ [key: number]: boolean }>({})
-  const noteContentRef = useRef<HTMLDivElement>(null)
-  const [noteHeight, setNoteHeight] = useState<number | null>(null)
-
-  useEffect(() => {
-    if (typeof window === "undefined") return
-
-    const buffer = 16
-
-    const measure = () => {
-      if (noteContentRef.current) {
-        const height = noteContentRef.current.getBoundingClientRect().height
-        setNoteHeight(Math.ceil(height) + buffer)
-      }
-    }
-
-    measure()
-    window.addEventListener("resize", measure)
-
-    let resizeObserver: ResizeObserver | null = null
-    if (typeof ResizeObserver !== "undefined" && noteContentRef.current) {
-      resizeObserver = new ResizeObserver(measure)
-      resizeObserver.observe(noteContentRef.current)
-    }
-
-    return () => {
-      window.removeEventListener("resize", measure)
-      resizeObserver?.disconnect()
-    }
-  }, [])
 
   const toggleYearExpansion = (year: number) => {
     setExpandedYears((prev) => ({
@@ -1512,7 +1630,7 @@ const OverallProgress = ({
   }
 
   return (
-    <div className="p-4 bg-white/95 dark:bg-gray-800/95 rounded-lg shadow-md border border-gray-100 dark:border-gray-700 backdrop-blur transition-all duration-300 ease-in-out">
+    <div className="p-4 bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-100 dark:border-gray-700 transition-all duration-300 ease-in-out">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-semibold">Overall Program Progress</h2>
         <Button
@@ -1535,13 +1653,7 @@ const OverallProgress = ({
               backgroundImage: "none",
             }}
           >
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${overallProgress.percentage}%`,
-                background: "linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)",
-              }}
-            />
+            <AnimatedLinearBar value={overallProgress.percentage} gradient="linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)" />
           </Progress>
           <p className="mt-2 text-center">{overallProgress.percentage}% Complete</p>
         </div>
@@ -1561,129 +1673,138 @@ const OverallProgress = ({
         </div>
       </div>
 
-      {/* Detailed Progress View */}
-      {showDetailedProgress && (
-        <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
-          <h3 className="text-lg font-medium mb-4">Detailed Progress</h3>
+      {/* Detailed Progress View (Animated expand/collapse) */}
+      <Collapsible open={showDetailedProgress} onOpenChange={setShowDetailedProgress}>
+        <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
+          <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+            <h3 className="text-lg font-medium mb-4">Detailed Progress</h3>
 
-          {/* Year Progress */}
-          <div className="mb-6">
-            <h4 className="text-md font-medium mb-3">Progress by Year</h4>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              {Object.entries(progressByYear).map(([year, stats]) => {
+            {/* Year Progress */}
+            <div className="mb-6">
+              <h4 className="text-md font-medium mb-3">Progress by Year</h4>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                {Object.entries(progressByYear).map(([year, stats]) => {
+                  const yearNum = Number(year)
+                  const yearCourses = getCoursesByYearAndTerm(yearNum)
+                  const activeCourses = yearCourses.filter((c) => c.status === "active")
+                  const pendingCourses = yearCourses.filter((c) => c.status === "pending")
+
+                  return (
+                    <div key={year} className="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg text-center">
+                      <CircularProgress
+                        value={stats.percentage}
+                        size={80}
+                        strokeWidth={8}
+                        color={stats.percentage === 100 ? "#10b981" : "#3b82f6"}
+                        className="mb-2"
+                      />
+                      <p className="font-medium">Year {year}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {stats.passed}/{stats.total} courses
+                      </p>
+                      <Button variant="ghost" size="sm" onClick={() => toggleYearExpansion(yearNum)} className="mt-2">
+                        {expandedYears[yearNum] ? "Hide Terms" : "Show Terms"}
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Term Progress (Animated per-year expand/collapse) */}
+            <AnimatePresence initial={false}>
+              {Object.entries(progressByYear).map(([year]) => {
                 const yearNum = Number(year)
-                const yearCourses = getCoursesByYearAndTerm(yearNum)
-                const activeCourses = yearCourses.filter((c) => c.status === "active")
-                const pendingCourses = yearCourses.filter((c) => c.status === "pending")
+                if (!expandedYears[yearNum]) return null
 
                 return (
-                  <div key={year} className="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg text-center">
-                    <CircularProgress
-                      value={stats.percentage}
-                      size={80}
-                      strokeWidth={8}
-                      color={stats.percentage === 100 ? "#10b981" : "#3b82f6"}
-                      className="mb-2"
-                    />
-                    <p className="font-medium">Year {year}</p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      {stats.passed}/{stats.total} courses
-                    </p>
-                    <Button variant="ghost" size="sm" onClick={() => toggleYearExpansion(yearNum)} className="mt-2">
-                      {expandedYears[yearNum] ? "Hide Terms" : "Show Terms"}
-                    </Button>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
+                  <motion.div
+                    key={`terms-${year}`}
+                    initial={{ height: 0, opacity: 0, y: -6 }}
+                    animate={{ height: "auto", opacity: 1, y: 0 }}
+                    exit={{ height: 0, opacity: 0, y: -6 }}
+                    transition={{ duration: 0.25, ease: "easeInOut" }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mb-6 bg-gray-50 dark:bg-gray-800 p-4 rounded-lg">
+                      <h4 className="text-md font-medium mb-3">Progress by Term - Year {year}</h4>
+                      <div className="space-y-4">
+                        {Object.entries(progressByTerm[yearNum] || {}).map(([term, stats]) => {
+                          const termCourses = getCoursesByYearAndTerm(yearNum, term)
+                          const activeCourses = termCourses.filter((c) => c.status === "active")
+                          const pendingCourses = termCourses.filter((c) => c.status === "pending")
 
-          {/* Term Progress (Expandable) */}
-          {Object.entries(progressByYear).map(([year, yearStats]) => {
-            const yearNum = Number(year)
-            return (
-              expandedYears[yearNum] && (
-                <div key={`terms-${year}`} className="mb-6 bg-gray-50 dark:bg-gray-800 p-4 rounded-lg">
-                  <h4 className="text-md font-medium mb-3">Progress by Term - Year {year}</h4>
-                  <div className="space-y-4">
-                    {Object.entries(progressByTerm[yearNum] || {}).map(([term, stats]) => {
-                      const termCourses = getCoursesByYearAndTerm(yearNum, term)
-                      const activeCourses = termCourses.filter((c) => c.status === "active")
-                      const pendingCourses = termCourses.filter((c) => c.status === "pending")
+                          return (
+                            <div key={`${year}-${term}`} className="bg-white dark:bg-gray-700 p-3 rounded-lg">
+                              <div className="flex items-center gap-3">
+                                <CircularProgress
+                                  value={stats.percentage}
+                                  size={60}
+                                  strokeWidth={6}
+                                  color={stats.percentage === 100 ? "#10b981" : "#3b82f6"}
+                                />
+                                <div className="flex-grow">
+                                  <p className="font-medium">{term}</p>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    {stats.passed}/{stats.total} courses
+                                  </p>
 
-                      return (
-                        <div key={`${year}-${term}`} className="bg-white dark:bg-gray-700 p-3 rounded-lg">
-                          <div className="flex items-center gap-3">
-                            <CircularProgress
-                              value={stats.percentage}
-                              size={60}
-                              strokeWidth={6}
-                              color={stats.percentage === 100 ? "#10b981" : "#3b82f6"}
-                            />
-                            <div className="flex-grow">
-                              <p className="font-medium">{term}</p>
-                              <p className="text-xs text-gray-500 dark:text-gray-400">
-                                {stats.passed}/{stats.total} courses
-                              </p>
-
-                              {/* Show course status information */}
-                              <div className="mt-2 text-xs">
-                                {stats.percentage === 100 ? (
-                                  <p className="text-green-600 dark:text-green-400">All courses completed!</p>
-                                ) : (
-                                  <div>
-                                    {activeCourses.length > 0 && (
-                                      <p className="text-blue-600 dark:text-blue-400">
-                                        Active: {activeCourses.map((c) => c.code).join(", ")}
-                                      </p>
-                                    )}
-                                    {pendingCourses.length > 0 && (
-                                      <p className="text-yellow-600 dark:text-yellow-400">
-                                        Pending: {pendingCourses.map((c) => c.code).join(", ")}
-                                      </p>
+                                  <div className="mt-2 text-xs">
+                                    {stats.percentage === 100 ? (
+                                      <p className="text-green-600 dark:text-green-400">All courses completed!</p>
+                                    ) : (
+                                      <div>
+                                        {activeCourses.length > 0 && (
+                                          <p className="text-blue-600 dark:text-blue-400">
+                                            Active: {activeCourses.map((c) => c.code).join(", ")}
+                                          </p>
+                                        )}
+                                        {pendingCourses.length > 0 && (
+                                          <p className="text-yellow-600 dark:text-yellow-400">
+                                            Pending: {pendingCourses.map((c) => c.code).join(", ")}
+                                          </p>
+                                        )}
+                                      </div>
                                     )}
                                   </div>
-                                )}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              )
-            )
-          })}
-        </div>
-      )}
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </motion.div>
+                )
+              })}
+            </AnimatePresence>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* Note about course status persistence */}
-      <div
-        className={cn(
-          "overflow-hidden transition-all duration-300 ease-in-out",
-          isFloating && "pointer-events-none",
-        )}
-        style={{
-          maxHeight: isFloating ? 0 : noteHeight ?? 220,
-          marginTop: isFloating ? 0 : "1rem",
-          opacity: isFloating ? 0 : 1,
-        }}
-        aria-hidden={isFloating}
-      >
-        <div
-          ref={noteContentRef}
-          className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md text-sm text-blue-700 dark:text-blue-300"
-        >
-          <p className="flex items-center">
-            <AlertCircle className="h-4 w-4 mr-2 flex-shrink-0" />
-            <span>
-              <strong>Note:</strong> Course statuses are saved to your browser's local storage. After marking courses as
-              "Active", use the "Go to Schedule Maker" button to see available sections for your active courses.
-            </span>
-          </p>
-        </div>
-      </div>
+      <AnimatePresence initial={false}>
+        {!isFloating ? (
+          <motion.div
+            key="overall-progress-note"
+            initial={{ height: 0, opacity: 0, y: -6, marginTop: 0 }}
+            animate={{ height: "auto", opacity: 1, y: 0, marginTop: 16 }}
+            exit={{ height: 0, opacity: 0, y: -6, marginTop: 0 }}
+            transition={{ duration: 0.25, ease: "easeInOut" }}
+            className="overflow-hidden"
+          >
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md text-sm text-blue-700 dark:text-blue-300">
+              <p className="flex items-center">
+                <AlertCircle className="h-4 w-4 mr-2 flex-shrink-0" />
+                <span>
+                  <strong>Note:</strong> Course statuses are saved to your browser's local storage. After marking courses
+                  as "Active", use the "Go to Schedule Maker" button to see available sections for your active courses.
+                </span>
+              </p>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   )
 }
@@ -1747,16 +1868,20 @@ const SaveLoadControls = ({
 
   return (
     <>
-      <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
-      <div className="flex justify-between items-center cursor-pointer" onClick={() => setIsExpanded(!isExpanded)}>
-        <h2 className="text-lg font-semibold">Save & Load Progress</h2>
-        <Button variant="ghost" size="sm">
-          {isExpanded ? "Hide" : "Show"} Options
-        </Button>
-      </div>
+      <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+        <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
+          <CollapsibleTrigger asChild>
+            <button type="button" className="flex justify-between items-center w-full cursor-pointer">
+              <h2 className="text-lg font-semibold">Save & Load Progress</h2>
+              <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                {isExpanded ? "Hide" : "Show"} Options
+                {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </span>
+            </button>
+          </CollapsibleTrigger>
 
-      {isExpanded && (
-        <div className="mt-3">
+          <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
+            <div className="mt-3">
           <div className="flex flex-wrap gap-3">
             <Button onClick={saveProgress} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700">
               <Save className="h-4 w-4" />
@@ -1845,9 +1970,10 @@ const SaveLoadControls = ({
               <AlertDescription>{saveMessage}</AlertDescription>
             </Alert>
           )}
+            </div>
+          </CollapsibleContent>
         </div>
-      )}
-      </div>
+      </Collapsible>
       <Dialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
       <DialogContent>
         <DialogHeader>
@@ -1893,93 +2019,96 @@ const AcademicTimeline = ({
   }, [startYear])
 
   return (
-    <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
-      <div className="flex flex-col gap-4">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
-              <GraduationCap className="h-5 w-5" />
-              Academic Timeline
-            </h2>
-            <div className="flex flex-wrap items-center gap-4">
-              <div className="flex items-center gap-2">
-                <Label htmlFor="start-year" className="whitespace-nowrap">
-                  Starting Year:
-                </Label>
-                <Input
-                  id="start-year"
-                  type="text" /* use text + inputMode to show numeric keyboard on mobile without spinner */
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  onBlur={() => handleStartYearChange(inputValue)}
-                  className="w-24"
-                  inputMode="numeric" /* prefer numeric keypad on mobile */
-                  pattern="\\d*" /* allow digits only on some mobile browsers */
-                  placeholder="2025"
-                />
-              </div>
+    <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+      <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
+                <GraduationCap className="h-5 w-5" />
+                Academic Timeline
+              </h2>
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="start-year" className="whitespace-nowrap">
+                    Starting Year:
+                  </Label>
+                  <Input
+                    id="start-year"
+                    type="text" /* use text + inputMode to show numeric keyboard on mobile without spinner */
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onBlur={() => handleStartYearChange(inputValue)}
+                    className="w-24"
+                    inputMode="numeric" /* prefer numeric keypad on mobile */
+                    pattern="\\d*" /* allow digits only on some mobile browsers */
+                    placeholder="2025"
+                  />
+                </div>
 
-              <div className="flex items-center gap-2">
-                <Label className="whitespace-nowrap">Current Year:</Label>
-                <Select
-                  value={String(currentYearLevel)}
-                  onValueChange={(value) => {
-                    if (value === "extend") {
-                      onExtendYearOptions()
-                      return
-                    }
-                    const parsed = Number.parseInt(value, 10)
-                    if (!Number.isNaN(parsed)) {
-                      onCurrentYearLevelChange(parsed)
-                    }
-                  }}
-                >
-                  <SelectTrigger className="w-32">
-                    <SelectValue placeholder="Year" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {yearLevelOptions.map((year) => (
-                      <SelectItem key={year} value={String(year)}>
-                        Year {year}
+                <div className="flex items-center gap-2">
+                  <Label className="whitespace-nowrap">Current Year:</Label>
+                  <Select
+                    value={String(currentYearLevel)}
+                    onValueChange={(value) => {
+                      if (value === "extend") {
+                        onExtendYearOptions()
+                        return
+                      }
+                      const parsed = Number.parseInt(value, 10)
+                      if (!Number.isNaN(parsed)) {
+                        onCurrentYearLevelChange(parsed)
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="w-32">
+                      <SelectValue placeholder="Year" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {yearLevelOptions.map((year) => (
+                        <SelectItem key={year} value={String(year)}>
+                          Year {year}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="extend" className="text-emerald-600 font-semibold">
+                        Year {yearLevelOptions.length + 1} +
                       </SelectItem>
-                    ))}
-                    <SelectItem value="extend" className="text-emerald-600 font-semibold">
-                      Year {yearLevelOptions.length + 1} +
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              <div className="flex items-center gap-2">
-                <Label className="whitespace-nowrap">Current Term:</Label>
-                <Select value={currentTerm} onValueChange={(value: TermName) => onCurrentTermChange(value)}>
-                  <SelectTrigger className="w-32">
-                    <SelectValue placeholder="Term" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {["Term 1", "Term 2", "Term 3"].map((term) => (
-                      <SelectItem key={term} value={term}>
-                        {term}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center gap-2">
+                  <Label className="whitespace-nowrap">Current Term:</Label>
+                  <Select value={currentTerm} onValueChange={(value: TermName) => onCurrentTermChange(value)}>
+                    <SelectTrigger className="w-32">
+                      <SelectValue placeholder="Term" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {["Term 1", "Term 2", "Term 3"].map((term) => (
+                        <SelectItem key={term} value={term}>
+                          {term}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-md">
+                <p className="text-blue-700 dark:text-blue-300 font-medium">Expected Graduation: {expectedGraduation}</p>
+              </div>
+              <CollapsibleTrigger asChild>
+                <Button variant="ghost" size="sm">
+                  {isExpanded ? "Hide" : "Show"} Details
+                </Button>
+              </CollapsibleTrigger>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-          <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-md">
-            <p className="text-blue-700 dark:text-blue-300 font-medium">Expected Graduation: {expectedGraduation}</p>
-          </div>
-          <Button variant="ghost" size="sm" onClick={() => setIsExpanded(!isExpanded)}>
-            {isExpanded ? "Hide" : "Show"} Details
-          </Button>
-        </div>
-      </div>
-
       {/* Academic Years Table (Expandable) */}
-      {isExpanded && (
+      <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
         <div className="mt-4 overflow-x-auto">
           <table className="min-w-full border-collapse">
             <thead>
@@ -2002,7 +2131,7 @@ const AcademicTimeline = ({
             </tbody>
           </table>
         </div>
-      )}
+      </CollapsibleContent>
 
       {/* Academic Planner Link */}
       <div className="mt-4">
@@ -2013,8 +2142,9 @@ const AcademicTimeline = ({
           </Link>
         </Button>
       </div>
-    </div>
-    </div>
+        </div>
+      </div>
+    </Collapsible>
   )
 }
 
@@ -2027,7 +2157,9 @@ export default function CourseTracker() {
     Record<string, string | { canonical: string; displayAlias?: boolean }>
   >({})
   const [filterStatus, setFilterStatus] = useState<CourseStatus | "all" | "future">("all")
-  const [openYears, setOpenYears] = useState<{ [key: number]: boolean }>({ 1: true }) // Start with Year 1 open
+  const [openYears, setOpenYears] = useState<{ [key: number]: boolean }>({})
+  const [openTerms, setOpenTerms] = useState<Record<string, boolean>>({})
+  const [groupOpensInitialized, setGroupOpensInitialized] = useState(false)
   const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null) // Track expanded card
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<"card" | "table">("card")
@@ -2082,6 +2214,95 @@ export default function CourseTracker() {
   const extendYearOptions = useCallback(() => {
     setMaxYearLevelOption((prev) => prev + 5)
   }, [])
+
+  const completionInitRef = useRef(false)
+  const completedYearsRef = useRef<Set<number>>(new Set())
+  const completedTermsRef = useRef<Set<string>>(new Set())
+  const overallCompletedRef = useRef(false)
+  const overallRainActiveRef = useRef(false)
+
+  useEffect(() => {
+    if (!coursesHydrated) return
+
+    const years = Array.from(new Set(courses.map((course) => course.year).filter((y): y is number => Number.isFinite(y))))
+      .sort((a, b) => a - b)
+
+    const isYearComplete = (year: number) => {
+      const yearCourses = courses.filter((course) => course.year === year)
+      if (!yearCourses.length) return false
+      return yearCourses.every((course) => course.status === "passed")
+    }
+
+    const isTermComplete = (year: number, term: TermName) => {
+      const termCourses = courses.filter((course) => course.year === year && course.term === term)
+      if (!termCourses.length) return false
+      return termCourses.every((course) => course.status === "passed")
+    }
+
+    const currentCompletedYears = new Set<number>()
+    const currentCompletedTerms = new Set<string>()
+    // Match the UI: overall progress uses Math.round(), so 100% can be reached
+    // even before literally every course is marked passed.
+    const overallComplete = courses.length > 0 && calculateProgress(courses).percentage >= 100
+
+    years.forEach((year) => {
+      if (isYearComplete(year)) {
+        currentCompletedYears.add(year)
+        TERM_SEQUENCE.forEach((term) => {
+          if (courses.some((c) => c.year === year && c.term === term)) {
+            currentCompletedTerms.add(`${year}::${term}`)
+          }
+        })
+      } else {
+        TERM_SEQUENCE.forEach((term) => {
+          if (isTermComplete(year, term) && courses.some((c) => c.year === year && c.term === term)) {
+            currentCompletedTerms.add(`${year}::${term}`)
+          }
+        })
+      }
+    })
+
+    if (!completionInitRef.current) {
+      completionInitRef.current = true
+      completedYearsRef.current = currentCompletedYears
+      completedTermsRef.current = currentCompletedTerms
+      overallCompletedRef.current = overallComplete
+      return
+    }
+
+    if (overallComplete && !overallCompletedRef.current && !overallRainActiveRef.current) {
+      overallRainActiveRef.current = true
+      void fireConfettiRain(5000).finally(() => {
+        overallRainActiveRef.current = false
+      })
+    }
+
+    const previouslyCompletedYears = completedYearsRef.current
+    const previouslyCompletedTerms = completedTermsRef.current
+
+    const newlyCompletedYears = Array.from(currentCompletedYears).filter((y) => !previouslyCompletedYears.has(y))
+
+    if (newlyCompletedYears.length) {
+      newlyCompletedYears.forEach(() => {
+        void fireConfetti("year")
+      })
+    }
+
+    const newlyCompletedTerms = Array.from(currentCompletedTerms).filter((k) => !previouslyCompletedTerms.has(k))
+    const suppressTerms = new Set<number>(newlyCompletedYears)
+
+    if (newlyCompletedTerms.length) {
+      newlyCompletedTerms.forEach((key) => {
+        const year = Number.parseInt(key.split("::")[0] || "", 10)
+        if (Number.isFinite(year) && suppressTerms.has(year)) return
+        void fireConfetti("term")
+      })
+    }
+
+    completedYearsRef.current = currentCompletedYears
+    completedTermsRef.current = currentCompletedTerms
+    overallCompletedRef.current = overallComplete
+  }, [courses, coursesHydrated])
 
   const scrollToPageTop = useCallback(() => {
     if (typeof window === "undefined") return
@@ -2358,6 +2579,125 @@ export default function CourseTracker() {
       }
     }
   }, [coursesHydrated, markedCourseCount, noProgressDismissed, hasSeenSetupDialog, trackerSetupDialogOpen])
+
+  // Initialize which year/term groups open by default.
+  // Rules:
+  // - Open every term that contains an Active course.
+  // - If there are no active courses, open the earliest year (and earliest term in it) that is not fully Passed.
+  // - Auto-close terms/years that are fully Passed.
+  useEffect(() => {
+    if (!coursesHydrated) return
+    if (groupOpensInitialized) return
+
+    const grouped = groupCourses(courses)
+    const years = Object.keys(grouped)
+      .map((value) => Number.parseInt(value, 10))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b)
+
+    const nextOpenYears: Record<number, boolean> = {}
+    const nextOpenTerms: Record<string, boolean> = {}
+    const hasAnyActive = courses.some((course) => course.status === "active")
+
+    const isAllPassed = (list: Course[]) => list.length > 0 && list.every((course) => course.status === "passed")
+    const makeTermKey = (year: number, term: string) => `${year}::${term}`
+
+    if (hasAnyActive) {
+      years.forEach((year) => {
+        Object.entries(grouped[year] || {}).forEach(([term, termCourses]) => {
+          if (isAllPassed(termCourses)) return
+          const hasActive = termCourses.some((course) => course.status === "active")
+          if (!hasActive) return
+          nextOpenYears[year] = true
+          nextOpenTerms[makeTermKey(year, term)] = true
+        })
+      })
+    } else {
+      let opened = false
+      years.forEach((year) => {
+        const yearCourses = courses.filter((course) => course.year === year)
+        if (opened) return
+        if (isAllPassed(yearCourses)) return
+        nextOpenYears[year] = true
+
+        const terms = Object.keys(grouped[year] || {})
+        for (const term of terms) {
+          const termCourses = grouped[year]?.[term] ?? []
+          if (!isAllPassed(termCourses)) {
+            nextOpenTerms[makeTermKey(year, term)] = true
+            break
+          }
+        }
+        opened = true
+      })
+    }
+
+    setOpenYears(nextOpenYears)
+    setOpenTerms(nextOpenTerms)
+    setGroupOpensInitialized(true)
+  }, [courses, coursesHydrated, groupOpensInitialized])
+
+  // Keep groups in sync with progress: auto-close fully passed groups; auto-open groups containing Active courses.
+  useEffect(() => {
+    if (!groupOpensInitialized) return
+
+    const grouped = groupCourses(courses)
+    const years = Object.keys(grouped)
+      .map((value) => Number.parseInt(value, 10))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b)
+
+    const isAllPassed = (list: Course[]) => list.length > 0 && list.every((course) => course.status === "passed")
+    const makeTermKey = (year: number, term: string) => `${year}::${term}`
+    const hasAnyActive = courses.some((course) => course.status === "active")
+
+    setOpenTerms((prev) => {
+      const next = { ...prev }
+      years.forEach((year) => {
+        Object.entries(grouped[year] || {}).forEach(([term, termCourses]) => {
+          const key = makeTermKey(year, term)
+          if (isAllPassed(termCourses)) {
+            next[key] = false
+            return
+          }
+          const hasActive = termCourses.some((course) => course.status === "active")
+          if (hasActive) {
+            next[key] = true
+          }
+        })
+      })
+      return next
+    })
+
+    setOpenYears((prev) => {
+      const next = { ...prev }
+      years.forEach((year) => {
+        const yearCourses = courses.filter((course) => course.year === year)
+        if (isAllPassed(yearCourses)) {
+          next[year] = false
+          return
+        }
+        if (yearCourses.some((course) => course.status === "active")) {
+          next[year] = true
+        }
+      })
+
+      if (!hasAnyActive) {
+        const anyOpen = Object.values(next).some(Boolean)
+        if (!anyOpen) {
+          const earliestNotDone = years.find((year) => {
+            const yearCourses = courses.filter((course) => course.year === year)
+            return !isAllPassed(yearCourses)
+          })
+          if (typeof earliestNotDone === "number") {
+            next[earliestNotDone] = true
+          }
+        }
+      }
+
+      return next
+    })
+  }, [courses, groupOpensInitialized])
 
   const triggerUploadDialog = () => {
     if (fileInputRef.current) {
@@ -3445,6 +3785,10 @@ export default function CourseTracker() {
     setOpenYears((prev) => ({ ...prev, [year]: !prev[year] }))
   }
 
+  const setTermOpen = (key: string, isOpen: boolean) => {
+    setOpenTerms((prev) => ({ ...prev, [key]: isOpen }))
+  }
+
   const toggleCourseExpansion = (courseId: string) => {
     setExpandedCourseId((prevId) => (prevId === courseId ? null : courseId))
   }
@@ -3680,6 +4024,7 @@ export default function CourseTracker() {
         aria-hidden="true"
         className="sr-only"
       />
+      <TooltipProvider delayDuration={250} skipDelayDuration={0}>
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
         <div className="mb-6 mt-4">
           <QuickNavigation />
@@ -3848,31 +4193,37 @@ export default function CourseTracker() {
         </Dialog>
 
         {/* Save/Load Progress Controls */}
-        <SaveLoadControls
-          saveProgress={saveProgress}
-          downloadProgress={downloadProgress}
-          saveMessage={saveMessage}
-          triggerUploadDialog={triggerUploadDialog}
-          setCourses={setCourses}
-          setSaveMessage={setSaveMessage}
-        />
+        <motion.div layout transition={{ layout: { duration: 0.25, ease: "easeInOut" } }}>
+          <SaveLoadControls
+            saveProgress={saveProgress}
+            downloadProgress={downloadProgress}
+            saveMessage={saveMessage}
+            triggerUploadDialog={triggerUploadDialog}
+            setCourses={setCourses}
+            setSaveMessage={setSaveMessage}
+          />
+        </motion.div>
 
         {/* Academic Year and Expected Graduation */}
-        <AcademicTimeline
-          startYear={startYear}
-          handleStartYearChange={handleStartYearChange}
-          academicYears={academicYears}
-          expectedGraduation={expectedGraduationLabel}
-          currentYearLevel={currentYearLevel}
-          onCurrentYearLevelChange={handleCurrentYearLevelChange}
-          currentTerm={currentTerm}
-          onCurrentTermChange={setCurrentTerm}
-          yearLevelOptions={yearLevelOptions}
-          onExtendYearOptions={extendYearOptions}
-        />
+        <motion.div layout transition={{ layout: { duration: 0.25, ease: "easeInOut" } }}>
+          <AcademicTimeline
+            startYear={startYear}
+            handleStartYearChange={handleStartYearChange}
+            academicYears={academicYears}
+            expectedGraduation={expectedGraduationLabel}
+            currentYearLevel={currentYearLevel}
+            onCurrentYearLevelChange={handleCurrentYearLevelChange}
+            currentTerm={currentTerm}
+            onCurrentTermChange={setCurrentTerm}
+            yearLevelOptions={yearLevelOptions}
+            onExtendYearOptions={extendYearOptions}
+          />
+        </motion.div>
 
         {/* Overall Progress */}
-        <div
+        <motion.div
+          layout
+          transition={{ layout: { duration: 0.25, ease: "easeInOut" } }}
           ref={progressCardRef}
           className="sticky z-30 mb-8 transition-all duration-300 ease-in-out"
           style={{
@@ -3890,27 +4241,28 @@ export default function CourseTracker() {
             courses={courses}
             isFloating={isProgressSticky}
           />
-        </div>
+        </motion.div>
 
-        {/* Filter and Search Controls */}
-        <FilterAndSearchControls
-          searchTerm={searchTerm}
-          setSearchTerm={setSearchTerm}
-          filterStatus={filterStatus}
-          setFilterStatus={setFilterStatus}
-          viewMode={viewMode}
-          setViewMode={setViewMode}
-          courses={courses}
-          onAddAliases={handleAddAliases}
-          courseCodeAliases={courseCodeAliases}
-          onRemoveAlias={handleRemoveAlias}
-          onToggleAliasDisplay={handleToggleAliasDisplay}
-          getDisplayCode={getDisplayCode}
-        />
+        <motion.div layout transition={{ layout: { duration: 0.25, ease: "easeInOut" } }}>
+          {/* Filter and Search Controls */}
+          <FilterAndSearchControls
+            searchTerm={searchTerm}
+            setSearchTerm={setSearchTerm}
+            filterStatus={filterStatus}
+            setFilterStatus={setFilterStatus}
+            viewMode={viewMode}
+            setViewMode={setViewMode}
+            courses={courses}
+            onAddAliases={handleAddAliases}
+            courseCodeAliases={courseCodeAliases}
+            onRemoveAlias={handleRemoveAlias}
+            onToggleAliasDisplay={handleToggleAliasDisplay}
+            getDisplayCode={getDisplayCode}
+          />
 
-        {/* Course Display Area */}
-        <div className="mb-10">
-          {viewMode === "card" ? (
+          {/* Course Display Area */}
+          <div className="mb-10">
+            {viewMode === "card" ? (
             <div className="space-y-6">
               {Object.keys(groupedFilteredCourses).length > 0 ? (
                 Object.entries(groupedFilteredCourses)
@@ -3920,10 +4272,12 @@ export default function CourseTracker() {
                     const yearProgress = progressByYear[yearNum]
                     const allPassed = areAllCoursesPassed(yearNum)
 
+                    const makeTermKey = (term: string) => `${yearNum}::${term}`
+
                     return (
                       <Collapsible
                         key={year}
-                        open={openYears[yearNum]}
+                        open={Boolean(openYears[yearNum])}
                         onOpenChange={() => toggleYear(yearNum)}
                         className="border dark:border-gray-700 rounded-lg overflow-hidden shadow-md bg-white dark:bg-gray-800"
                       >
@@ -3948,23 +4302,18 @@ export default function CourseTracker() {
                                   : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.status !== "passed").length})`}
                               </span>
                             </Button>
-                            {openYears[yearNum] ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+                            {Boolean(openYears[yearNum]) ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
                           </div>
                         </CollapsibleTrigger>
-                        <CollapsibleContent className="p-4 space-y-4">
+                        <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
+                          <div className="p-4 space-y-4">
                           <div className="mb-4">
                             <Progress
                               value={yearProgress.percentage}
                               className="h-2 bg-gray-200 dark:bg-gray-700 overflow-hidden rounded-full"
                               style={{ backgroundImage: "none" }}
                             >
-                              <div
-                                className="h-full rounded-full transition-all"
-                                style={{
-                                  width: `${yearProgress.percentage}%`,
-                                  background: "linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)",
-                                }}
-                              />
+                              <AnimatedLinearBar value={yearProgress.percentage} gradient="linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)" className="transition-[width] duration-700 ease-out" />
                             </Progress>
                           </div>
 
@@ -3983,44 +4332,65 @@ export default function CourseTracker() {
                                   : academicYear.term3
                               : ""
 
+                            const termKey = makeTermKey(term)
+                            const termAllPassed = areAllTermCoursesPassed(yearNum, term)
+
                             return (
-                              <div key={term} className="border dark:border-gray-700 rounded-lg p-4">
-                                <div className="flex justify-between items-center mb-3">
-                                  <div>
-                                    <h3 className="text-md font-medium">{term}</h3>
-                                    <div className="text-xs text-gray-500 dark:text-gray-400">
-                                      S.Y. {academicYearStr} • ({termProgress.passed}/{termProgress.total} courses - {termProgress.percentage}%)
-                                    </div>
-                                  </div>
+                              <Collapsible
+                                key={termKey}
+                                open={Boolean(openTerms[termKey])}
+                                onOpenChange={(open) => setTermOpen(termKey, open)}
+                                className="border dark:border-gray-700 rounded-lg overflow-hidden bg-white/50 dark:bg-gray-900/10"
+                              >
+                                <div className="flex items-center justify-between gap-3 px-4 py-3 bg-gray-50/70 dark:bg-gray-800/40 hover:bg-gray-100/70 dark:hover:bg-gray-700/40 transition-colors">
+                                  <CollapsibleTrigger asChild>
+                                    <button type="button" className="flex flex-1 items-start justify-between gap-3 text-left">
+                                      <div>
+                                        <h3 className="text-md font-medium">{term}</h3>
+                                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                                          S.Y. {academicYearStr} • ({termProgress.passed}/{termProgress.total} courses - {termProgress.percentage}%)
+                                        </div>
+                                      </div>
+                                    </button>
+                                  </CollapsibleTrigger>
                                   <Button
                                     variant="outline"
                                     size="sm"
                                     className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors bg-transparent"
-                                    onClick={() => markTermAsPassed(yearNum, term)}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      markTermAsPassed(yearNum, term)
+                                    }}
                                   >
-                                    {areAllTermCoursesPassed(yearNum, term)
+                                    {termAllPassed
                                       ? "Unmark All"
                                       : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.term === term && c.status !== "passed").length})`}
                                   </Button>
+                                  <CollapsibleTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8 text-muted-foreground"
+                                      aria-label={`Toggle ${term} in Year ${year}`}
+                                    >
+                                      {Boolean(openTerms[termKey]) ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+                                    </Button>
+                                  </CollapsibleTrigger>
                                 </div>
 
-                                <div className="mb-4">
-                                  <Progress
-                                    value={termProgress.percentage}
-                                    className="h-1 bg-gray-200 dark:bg-gray-700 overflow-hidden rounded-full"
-                                    style={{ backgroundImage: "none" }}
-                                  >
-                                    <div
-                                      className="h-full rounded-full transition-all"
-                                      style={{
-                                        width: `${termProgress.percentage}%`,
-                                        background: "linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)",
-                                      }}
-                                    />
-                                  </Progress>
-                                </div>
+                                <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
+                                  <div className="p-4">
+                                    <div className="mb-4">
+                                      <Progress
+                                        value={termProgress.percentage}
+                                        className="h-1 bg-gray-200 dark:bg-gray-700 overflow-hidden rounded-full"
+                                        style={{ backgroundImage: "none" }}
+                                      >
+                                        <AnimatedLinearBar value={termProgress.percentage} gradient="linear-gradient(90deg, #0a4da2 0%, #0f6fee 100%)" className="transition-[width] duration-700 ease-out" />
+                                      </Progress>
+                                    </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                                   {termCourses.map((course: Course) => {
                                     const prereqCourses = course.prerequisites
                                       .map((id: string) => findCourseById(id))
@@ -4059,22 +4429,33 @@ export default function CourseTracker() {
                                               <span className="text-xs font-medium">Prerequisites: </span>
                                               <div className="flex flex-wrap gap-1 mt-1">
                                                 {prereqCourses.map((prereq) => (
-                                                  <Badge
-                                                    key={prereq.id}
-                                                    variant="outline"
-                                                    className={cn(
-                                                      "text-xs px-1.5 py-0.5",
-                                                      prereq.status === "passed" &&
-                                                        "bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-700 dark:text-green-400",
-                                                      prereq.status === "active" &&
-                                                        "bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-400",
-                                                      prereq.status === "pending" &&
-                                                        "bg-yellow-50 border-yellow-200 dark:bg-yellow-950/30 dark:border-yellow-700 dark:text-yellow-400",
-                                                    )}
-                                                  >
-                                                    {prereq.code}
-                                                    {getStatusIcon(prereq.status)}
-                                                  </Badge>
+                                                  <Tooltip key={prereq.id}>
+                                                    <TooltipTrigger asChild>
+                                                      <Badge
+                                                        variant="outline"
+                                                        className={cn(
+                                                          "text-xs px-1.5 py-0.5 cursor-help",
+                                                          prereq.status === "passed" &&
+                                                            "bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-700 dark:text-green-400",
+                                                          prereq.status === "active" &&
+                                                            "bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-700 dark:text-blue-400",
+                                                          prereq.status === "pending" &&
+                                                            "bg-yellow-50 border-yellow-200 dark:bg-yellow-950/30 dark:border-yellow-700 dark:text-yellow-400",
+                                                        )}
+                                                      >
+                                                        {getDisplayCode(prereq.code)}
+                                                        {getStatusIcon(prereq.status)}
+                                                      </Badge>
+                                                    </TooltipTrigger>
+                                                    <TooltipContent className="max-w-xs">
+                                                      <p className="text-sm font-semibold">
+                                                        {getDisplayCode(prereq.code)} — {prereq.name}
+                                                      </p>
+                                                      {(prereq.description || "").trim() ? (
+                                                        <p className="mt-1 text-xs text-muted-foreground">{(prereq.description || "").trim()}</p>
+                                                      ) : null}
+                                                    </TooltipContent>
+                                                  </Tooltip>
                                                 ))}
                                               </div>
                                             </div>
@@ -4095,18 +4476,31 @@ export default function CourseTracker() {
                                                         exit={{ opacity: 0, y: 10 }}
                                                         transition={{ duration: 0.2, delay: index * 0.05 }}
                                                       >
-                                                        <Badge variant="secondary" className="text-xs px-1.5 py-0.5 whitespace-nowrap">
-                                                          {dep.code}
-                                                          {index <
-                                                            (isExpanded ? dependentCourses.length : MAX_DEPENDENTS_SHOWN) - 1 &&
-                                                            index < dependentCourses.length - 1
-                                                            ? ","
-                                                            : ""}
-                                                        </Badge>
+                                                        <Tooltip>
+                                                          <TooltipTrigger asChild>
+                                                            <Badge variant="secondary" className="text-xs px-1.5 py-0.5 whitespace-nowrap cursor-help">
+                                                              {getDisplayCode(dep.code)}
+                                                              {index <
+                                                                (isExpanded ? dependentCourses.length : MAX_DEPENDENTS_SHOWN) - 1 &&
+                                                                index < dependentCourses.length - 1
+                                                                ? ","
+                                                                : ""}
+                                                            </Badge>
+                                                          </TooltipTrigger>
+                                                          <TooltipContent className="max-w-xs">
+                                                            <p className="text-sm font-semibold">
+                                                              {getDisplayCode(dep.code)} — {dep.name}
+                                                            </p>
+                                                            {(dep.description || "").trim() ? (
+                                                              <p className="mt-1 text-xs text-muted-foreground">{(dep.description || "").trim()}</p>
+                                                            ) : null}
+                                                          </TooltipContent>
+                                                        </Tooltip>
                                                       </motion.div>
                                                     ))}
                                                 </AnimatePresence>
                                               </div>
+
                                               {!isExpanded && dependentCourses.length > MAX_DEPENDENTS_SHOWN && (
                                                 <Button
                                                   variant="link"
@@ -4117,6 +4511,7 @@ export default function CourseTracker() {
                                                   ...see all {dependentCourses.length}
                                                 </Button>
                                               )}
+
                                               {isExpanded && (
                                                 <Button
                                                   variant="link"
@@ -4184,12 +4579,15 @@ export default function CourseTracker() {
                                   })}
                                 </div>
                               </div>
-                            )
-                          })}
-                        </CollapsibleContent>
-                      </Collapsible>
-                    )
-                  })
+                          </CollapsibleContent>
+                        </Collapsible>
+                      )
+                    })}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )
+          })
               ) : (
                 <p className="text-center text-gray-500 dark:text-gray-400 mt-10 p-8 bg-white dark:bg-gray-800 rounded-lg shadow-md">
                   No courses match the current filters.
@@ -4471,6 +4869,8 @@ export default function CourseTracker() {
             </Button>
           </div>
         )}
+
+        </motion.div>
 
         <Dialog
           open={trackerSetupDialogOpen}
@@ -5047,7 +5447,7 @@ export default function CourseTracker() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 12, scale: 0.95 }}
               transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="pointer-events-none fixed bottom-4 right-32 z-[10000] sm:bottom-6 sm:right-40"
+              className="pointer-events-none fixed bottom-4 right-20 z-[10000] sm:bottom-6 sm:right-24"
             >
               <Button
                 type="button"
@@ -5069,25 +5469,9 @@ export default function CourseTracker() {
           <QuickNavigation showBackToTop />
         </div>
 
-        {/* Footer */}
-        <footer className="mt-12 pt-6 border-t dark:border-gray-700 text-center text-sm text-gray-600 dark:text-gray-400">
-          <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-            <p>Created by France Estrella</p>
-            <div className="flex gap-4">
-              <a
-                href="https://www.facebook.com/feutechCpEO"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-600 dark:text-blue-400 hover:underline"
-              >
-                CpEO Page
-              </a>
-            </div>
-            <p>© All Rights Reserved 2025</p>
-          </div>
-        </footer>
       </div>
       </div>
+      </TooltipProvider>
     </>
   )
 }

@@ -5,6 +5,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@dnd-kit/core": "latest",
     "@emotion/is-prop-valid": "latest",
     "@radix-ui/react-accordion": "latest",
     "@radix-ui/react-alert-dialog": "latest",
@@ -30,7 +31,6 @@
     "@radix-ui/react-switch": "latest",
     "@radix-ui/react-tabs": "latest",
     "@radix-ui/react-toast": "latest",
-    "@dnd-kit/core": "latest",
     "@radix-ui/react-toggle": "latest",
     "@radix-ui/react-toggle-group": "latest",
     "@radix-ui/react-tooltip": "latest",
@@ -38,6 +38,7 @@
     "@types/react-dom": "latest",
     "autoprefixer": "^10.4.21",
     "canvas": "latest",
+    "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "latest",
@@ -70,6 +71,7 @@
     "vaul": "latest"
   },
   "devDependencies": {
+    "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",

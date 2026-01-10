@@ -2,12 +2,13 @@
 
 import Link from "next/link"
 import { useState, useEffect, useRef } from "react"
-import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X } from "lucide-react"
+import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X, ArrowUp } from "lucide-react"
 import PatchNotesButton from "@/components/patch-notes"
 import { ThemeProvider } from "@/components/theme-provider"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 import { Moon, Sun } from "lucide-react"
+import { AnimatePresence, motion } from "framer-motion"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -20,6 +21,17 @@ import { MESSAGE_MIN } from "../lib/config"
 import NonCpeNotice, { markNonCpeNoticeDismissed } from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
 import OnboardingDialog from "@/components/onboarding-dialog"
+
+const PROGRAMS = [
+  "Computer Engineering",
+  "Electrical Engineering",
+  "Electronics Engineering",
+  "Mechanical Engineering",
+  "Civil Engineering",
+  "Computer Science",
+  "Information Technology",
+  "Multimedia & Arts",
+]
 
 export default function Home() {
   const { theme, setTheme } = useTheme()
@@ -36,8 +48,37 @@ export default function Home() {
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(false)
   const [shouldAutoOpenWhatsNew, setShouldAutoOpenWhatsNew] = useState(false)
   const [showExtensionCard, setShowExtensionCard] = useState(true)
+  const [isDismissingExtensionCard, setIsDismissingExtensionCard] = useState(false)
   const disclaimerRef = useRef<HTMLDivElement | null>(null)
-  
+  const extensionHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [typewriterText, setTypewriterText] = useState(PROGRAMS[0])
+  const [typeIndex, setTypeIndex] = useState(0)
+  const [programIndex, setProgramIndex] = useState(0)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [showJumpButton, setShowJumpButton] = useState(false)
+
+  const scrollToPageTop = () => {
+    if (typeof window === "undefined") return
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const updateVisibilityState = () => {
+      setShowJumpButton(window.scrollY > 400)
+    }
+
+    updateVisibilityState()
+    window.addEventListener("scroll", updateVisibilityState)
+    window.addEventListener("resize", updateVisibilityState)
+
+    return () => {
+      window.removeEventListener("scroll", updateVisibilityState)
+      window.removeEventListener("resize", updateVisibilityState)
+    }
+  }, [])
+
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -137,13 +178,63 @@ export default function Home() {
   }, [])
 
   const dismissExtensionCard = () => {
-    setShowExtensionCard(false)
+    if (isDismissingExtensionCard || !showExtensionCard) return
+    setIsDismissingExtensionCard(true)
     try {
       localStorage.setItem("compareng.extensionCard.dismissed", "true")
     } catch {
       // ignore storage failures
     }
+    if (extensionHideTimer.current) clearTimeout(extensionHideTimer.current)
+    extensionHideTimer.current = setTimeout(() => setShowExtensionCard(false), 220)
   }
+
+  useEffect(() => {
+    return () => {
+      if (extensionHideTimer.current) clearTimeout(extensionHideTimer.current)
+    }
+  }, [])
+
+  // Hero typewriter effect for program names
+  useEffect(() => {
+    const current = PROGRAMS[programIndex % PROGRAMS.length]
+    const typingSpeed = 85
+    const deletingSpeed = 45
+    const holdDelay = 900
+    const gapDelay = 180
+
+    let timeout: ReturnType<typeof setTimeout> | undefined
+
+    if (!isDeleting && typeIndex < current.length) {
+      timeout = setTimeout(() => {
+        setTypeIndex((idx) => {
+          const next = idx + 1
+          setTypewriterText(current.slice(0, next))
+          return next
+        })
+      }, typingSpeed)
+    } else if (isDeleting && typeIndex > 0) {
+      timeout = setTimeout(() => {
+        setTypeIndex((idx) => {
+          const next = Math.max(0, idx - 1)
+          setTypewriterText(current.slice(0, next))
+          return next
+        })
+      }, deletingSpeed)
+    } else if (!isDeleting && typeIndex === current.length) {
+      timeout = setTimeout(() => setIsDeleting(true), holdDelay)
+    } else if (isDeleting && typeIndex === 0) {
+      timeout = setTimeout(() => {
+        setIsDeleting(false)
+        setProgramIndex((i) => (i + 1) % PROGRAMS.length)
+        setTypewriterText("")
+      }, gapDelay)
+    }
+
+    return () => {
+      if (timeout) clearTimeout(timeout)
+    }
+  }, [isDeleting, programIndex, typeIndex])
 
   const saveLocalFeedback = (entry: any) => {
     const next = [entry, ...feedbackHistory].slice(0, 20)
@@ -178,8 +269,18 @@ export default function Home() {
           </div>
         )}
         <div className="fixed inset-x-0 top-0 z-50" ref={disclaimerRef}>
-          <div className="w-full bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 p-2 text-center text-xs md:text-sm">
-            <span className="font-semibold">Disclaimer:</span> This is a personal project and is NOT officially affiliated with FEU Tech or the FEU Tech CpE Department.
+          <div className="w-full bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 p-2 text-xs md:text-sm">
+            <div className="container mx-auto px-4 flex items-center justify-between gap-4">
+              <span className="font-semibold whitespace-normal md:whitespace-nowrap">
+                Disclaimer:
+              </span>
+              <span className="flex-1 text-left leading-snug">
+                This is a personal project and is NOT officially affiliated with FEU Tech or the FEU Tech CpE Department.
+              </span>
+              <span className="signature-font credit-reveal text-sm md:text-base whitespace-nowrap inline-block">
+                Created by France Estrella
+              </span>
+            </div>
           </div>
         </div>
         <div className="container mx-auto px-4 pb-12 pt-16">
@@ -215,14 +316,22 @@ export default function Home() {
             {/* Hero Section */}
             <div className="text-center mb-8">
               <p className="text-xl text-gray-600 dark:text-gray-300 max-w-3xl mx-auto">
-                A collection of tools designed to help Computer Engineering students at FEU Tech manage their academic
-                journey more effectively.
+                <span className="block">A collection of tools designed to help</span>
+                <span className="inline-flex items-center gap-2 justify-center mt-1">
+                  <span className="typewriter" aria-live="polite">
+                    <span className="typewriter__text audiowide-regular">{typewriterText}</span>
+                    <span className="typewriter__caret" aria-hidden="true" />
+                  </span>
+                </span>
+                <span className="block mt-2">students at FEU Tech manage their academic journey more effectively.</span>
               </p>
             </div>
 
             {/* Extension Installation Guide */}
             {showExtensionCard && (
-              <Card className="relative mb-8 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20">
+              <Card
+                className={`relative mb-8 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 transition duration-300 ease-out transform ${isDismissingExtensionCard ? "opacity-0 -translate-y-2 scale-[0.98] pointer-events-none" : "opacity-100 translate-y-0 scale-100"}`}
+              >
                 <button
                   type="button"
                   className="absolute right-3 top-3 rounded-full p-1 text-blue-700 hover:bg-blue-100 dark:text-blue-200 dark:hover:bg-blue-900/40"
@@ -344,14 +453,14 @@ export default function Home() {
             {/* Tools Section */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
               {/* Course Tracker Card */}
-              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105">
+              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105 flex flex-col h-full">
                 <div className="bg-blue-700 dark:bg-blue-900 bg-gradient-to-r from-blue-600 to-blue-800 p-6">
                   <BookOpen className="h-12 w-12 text-white mb-4" />
                   <h2 className="text-2xl font-bold text-white">Course Tracker</h2>
                   <p className="text-blue-100 mt-2">Track your academic progress through the CpE curriculum</p>
                 </div>
-                <div className="p-6">
-                  <ul className="space-y-2 mb-6 text-gray-700 dark:text-gray-300">
+                <div className="p-6 flex flex-col flex-1">
+                  <ul className="space-y-2 mb-6 text-gray-700 dark:text-gray-300 flex-1">
                     <li className="flex items-start">
                       <span className="mr-2">•</span>
                       <span>Mark courses as Pending, Active, or Passed</span>
@@ -371,7 +480,7 @@ export default function Home() {
                   </ul>
                   <Link
                     href="/course-tracker"
-                    className="block w-full bg-blue-600 hover:bg-blue-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors"
+                    className="block w-full bg-blue-600 hover:bg-blue-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors mt-auto"
                   >
                     Open Course Tracker
                   </Link>
@@ -379,14 +488,14 @@ export default function Home() {
               </div>
 
               {/* Schedule Maker Card */}
-              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105">
+              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105 flex flex-col h-full">
                 <div className="bg-purple-700 dark:bg-purple-900 bg-gradient-to-r from-purple-600 to-purple-800 p-6">
                   <Calendar className="h-12 w-12 text-white mb-4" />
                   <h2 className="text-2xl font-bold text-white">Schedule Maker</h2>
                   <p className="text-purple-100 mt-2">Create your perfect class schedule with ease</p>
                 </div>
-                <div className="p-6">
-                  <ul className="space-y-2 mb-6 text-gray-700 dark:text-gray-300">
+                <div className="p-6 flex flex-col flex-1">
+                  <ul className="space-y-2 mb-6 text-gray-700 dark:text-gray-300 flex-1">
                     <li className="flex items-start">
                       <span className="mr-2">•</span>
                       <span>View available course sections</span>
@@ -406,7 +515,7 @@ export default function Home() {
                   </ul>
                   <Link
                     href="/schedule-maker"
-                    className="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors"
+                    className="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors mt-auto"
                   >
                     Open Schedule Maker
                   </Link>
@@ -414,14 +523,14 @@ export default function Home() {
               </div>
 
               {/* Academic Planner Card */}
-              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105">
+              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105 flex flex-col h-full">
                 <div className="bg-green-700 dark:bg-green-900 bg-gradient-to-r from-green-600 to-green-800 p-6">
                   <GraduationCap className="h-12 w-12 text-white mb-4" />
                   <h2 className="text-2xl font-bold text-white">Academic Planner</h2>
                   <p className="text-green-100 mt-2">Plan your path to graduation efficiently</p>
                 </div>
-                <div className="p-6">
-                  <ul className="space-y-2 mb-6 text-gray-700 dark:text-gray-300">
+                <div className="p-6 flex flex-col flex-1">
+                  <ul className="space-y-2 mb-6 text-gray-700 dark:text-gray-300 flex-1">
                     <li className="flex items-start">
                       <span className="mr-2">•</span>
                       <span>Get personalized course recommendations</span>
@@ -441,7 +550,7 @@ export default function Home() {
                   </ul>
                   <Link
                     href="/academic-planner"
-                    className="block w-full bg-green-600 hover:bg-green-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors"
+                    className="block w-full bg-green-600 hover:bg-green-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors mt-auto"
                   >
                     Open Academic Planner
                   </Link>
@@ -537,7 +646,8 @@ export default function Home() {
                 effectively. They are not officially affiliated with FEU Tech or the FEU Tech CpE Department.
               </p>
               <p className="text-gray-600 dark:text-gray-300">
-                Created by France Estrella. For feedback or suggestions, please reach out via the{" "}
+                <span className="signature-font credit-reveal inline-block mr-1">Created by France Estrella</span>
+                For feedback or suggestions, please reach out via the{" "}
                 <Button
                   variant="link"
                   className="text-blue-600 dark:text-blue-400 p-0 h-auto font-normal"
@@ -545,12 +655,37 @@ export default function Home() {
                 >
                   CpEO Page
                 </Button>
-                .
+                {/* Removed stray line */}
               </p>
             </div>
           </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {showJumpButton && (
+          <motion.div
+            key="home-floating-back-to-top"
+            initial={{ opacity: 0, y: 12, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.95 }}
+            transition={{ duration: 0.2, ease: "easeInOut" }}
+            className="pointer-events-none fixed bottom-4 right-20 z-[10000] sm:bottom-6 sm:right-24"
+          >
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="pointer-events-auto shadow-lg shadow-slate-500/30"
+              onClick={scrollToPageTop}
+              aria-label="Back to top"
+            >
+              <ArrowUp className="h-4 w-4" />
+              Back to top
+            </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </ThemeProvider>
   )
 }

@@ -5902,7 +5902,7 @@ export default function AcademicPlanner() {
       ? "text-blue-700"
       : "text-emerald-600"
     : "text-slate-600"
-  const hoverButtonLabel = planDirty ? "Save Plan" : "Already saved!"
+  const hoverButtonLabel = planDirty || !hasSavedPlan ? "Save Plan" : "Already saved!"
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
@@ -5995,7 +5995,8 @@ export default function AcademicPlanner() {
                   >
                     <div
                       className={cn(
-                        "flex flex-col items-start justify-center gap-0.5 px-3 py-2 w-[15rem] min-h-[3.25rem] rounded-md border border-slate-200 bg-white/60 text-sm dark:border-slate-700 dark:bg-slate-800/60 transition-all duration-200",
+                        "flex flex-col justify-center gap-0.5 px-3 py-2 w-[15rem] min-h-[3.25rem] rounded-md border border-slate-200 bg-white/60 text-sm dark:border-slate-700 dark:bg-slate-800/60 transition-all duration-200",
+                        !planDirty && !hasSavedPlan && !manualSaveMessage ? "items-center text-center" : "items-start",
                         saveOverlayVisible && "opacity-0 -translate-y-1",
                       )}
                     >
@@ -8367,7 +8368,7 @@ export default function AcademicPlanner() {
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: 12, scale: 0.95 }}
                   transition={{ duration: 0.2, ease: "easeInOut" }}
-                  className="pointer-events-none fixed bottom-4 right-32 z-[10000] sm:bottom-6 sm:right-40"
+                  className="pointer-events-none fixed bottom-4 right-20 z-[10000] sm:bottom-6 sm:right-24"
                 >
                   <Button
                     type="button"

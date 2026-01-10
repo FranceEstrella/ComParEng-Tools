@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -11,14 +11,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
+import { getFeedbackContextHint } from "@/lib/feedback-context"
 
 interface FeedbackDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   defaultSubject?: string
+  contextHint?: string
 }
 
-export default function FeedbackDialog({ open, onOpenChange, defaultSubject = "" }: FeedbackDialogProps) {
+export default function FeedbackDialog({ open, onOpenChange, defaultSubject = "", contextHint }: FeedbackDialogProps) {
   const [fbName, setFbName] = useState("")
   const [fbSubject, setFbSubject] = useState(defaultSubject)
   const [fbMessage, setFbMessage] = useState("")
@@ -27,6 +29,8 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
   const [statusMessage, setStatusMessage] = useState("")
   const [isCompactLayout, setIsCompactLayout] = useState(false)
   const [historyExpanded, setHistoryExpanded] = useState(true)
+  const consoleBufferRef = useRef<string[]>([])
+  const [autoContext, setAutoContext] = useState("")
   const subjectMissing = !fbSubject.trim()
   const messageMissing = fbMessage.trim().length < 10
 
@@ -38,13 +42,63 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
   }, [])
 
   useEffect(() => {
+    const originalLog = console.log
+    const originalWarn = console.warn
+    const originalError = console.error
+    const originalInfo = console.info
+    const append = (label: string, args: any[]) => {
+      const ts = new Date().toISOString()
+      const msg = args.map((a) => {
+        if (typeof a === "string") return a
+        try {
+          return JSON.stringify(a)
+        } catch {
+          return String(a)
+        }
+      })
+      consoleBufferRef.current = [...consoleBufferRef.current.slice(-30), `${ts} [${label}] ${msg.join(" ")}`]
+    }
+
+    console.log = (...args) => {
+      append("log", args)
+      originalLog(...args)
+    }
+    console.warn = (...args) => {
+      append("warn", args)
+      originalWarn(...args)
+    }
+    console.error = (...args) => {
+      append("error", args)
+      originalError(...args)
+    }
+    console.info = (...args) => {
+      append("info", args)
+      originalInfo(...args)
+    }
+
+    return () => {
+      console.log = originalLog
+      console.warn = originalWarn
+      console.error = originalError
+      console.info = originalInfo
+    }
+  }, [])
+
+  useEffect(() => {
     // Reset fields whenever reopened
     if (open) {
       setStatus("idle")
       setStatusMessage("")
       setFbSubject(defaultSubject || "")
+      const path = typeof window !== "undefined" ? window.location.pathname : "unknown"
+      const title = typeof document !== "undefined" ? document.title : ""
+      const { hint } = getFeedbackContextHint()
+      const action = contextHint || hint || "performed an action before reporting"
+      const starter = `Context: ${title || "ComParEng Tools"} at ${path}\nAction: ${action}\n\nIssue: `
+      setAutoContext(starter)
+      setFbMessage((prev) => (prev.trim().length > 0 ? prev : starter))
     }
-  }, [open, defaultSubject])
+  }, [open, defaultSubject, contextHint])
 
   useEffect(() => {
     const updateLayout = () => {
@@ -66,8 +120,21 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
     } catch {}
   }
 
+  const buildConsoleBlock = () => {
+    const logs = consoleBufferRef.current
+    if (!logs.length) return "(no recent console logs captured)"
+    return logs.slice(-20).join("\n")
+  }
+
+  const buildMessageWithContext = () => {
+    const path = typeof window !== "undefined" ? window.location.href : "unknown"
+    const ua = typeof navigator !== "undefined" ? navigator.userAgent : ""
+    const contextBlock = `\n\n--- Auto-context ---\nLocation: ${path}\nUser-Agent: ${ua}\nDialog: feedback opened via floating button\n--- Console (recent) ---\n${buildConsoleBlock()}`
+    return `${fbMessage}${contextBlock}`
+  }
+
   const copyFeedback = async () => {
-    const content = `To: dozey.help@gmail.com\nSubject: ${fbSubject}\n\nFrom: ${fbName}\n\n${fbMessage}`
+    const content = `To: dozey.help@gmail.com\nSubject: ${fbSubject}\n\nFrom: ${fbName}\n\n${buildMessageWithContext()}`
     try {
       await navigator.clipboard.writeText(content)
       saveLocalFeedback({ name: fbName, subject: fbSubject, message: fbMessage, date: new Date().toISOString(), sentVia: "copied" })
@@ -80,7 +147,7 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
   }
 
   const sendFeedbackMail = () => {
-    const body = encodeURIComponent(`From: ${fbName}\n\n${fbMessage}`)
+    const body = encodeURIComponent(`From: ${fbName}\n\n${buildMessageWithContext()}`)
     const mailto = `mailto:dozey.help@gmail.com?subject=${encodeURIComponent(fbSubject)}&body=${body}`
     saveLocalFeedback({ name: fbName, subject: fbSubject, message: fbMessage, date: new Date().toISOString(), sentVia: "mailto" })
     window.location.href = mailto
@@ -93,7 +160,7 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
       const res = await fetch("/api/send-feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: fbName, subject: fbSubject, message: fbMessage }),
+        body: JSON.stringify({ name: fbName, subject: fbSubject, message: buildMessageWithContext() }),
       })
       const json = await res.json()
       if (json?.success) {
@@ -115,7 +182,11 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={cn("max-w-lg", isCompactLayout ? "w-[min(92vw,24rem)] p-4" : "p-6")}
+      <DialogContent
+        className={cn(
+          "max-w-lg overflow-hidden",
+          isCompactLayout ? "w-[min(92vw,24rem)] p-4" : "w-[min(96vw,34rem)] p-6"
+        )}
       >
         <DialogHeader>
           <DialogTitle>Send Feedback</DialogTitle>
@@ -131,13 +202,13 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
               value={fbMessage}
               onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setFbMessage(e.target.value)}
               className={cn(
-                "w-full p-2 border rounded bg-white dark:bg-gray-800 dark:border-gray-700",
+                "w-full p-2 border rounded bg-white dark:bg-gray-800 dark:border-gray-700 resize-none break-words",
                 isCompactLayout ? "h-28" : "h-36"
               )}
             />
             <div className={cn(
-              "flex gap-2 items-center",
-              isCompactLayout ? "flex-wrap justify-center" : "justify-end"
+              "flex gap-2 items-center flex-wrap",
+              isCompactLayout ? "justify-center" : "justify-end"
             )}>
               <Button variant="outline" onClick={copyFeedback} disabled={status === "sending"}>Copy & Send Manually</Button>
               <Button onClick={sendFeedbackMail} disabled={status === "sending"}>Open Mail Client</Button>
@@ -180,7 +251,7 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
                     )}
                   >
                     {feedbackHistory.slice(0, isCompactLayout ? 3 : 5).map((h, i) => (
-                      <li key={i} className="border rounded p-2 bg-gray-50 dark:bg-gray-800">
+                      <li key={i} className="border rounded p-2 bg-gray-50 dark:bg-gray-800 break-words">
                         <div className="text-xs text-gray-500">{new Date(h.date).toLocaleString()} • {h.sentVia}</div>
                         <div className="font-medium">{h.subject}</div>
                         <div className="text-sm text-gray-600 dark:text-gray-300 truncate">{h.message}</div>

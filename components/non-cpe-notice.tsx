@@ -30,11 +30,18 @@ export default function NonCpeNotice({ compact = false, onReportIssue, onNavigat
   const pathname = usePathname()
   const router = useRouter()
   const [showNotice, setShowNotice] = useState(true)
+  const [isDismissing, setIsDismissing] = useState(false)
+  const dismissingRef = React.useRef(false)
+  const hideTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     try {
       const dismissed = localStorage.getItem(NON_CPE_STORAGE_KEY) === "true"
       setShowNotice(!dismissed)
+      if (!dismissed) {
+        setIsDismissing(false)
+        dismissingRef.current = false
+      }
     } catch {
       // ignore storage failures
     }
@@ -42,15 +49,31 @@ export default function NonCpeNotice({ compact = false, onReportIssue, onNavigat
 
   useEffect(() => {
     if (typeof window === "undefined") return
-    const handleGlobalDismiss = () => setShowNotice(false)
+    const handleGlobalDismiss = () => {
+      if (dismissingRef.current || !showNotice) return
+      dismissingRef.current = true
+      setIsDismissing(true)
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+      hideTimerRef.current = setTimeout(() => setShowNotice(false), 220)
+    }
     window.addEventListener(NON_CPE_NOTICE_DISMISS_EVENT, handleGlobalDismiss)
     return () => window.removeEventListener(NON_CPE_NOTICE_DISMISS_EVENT, handleGlobalDismiss)
-  }, [])
+  }, [showNotice])
 
   const dismissNotice = () => {
-    setShowNotice(false)
+    if (dismissingRef.current || isDismissing || !showNotice) return
+    dismissingRef.current = true
+    setIsDismissing(true)
     markNonCpeNoticeDismissed()
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    hideTimerRef.current = setTimeout(() => setShowNotice(false), 220)
   }
+
+  useEffect(() => {
+    return () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    }
+  }, [])
 
   const goToImport = (event?: React.MouseEvent<HTMLElement>) => {
     try {
@@ -77,7 +100,9 @@ export default function NonCpeNotice({ compact = false, onReportIssue, onNavigat
 
   if (!showNotice) return null
   return (
-    <Alert className="relative mb-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200 pr-10">
+    <Alert
+      className={`relative mb-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200 pr-10 transition duration-300 ease-out transform ${isDismissing ? "opacity-0 -translate-y-2 scale-[0.98] pointer-events-none" : "opacity-100 translate-y-0 scale-100"}`}
+    >
       <button
         type="button"
         className="absolute right-3 top-3 rounded-full p-1 text-blue-700 hover:bg-blue-100 dark:text-blue-200 dark:hover:bg-blue-900/40"

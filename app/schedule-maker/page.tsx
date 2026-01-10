@@ -6,12 +6,14 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  pointerWithin,
   DragOverlay,
   DragStartEvent,
   DragEndEvent,
   DragCancelEvent,
   useDroppable,
   useDraggable,
+  type Modifier,
 } from "@dnd-kit/core"
 import { createPortal } from "react-dom"
 import { Button } from "@/components/ui/button"
@@ -30,6 +32,9 @@ import {
   FileWarning,
   ExternalLink,
   Loader2,
+  Undo,
+  Redo,
+  History,
   Check,
   Calendar,
   Download,
@@ -38,6 +43,7 @@ import {
   Sun,
   Moon,
   X,
+  ChevronDown,
   Settings,
   Search,
 } from "lucide-react"
@@ -73,6 +79,7 @@ import html2canvas from "html2canvas"
 import { format } from "date-fns"
 import { AnimatePresence, motion } from "framer-motion"
 import { Checkbox } from "@/components/ui/checkbox"
+import { useMemo } from "react"
 
 // Time slot constants
 const DAYS = ["M", "Tu", "W", "Th", "F", "S"] as const;
@@ -301,7 +308,20 @@ interface ScheduleVersion {
   name: string
   selectedCourses: SelectedCourse[]
   customizations: Record<string, CourseCustomization>
+   courseDefaults?: Record<string, CourseCustomization>
   scheduleTitle?: string
+}
+
+interface HistoryEntry {
+  id: string
+  label: string
+  timestamp: number
+  state: {
+    selectedCourses: SelectedCourse[]
+    customizations: Record<string, CourseCustomization>
+    courseDefaults: Record<string, CourseCustomization>
+    scheduleTitle: string
+  }
 }
 
 type PairingAction = "add-course" | "remove-course" | "add-section" | "remove-section"
@@ -664,6 +684,15 @@ const getContrastColor = (hexColor: string): string => {
   return luminance > 0.5 ? "#000000" : "#ffffff"
 }
 
+const hexToRgba = (hexColor: string, alpha = 1): string => {
+  const normalized = hexColor.startsWith("#") ? hexColor.slice(1) : hexColor
+  if (normalized.length !== 6) return `rgba(0,0,0,${alpha})`
+  const r = parseInt(normalized.slice(0, 2), 16)
+  const g = parseInt(normalized.slice(2, 4), 16)
+  const b = parseInt(normalized.slice(4, 6), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
 const lightenHexColor = (hexColor: string, amount = 0.18): string => {
   const normalized = hexColor.startsWith("#") ? hexColor.slice(1) : hexColor
   const num = parseInt(normalized, 16)
@@ -688,6 +717,7 @@ export default function ScheduleMaker() {
   const [trackerCourses, setTrackerCourses] = useState<TrackerCourse[]>([])
   const [selectedCourses, setSelectedCourses] = useState<SelectedCourse[]>([])
   const [customizations, setCustomizations] = useState<Record<string, CourseCustomization>>({})
+  const [courseDefaults, setCourseDefaults] = useState<Record<string, CourseCustomization>>({})
   const [customColorInputs, setCustomColorInputs] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -717,6 +747,11 @@ export default function ScheduleMaker() {
   const [showLockedCourses, setShowLockedCourses] = useState(false)
   const [importExportMounted, setImportExportMounted] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; scope: "chip" | "expanded" } | null>(null)
+  const [collapsedCourses, setCollapsedCourses] = useState<Record<string, boolean>>({})
+  const sectionsAnimatedRef = useRef<Record<string, boolean>>({})
+  const searchPanelRestoreRef = useRef(false)
+  const [dragOverlayCourse, setDragOverlayCourse] = useState<{ code: string; name: string; credits: number; sections: number } | null>(null)
+  const dragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
   const hasTrackerProgress = trackerCourses.length > 0
 
   useEffect(() => {
@@ -724,6 +759,20 @@ export default function ScheduleMaker() {
       setShowLockedCourses(false)
     }
   }, [hasTrackerProgress, showLockedCourses])
+
+  const AnimatedNumber = ({ value }: { value: number }) => (
+    <motion.span
+      key={value}
+      initial={{ opacity: 0.35 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
+      style={{ display: "inline-block", minWidth: "2ch" }}
+      className="tabular-nums"
+    >
+      {value}
+    </motion.span>
+  )
 
   const initialCourseById = React.useMemo(() => {
     const map = new Map<string, CourseDetail>()
@@ -865,6 +914,13 @@ export default function ScheduleMaker() {
   const [editingCourse, setEditingCourse] = useState<SelectedCourse | null>(null)
   const [tempCustomTitle, setTempCustomTitle] = useState("")
   const [tempCustomColor, setTempCustomColor] = useState(DEFAULT_CUSTOM_COLOR)
+  const [applyCustomizationToCourse, setApplyCustomizationToCourse] = useState(false)
+  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [historyIndex, setHistoryIndex] = useState<number>(-1)
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false)
+  const pendingHistoryLabelRef = useRef<string | null>(null)
+  const suppressHistoryRef = useRef(false)
+  const historyIndexRef = useRef<number>(-1)
   const [currentTerm, setCurrentTerm] = useState<TermName>(() => deriveTermFromDate())
   const [academicYearLabel, setAcademicYearLabel] = useState<string>(() => deriveAcademicYearLabel())
   const [currentYearLevel, setCurrentYearLevel] = useState<number>(1)
@@ -967,6 +1023,20 @@ export default function ScheduleMaker() {
     },
     [displayAliasMap],
   )
+
+  const snapshotState = useCallback(
+    () => ({
+      selectedCourses: selectedCourses.map((c) => ({ ...c })),
+      customizations: { ...customizations },
+      courseDefaults: { ...courseDefaults },
+      scheduleTitle,
+    }),
+    [customizations, courseDefaults, scheduleTitle, selectedCourses],
+  )
+
+  const pushHistory = useCallback((label: string) => {
+    pendingHistoryLabelRef.current = label
+  }, [])
   const [importErrorDialog, setImportErrorDialog] = useState<ImportDialogConfig | null>(null)
   const [staleImportNotice, setStaleImportNotice] = useState<string | null>(null)
   const [icsDialogOpen, setIcsDialogOpen] = useState(false)
@@ -1106,8 +1176,45 @@ export default function ScheduleMaker() {
   }, [])
 
   useEffect(() => {
+    if (suppressHistoryRef.current) {
+      suppressHistoryRef.current = false
+      pendingHistoryLabelRef.current = null
+      return
+    }
+
+    if (historyIndexRef.current === -1 && !pendingHistoryLabelRef.current) {
+      pendingHistoryLabelRef.current = "Initial state"
+    }
+
+    if (!pendingHistoryLabelRef.current) return
+
+    const label = pendingHistoryLabelRef.current
+    pendingHistoryLabelRef.current = null
+    const entry: HistoryEntry = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      label,
+      timestamp: Date.now(),
+      state: snapshotState(),
+    }
+
+    setHistory((prev) => {
+      const base = historyIndexRef.current >= 0 ? prev.slice(0, historyIndexRef.current + 1) : []
+      const next = [...base, entry]
+      const trimmed = next.slice(-50)
+      const newIndex = trimmed.length - 1
+      historyIndexRef.current = newIndex
+      setHistoryIndex(newIndex)
+      return trimmed
+    })
+  }, [customizations, courseDefaults, scheduleTitle, selectedCourses, snapshotState])
+
+  useEffect(() => {
     setImportExportMounted(true)
   }, [])
+
+  useEffect(() => {
+    historyIndexRef.current = historyIndex
+  }, [historyIndex])
 
   useEffect(() => {
     const preferences = loadTrackerPreferences()
@@ -1176,6 +1283,7 @@ export default function ScheduleMaker() {
         name: existing?.versions?.[0]?.name || "Version A",
         selectedCourses,
         customizations,
+        courseDefaults,
         scheduleTitle,
       }
 
@@ -1183,7 +1291,7 @@ export default function ScheduleMaker() {
       const activeVersionId = existing?.activeVersionId || versions[0].id
       const normalizedVersions = versions.map((version) =>
         version.id === activeVersionId
-            ? { ...version, selectedCourses, customizations, scheduleTitle }
+          ? { ...version, selectedCourses, customizations, courseDefaults, scheduleTitle }
           : version,
       )
 
@@ -1211,6 +1319,7 @@ export default function ScheduleMaker() {
         setSelectedCourses(target.selectedCourses.map(normalizeSelectedCourse))
         hasHydratedVersionRef.current = true
         setCustomizations(target.customizations || {})
+        setCourseDefaults(target.courseDefaults || {})
         const nextTitle = target.scheduleTitle || DEFAULT_SCHEDULE_TITLE
         setScheduleTitle(nextTitle)
         setScheduleTitleDraft(nextTitle)
@@ -1234,14 +1343,19 @@ export default function ScheduleMaker() {
         const nextId = `v${versions.length + 1}`
         const name = `Version ${String.fromCharCode(65 + versions.length)}`
         const basePayload = mode === "duplicate"
-          ? { selectedCourses, customizations }
-          : { selectedCourses: [] as SelectedCourse[], customizations: {} as Record<string, CourseCustomization> }
+          ? { selectedCourses, customizations, courseDefaults }
+          : {
+              selectedCourses: [] as SelectedCourse[],
+              customizations: {} as Record<string, CourseCustomization>,
+              courseDefaults: {} as Record<string, CourseCustomization>,
+            }
 
         const nextVersion: ScheduleVersion = {
           id: nextId,
           name,
           selectedCourses: basePayload.selectedCourses,
           customizations: basePayload.customizations,
+          courseDefaults: basePayload.courseDefaults,
           scheduleTitle: mode === "duplicate" ? scheduleTitle : DEFAULT_SCHEDULE_TITLE,
         }
 
@@ -1287,6 +1401,7 @@ export default function ScheduleMaker() {
         if (activeVersion) {
           setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
           setCustomizations(activeVersion.customizations || {})
+          setCourseDefaults(activeVersion.courseDefaults || {})
           const nextTitle = activeVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE
           setScheduleTitle(nextTitle)
           setScheduleTitleDraft(nextTitle)
@@ -1378,6 +1493,9 @@ export default function ScheduleMaker() {
             if (parsed.customizations) {
               setCustomizations(parsed.customizations || {})
             }
+            if (parsed.courseDefaults) {
+              setCourseDefaults(parsed.courseDefaults || {})
+            }
           }
         }
 
@@ -1414,6 +1532,7 @@ export default function ScheduleMaker() {
         if (activeVersion) {
           setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
           setCustomizations(activeVersion.customizations || {})
+          setCourseDefaults(activeVersion.courseDefaults || {})
         }
       }
     } catch (err) {
@@ -1437,6 +1556,7 @@ export default function ScheduleMaker() {
             version: 1,
             selectedCourses,
             customizations,
+            courseDefaults,
             scheduleTitle,
             curriculumSignature: latestSignature,
           }),
@@ -1445,7 +1565,7 @@ export default function ScheduleMaker() {
         console.error("Error saving to localStorage:", err)
       }
     }
-  }, [selectedCourses, customizations, isClient, curriculumSignature, scheduleTitle])
+  }, [selectedCourses, customizations, courseDefaults, isClient, curriculumSignature, scheduleTitle])
 
   const normalizeSelectedCourse = (course: any): SelectedCourse => {
     const rangeSource = course?.meetingTime ?? `${course?.timeStart ?? ""}-${course?.timeEnd ?? ""}`
@@ -1540,6 +1660,7 @@ export default function ScheduleMaker() {
       hasHydratedVersionRef.current = true
       setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
       setCustomizations(activeVersion.customizations || {})
+      setCourseDefaults(activeVersion.courseDefaults || {})
       loadingVersionRef.current = false
       return
     }
@@ -1555,8 +1676,14 @@ export default function ScheduleMaker() {
 
     if (currentCustomizationsStr !== versionCustomizationsStr) {
       ensureActiveVersion()
-    } else if (selectedCourses.length === 0 && activeVersion.selectedCourses.length === 0) {
-      hasHydratedVersionRef.current = true
+    } else {
+      const currentDefaultsStr = JSON.stringify(courseDefaults || {})
+      const versionDefaultsStr = JSON.stringify(activeVersion.courseDefaults || {})
+      if (currentDefaultsStr !== versionDefaultsStr) {
+        ensureActiveVersion()
+      } else if (selectedCourses.length === 0 && activeVersion.selectedCourses.length === 0) {
+        hasHydratedVersionRef.current = true
+      }
     }
   }, [
     activeTermYearKey,
@@ -1565,6 +1692,7 @@ export default function ScheduleMaker() {
     isClient,
     normalizeSelectedCourse,
     selectedCourses,
+    courseDefaults,
     versionStore,
   ])
 
@@ -1968,10 +2096,20 @@ export default function ScheduleMaker() {
 
     console.log('[addCourse] About to set selected courses. Current count:', selectedCourses.length)
     console.log('[addCourse] New course object:', newCourse)
-    
+    let added = false
+
+    // Apply per-course default customization to this new section if present
+    const key = `${course.courseCode}-${course.section}`
+    const courseDefault = courseDefaults[canonicalCode]
+    if (courseDefault) {
+      setCustomizations((prevCust) => (prevCust[key]
+        ? prevCust
+        : { ...prevCust, [key]: { ...courseDefault } }))
+    }
+
     setSelectedCourses((prev) => {
       console.log('[addCourse] State update callback - prev length:', prev.length)
-      
+
       // Check for duplicates using the latest state (prev), not the stale closure
       const existingSection = prev.find(
         (selected) => 
@@ -1983,11 +2121,16 @@ export default function ScheduleMaker() {
         console.log('[addCourse] Section already exists in state, returning unchanged')
         return prev
       }
-      
+
       const next = [...prev, newCourse]
       console.log('[addCourse] After add - next length:', next.length)
+      added = true
       return next
     })
+
+    if (added) {
+      pushHistory(`Added ${course.courseCode} ${course.section}`)
+    }
   }
 
   const courseCatalog = React.useMemo(() => {
@@ -2044,6 +2187,50 @@ export default function ScheduleMaker() {
       .sort((a, b) => a.code.localeCompare(b.code))
   }, [availableCourses, getAvailabilityTag, readinessByCanonical])
 
+  const courseCatalogByCode = useMemo(() => {
+    const map = new Map<string, CatalogCourse>()
+    courseCatalog.forEach((course) => {
+      map.set(getCanonicalCourseCode(course.code), course)
+    })
+    return map
+  }, [courseCatalog])
+
+  const isLabCourse = useCallback((course?: CatalogCourse | null) => {
+    if (!course) return false
+    const name = course.name || ""
+    return /lab|laboratory/i.test(name)
+  }, [])
+
+  const isLectureCourse = useCallback((course?: CatalogCourse | null) => {
+    if (!course) return false
+    const name = course.name || ""
+    return /lec|lecture/i.test(name)
+  }, [])
+
+  const pairableCourses = useMemo(() => {
+    const set = new Set<string>()
+    courseCatalog.forEach((course) => {
+      const canonical = getCanonicalCourseCode(course.code)
+      if (!canonical.endsWith("L")) return
+      const base = canonical.slice(0, -1)
+      const baseCourse = courseCatalogByCode.get(base)
+      if (!baseCourse) return
+
+      const labCourse = course
+      const hasLabLabel = isLabCourse(labCourse) || isLabCourse(baseCourse)
+      const hasLectureLabel = isLectureCourse(baseCourse) || isLectureCourse(labCourse)
+      const hasLabSections = Array.isArray(labCourse.sections) && labCourse.sections.length > 0
+
+      if (hasLabLabel && hasLabSections) {
+        if (hasLectureLabel || baseCourse.code === base) {
+          set.add(canonical)
+          set.add(base)
+        }
+      }
+    })
+    return set
+  }, [courseCatalog, courseCatalogByCode, isLabCourse, isLectureCourse])
+
   const findPairedCanonical = useCallback(
     (canonical: string): string | null => {
       if (!canonical) return null
@@ -2051,13 +2238,22 @@ export default function ScheduleMaker() {
       const base = isLab ? canonical.slice(0, -1) : canonical
       const pair = isLab ? base : `${base}L`
       if (!pair || pair === canonical) return null
-      const exists = courseCatalog.some((course) => getCanonicalCourseCode(course.code) === pair)
-      return exists ? pair : null
+
+      if (!pairableCourses.has(canonical) || !pairableCourses.has(pair)) {
+        return null
+      }
+
+      return pair
     },
-    [courseCatalog],
+    [pairableCourses],
   )
 
   const closePairingPrompt = () => setPairingPrompt({ open: false })
+
+  const toggleCourseCollapse = (courseCode: string) => {
+    const canonical = getCanonicalCourseCode(courseCode)
+    setCollapsedCourses((prev) => ({ ...prev, [canonical]: !prev[canonical] }))
+  }
 
   const handlePairingConfirm = () => {
     if (!pairingPrompt.action) {
@@ -2088,6 +2284,14 @@ export default function ScheduleMaker() {
         const next = new Set(prev)
         removals.forEach((code) => next.delete(code))
         return Array.from(next)
+      })
+
+      setCollapsedCourses((prev) => {
+        const next = { ...prev }
+        removals.forEach((code) => {
+          delete next[code]
+        })
+        return next
       })
 
       setSelectedCourses((prevCourses) => {
@@ -2174,6 +2378,14 @@ export default function ScheduleMaker() {
           const next = new Set(prev)
           removals.forEach((code) => next.delete(code))
           return Array.from(next)
+        })
+
+        setCollapsedCourses((prev) => {
+          const next = { ...prev }
+          removals.forEach((code) => {
+            delete next[code]
+          })
+          return next
         })
 
         setSelectedCourses((prevCourses) => {
@@ -2265,6 +2477,7 @@ export default function ScheduleMaker() {
   )
 
   const toggleSectionSelection = (section: CourseSection, checked: boolean) => {
+    console.log('[toggleSectionSelection] section:', section.courseCode, section.section, 'checked:', checked)
     if (checked) {
       const pairSection = findLabPairSection(section)
       const normalizeSection = (value: string) => (value || "").trim().toUpperCase()
@@ -2361,10 +2574,44 @@ export default function ScheduleMaker() {
       const data = event.active?.data?.current as DragCourseData | undefined
       if (!data || data.type !== "course") return
 
+      const activatorEvent = event.activatorEvent as MouseEvent | TouchEvent | PointerEvent
+      const point = activatorEvent && "clientX" in activatorEvent
+        ? { x: activatorEvent.clientX, y: activatorEvent.clientY }
+        : activatorEvent && "touches" in activatorEvent && activatorEvent.touches.length
+          ? { x: activatorEvent.touches[0].clientX, y: activatorEvent.touches[0].clientY }
+          : null
+      const rect = event.active.rect.current?.translated || event.active.rect.current?.initial
+
+      // If we're dragging from the top of the search list (often near viewport top), the initial rect can lag;
+      // fallback to zero offset when the point is above the rect to avoid a large jump.
+      if (point && rect) {
+        const rawOffset = {
+          x: point.x - rect.left,
+          y: point.y - rect.top,
+        }
+        dragOffsetRef.current = rawOffset.y < 0 ? { x: 0, y: 0 } : rawOffset
+      } else {
+        dragOffsetRef.current = { x: 0, y: 0 }
+      }
+
       setDragCourseCode(data.canonicalCode)
+
+      if (data.source === "search") {
+        searchPanelRestoreRef.current = searchPanelVisible
+        if (searchPanelVisible) {
+          setSearchPanelVisible(false)
+        }
+      }
 
       const course = courseCatalog.find((c) => c.code === data.canonicalCode)
       if (!course) return
+
+      setDragOverlayCourse({
+        code: course.code,
+        name: course.name,
+        credits: course.credits,
+        sections: course.sections.length,
+      })
 
       const previews = course.sections
         .map((section) => buildSectionPreview(section))
@@ -2378,40 +2625,58 @@ export default function ScheduleMaker() {
   const handleDragEndEvent = useCallback(
     (event: DragEndEvent) => {
       const activeData = event.active?.data?.current as (DragCourseData & { currentSectionKey?: string }) | undefined
-      const overSectionKey = (event.over?.data?.current as { sectionKey?: string } | undefined)?.sectionKey
+      const overId = event.over?.id
+      let derivedSectionKey: string | undefined
+      if (typeof overId === "string") {
+        const segments = overId.split("__")
+        if (segments.length >= 2) {
+          derivedSectionKey = `${segments[0]}__${segments[1]}`
+        }
+      }
 
-      if (activeData?.type === "course") {
-        if (overSectionKey) {
-          const target = dragPreviewSections.find((entry) => entry.sectionKey === overSectionKey)
-          if (target) {
-            if (activeData.source === "calendar") {
-              const canonical = activeData.canonicalCode
-              const toRemove = selectedCourses.filter(
-                (course) => getSelectedCourseCanonicalCode(course) === canonical,
-              )
-              toRemove.forEach((course) => removeCourse(course.courseCode, course.section))
-            }
+      const overSectionKey =
+        (event.over?.data?.current as { sectionKey?: string } | undefined)?.sectionKey || derivedSectionKey
 
-            toggleSectionSelection(target.section, true)
-            setSearchPanelVisible(false)
-          }
-        } else if (activeData.source === "calendar" && activeData.currentSectionKey) {
-          const [courseCode, section] = activeData.currentSectionKey.split("-")
-          if (courseCode && section) {
-            const existing = selectedCourses.find(
-              (course) => course.courseCode === courseCode && course.section === section,
-            )
-            if (existing) {
-              toggleSectionSelection(existing, false)
-            } else {
-              removeCourse(courseCode, section)
-            }
+      console.log('[dragEnd] activeData:', activeData, 'over:', event.over?.id, 'overData:', event.over?.data?.current, 'derivedKey:', overSectionKey)
+
+      const target = overSectionKey
+        ? dragPreviewSections.find((entry) => entry.sectionKey === overSectionKey)
+        : null
+
+      if (target) {
+        if (activeData?.source === "calendar") {
+          const canonical = activeData.canonicalCode
+          const toRemove = selectedCourses.filter(
+            (course) => getSelectedCourseCanonicalCode(course) === canonical,
+          )
+          toRemove.forEach((course) => removeCourse(course.courseCode, course.section))
+        }
+
+        toggleSectionSelection(target.section, true)
+        setSearchPanelVisible(false)
+      } else if (activeData?.source === "calendar" && activeData.currentSectionKey) {
+        const [courseCode, section] = activeData.currentSectionKey.split("-")
+        if (courseCode && section) {
+          const existing = selectedCourses.find(
+            (course) => course.courseCode === courseCode && course.section === section,
+          )
+          if (existing) {
+            toggleSectionSelection(existing, false)
+          } else {
+            removeCourse(courseCode, section)
           }
         }
       }
 
       setDragCourseCode(null)
       setDragPreviewSections([])
+      setDragOverlayCourse(null)
+
+      if (searchPanelRestoreRef.current) {
+        setSearchPanelVisible(true)
+      }
+      searchPanelRestoreRef.current = false
+      dragOffsetRef.current = { x: 0, y: 0 }
     },
     [dragPreviewSections, removeCourse, selectedCourses, toggleSectionSelection],
   )
@@ -2420,15 +2685,27 @@ export default function ScheduleMaker() {
     (_event: DragCancelEvent) => {
       setDragCourseCode(null)
       setDragPreviewSections([])
+      setDragOverlayCourse(null)
+      if (searchPanelRestoreRef.current) {
+        setSearchPanelVisible(true)
+      }
+      searchPanelRestoreRef.current = false
+      dragOffsetRef.current = { x: 0, y: 0 }
     },
     [],
   )
 
   // Remove a course from selected courses
   function removeCourse(courseCode: string, section: string) {
-    setSelectedCourses((prev) =>
-      prev.filter((course) => !(course.courseCode === courseCode && course.section === section)),
-    )
+    let removed = false
+    setSelectedCourses((prev) => {
+      const next = prev.filter((course) => {
+        const keep = !(course.courseCode === courseCode && course.section === section)
+        if (!keep) removed = true
+        return keep
+      })
+      return next
+    })
 
     const key = `${courseCode}-${section}`
     setCustomizations((prev) => {
@@ -2443,12 +2720,16 @@ export default function ScheduleMaker() {
       delete next[key]
       return next
     })
+
+    if (removed) {
+      pushHistory(`Removed ${courseCode} ${section}`)
+    }
   }
 
   const buildSelectedCourseExportPayload = (): SelectedCourseExportPayload => {
     const courses: ExportedSelectedCourse[] = selectedCourses.map((course) => {
       const key = `${course.courseCode}-${course.section}`
-      const customization = customizations[key] || {}
+      const customization = customizations[key] || courseDefaults[getSelectedCourseCanonicalCode(course)] || {}
       return {
         courseCode: course.courseCode,
         section: course.section,
@@ -2764,6 +3045,12 @@ export default function ScheduleMaker() {
 
     setStartDate(chosenDate)
     downloadICSFile(chosenDate)
+    // Also open Google Calendar export/settings so users can import immediately.
+    try {
+      window.open("https://calendar.google.com/calendar/u/0/r/settings/export", "_blank")
+    } catch {
+      // ignore tab open failures
+    }
     setIcsDialogOpen(false)
   }
 
@@ -2871,6 +3158,16 @@ export default function ScheduleMaker() {
     setAwaitingDataDialogOpen(true)
     setNoDataDialogPaused(true)
   }
+
+  const openSolarOSESWindow = useCallback(() => {
+    if (typeof window === "undefined") return
+    const url = "https://solar.feutech.edu.ph/course/registration"
+    const features = "noopener,noreferrer,width=1280,height=900,left=120,top=80"
+    const popup = window.open(url, "_blank", features)
+    if (popup && typeof popup.focus === "function") {
+      popup.focus()
+    }
+  }, [])
 
   const handleNoDataDialogToggle = (checked: boolean) => {
     setHideNoDataDialog(checked)
@@ -3603,25 +3900,97 @@ const downloadScheduleImage = async () => {
   // Save course customization
   const saveCustomization = () => {
     if (!editingCourse) return
-    
+    const canonical = getSelectedCourseCanonicalCode(editingCourse)
     const key = `${editingCourse.courseCode}-${editingCourse.section}`
-    setCustomizations(prev => ({
-      ...prev,
-      [key]: {
-        customTitle: tempCustomTitle || getDefaultSelectedCourseTitle(editingCourse, getDisplayCode),
-        color: tempCustomColor,
+    const payload: CourseCustomization = {
+      customTitle: tempCustomTitle || getDefaultSelectedCourseTitle(editingCourse, getDisplayCode),
+      color: tempCustomColor,
+    }
+
+    setCustomizations((prev) => {
+      const next = { ...prev, [key]: payload }
+      if (applyCustomizationToCourse) {
+        selectedCourses.forEach((course) => {
+          if (getSelectedCourseCanonicalCode(course) === canonical) {
+            const targetKey = `${course.courseCode}-${course.section}`
+            next[targetKey] = { ...payload }
+          }
+        })
       }
-    }))
+      return next
+    })
+
+    if (applyCustomizationToCourse) {
+      setCourseDefaults((prev) => ({
+        ...prev,
+        [canonical]: payload,
+      }))
+    }
+
+    pushHistory(`Customized ${editingCourse.courseCode} ${editingCourse.section}${applyCustomizationToCourse ? ' (all sections)' : ''}`)
     setEditingCourse(null)
   }
+
+  const openCustomization = useCallback(
+    (course: SelectedCourse) => {
+      const key = `${course.courseCode}-${course.section}`
+      const custom = customizations[key]
+      setEditingCourse(course)
+      setTempCustomTitle(custom?.customTitle ?? getDefaultSelectedCourseTitle(course, getDisplayCode))
+      const fallbackColor = courseDefaults[getSelectedCourseCanonicalCode(course)]?.color
+      setTempCustomColor(custom?.color ?? fallbackColor ?? getAutoColorForCourse(course.courseCode))
+      setApplyCustomizationToCourse(Boolean(courseDefaults[getSelectedCourseCanonicalCode(course)]))
+    },
+    [courseDefaults, customizations, getAutoColorForCourse, getDisplayCode],
+  )
+
+  useEffect(() => {
+    if (!editingCourse) return
+    const key = `${editingCourse.courseCode}-${editingCourse.section}`
+    const custom = customizations[key]
+    setTempCustomTitle(custom?.customTitle ?? getDefaultSelectedCourseTitle(editingCourse, getDisplayCode))
+    const fallbackColor = courseDefaults[getSelectedCourseCanonicalCode(editingCourse)]?.color
+    setTempCustomColor(custom?.color ?? fallbackColor ?? getAutoColorForCourse(editingCourse.courseCode))
+    setApplyCustomizationToCourse(Boolean(courseDefaults[getSelectedCourseCanonicalCode(editingCourse)]))
+  }, [courseDefaults, customizations, editingCourse, getAutoColorForCourse, getDisplayCode])
 
   // Get course color
   const getCourseColor = (course: SelectedCourse) => {
     const key = `${course.courseCode}-${course.section}`
     const custom = customizations[key]?.color
     if (custom) return custom
+    const defaultColor = courseDefaults[getSelectedCourseCanonicalCode(course)]?.color
+    if (defaultColor) return defaultColor
     return getAutoColorForCourse(course.courseCode)
   }
+
+  const restoreHistoryEntry = useCallback((entry: HistoryEntry, index: number) => {
+    suppressHistoryRef.current = true
+    pendingHistoryLabelRef.current = null
+    historyIndexRef.current = index
+    setHistoryIndex(index)
+    setSelectedCourses(entry.state.selectedCourses.map((c) => ({ ...c })))
+    setCustomizations({ ...entry.state.customizations })
+    setCourseDefaults({ ...entry.state.courseDefaults })
+    setScheduleTitle(entry.state.scheduleTitle)
+    setScheduleTitleDraft(entry.state.scheduleTitle)
+  }, [])
+
+  const handleUndo = useCallback(() => {
+    if (historyIndex <= 0) return
+    const targetIndex = historyIndex - 1
+    const entry = history[targetIndex]
+    if (!entry) return
+    restoreHistoryEntry(entry, targetIndex)
+  }, [history, historyIndex, restoreHistoryEntry])
+
+  const handleRedo = useCallback(() => {
+    if (historyIndex < 0 || historyIndex >= history.length - 1) return
+    const targetIndex = historyIndex + 1
+    const entry = history[targetIndex]
+    if (!entry) return
+    restoreHistoryEntry(entry, targetIndex)
+  }, [history, historyIndex, restoreHistoryEntry])
 
   const SectionPreviewSlot: React.FC<{
     droppableId: string
@@ -3691,6 +4060,7 @@ const downloadScheduleImage = async () => {
     compactTitle: boolean
     blockPadding: string
     textColor: string
+    onContextMenu?: (event: React.MouseEvent, course: SelectedCourse) => void
   }> = ({
     course,
     day,
@@ -3703,6 +4073,7 @@ const downloadScheduleImage = async () => {
     compactTitle,
     blockPadding,
     textColor,
+    onContextMenu,
   }) => {
     const canonicalCode = getSelectedCourseCanonicalCode(course)
     const draggableId = `calendar-${canonicalCode}-${course.section}-${day}`
@@ -3723,6 +4094,10 @@ const downloadScheduleImage = async () => {
         {...attributes}
         {...listeners}
         className="absolute rounded p-1 cursor-grab active:cursor-grabbing"
+        onContextMenu={(event) => {
+          event.preventDefault()
+          onContextMenu?.(event, course)
+        }}
         style={{
           ...style,
           color: textColor,
@@ -3798,6 +4173,16 @@ const downloadScheduleImage = async () => {
   const zoomOut = () => setZoomLevel((prev) => Math.max(MIN_ZOOM_LEVEL, prev - 1))
   const zoomIn = () => setZoomLevel((prev) => Math.min(MAX_ZOOM_LEVEL, prev + 1))
 
+  const alignOverlayToGrabPoint: Modifier = ({ transform }) => {
+    const offset = dragOffsetRef.current
+    if (!offset.x && !offset.y) return transform
+    return {
+      ...transform,
+      x: transform.x - offset.x,
+      y: transform.y - offset.y,
+    }
+  }
+
 const renderScheduleView = () => {
   // Constants for precise alignment
   const HEADER_HEIGHT = 44; // Height of header row in pixels
@@ -3836,10 +4221,11 @@ const renderScheduleView = () => {
             <div className="day-header rounded-md bg-gray-100 p-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300">
               Time
             </div>
-            {DAYS.map((day) => (
+            {DAYS.map((day, index) => (
               <div
                 key={day}
-                className="day-header rounded-md bg-gray-100 p-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300"
+                className="day-header rounded-md bg-gray-100 p-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300 day-column-fade"
+                style={{ animationDelay: `${index * 60}ms` }}
               >
                 {getFullDayName(day)}
               </div>
@@ -3848,6 +4234,22 @@ const renderScheduleView = () => {
 
           {/* Time slots - absolutely positioned */}
           <div className="relative min-w-[720px]" style={{ height: `${HOUR_HEIGHT * 15}px`, ...gridVars }}>
+            {/* Column backdrops with subtle fade-in */}
+            <div className="pointer-events-none absolute inset-0" style={{ ...gridVars }}>
+              {DAYS.map((day, index) => (
+                <div
+                  key={`col-backdrop-${day}`}
+                  className="absolute top-0 bottom-0 day-column-fade"
+                  style={{
+                    left: `calc(var(--time-col) + var(--day-width) * ${index})`,
+                    width: "calc(var(--day-width) - 2px)",
+                    background:
+                      "linear-gradient(180deg, rgba(59,130,246,0.05) 0%, rgba(59,130,246,0.02) 60%, rgba(59,130,246,0) 100%)",
+                    animationDelay: `${index * 60}ms`,
+                  }}
+                />
+              ))}
+            </div>
             {/* Hour markers */}
             {Array.from({ length: 15 }).map((_, i) => {
               const hour = FIRST_HOUR + i
@@ -3921,7 +4323,7 @@ const renderScheduleView = () => {
             <AnimatePresence initial={false}>
               {selectedCourses.flatMap((course) => {
                 const key = `${course.courseCode}-${course.section}`
-                const customization = customizations[key] || {}
+                const customization = customizations[key] || courseDefaults[getSelectedCourseCanonicalCode(course)] || {}
                 const bgColor = getCourseColor(course)
                 const textColor = getContrastColor(bgColor)
                 const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode)
@@ -3960,6 +4362,10 @@ const renderScheduleView = () => {
                     boxSizing: "border-box",
                     overflow: "hidden",
                     gap: showTime || showRoom ? 4 : 0,
+                    boxShadow:
+                      theme === "dark"
+                        ? `0 0 0 1px ${hexToRgba(bgColor, 0.45)}, 0 0 14px ${hexToRgba(bgColor, 0.6)}, 0 0 28px ${hexToRgba(bgColor, 0.45)}`
+                        : undefined,
                   }
 
                   return (
@@ -3983,6 +4389,10 @@ const renderScheduleView = () => {
                         compactTitle={compactTitle}
                         blockPadding={blockPadding}
                         textColor={textColor}
+                        onContextMenu={(event) => {
+                          event.stopPropagation()
+                          openCustomization(course)
+                        }}
                       />
                     </motion.div>
                   )
@@ -3999,9 +4409,11 @@ const renderScheduleView = () => {
   return (
     <DndContext
       sensors={sensors}
+      collisionDetection={pointerWithin}
       onDragStart={handleDragStartEvent}
       onDragEnd={handleDragEndEvent}
       onDragCancel={handleDragCancelEvent}
+      modifiers={[alignOverlayToGrabPoint]}
     >
       <div className="flex h-screen flex-col overflow-hidden bg-gray-50 text-gray-900 transition-colors duration-200 dark:bg-gray-900 dark:text-gray-100">
       <Dialog open={showMobilePrompt} onOpenChange={(open) => setShowMobilePrompt(open)}>
@@ -4174,7 +4586,7 @@ const renderScheduleView = () => {
           <DialogHeader>
             <DialogTitle>Export schedule as ICS</DialogTitle>
             <DialogDescription>
-              Confirm the start date we should use for the recurring calendar events before downloading.
+              Confirm the start date for the recurring events, then we&apos;ll download the ICS and open Google Calendar.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -4195,7 +4607,7 @@ const renderScheduleView = () => {
               Cancel
             </Button>
             <Button className="w-full sm:w-auto" onClick={handleConfirmIcsDownload} disabled={!icsDialogStartDate}>
-              Download ICS file
+              Download ICS file &amp; open Calendar
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4249,6 +4661,118 @@ const renderScheduleView = () => {
             </Button>
             <Button onClick={handlePairingConfirm} className="w-full sm:w-auto">
               Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(editingCourse)} onOpenChange={(open) => { if (!open) setEditingCourse(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Customize course</DialogTitle>
+            <DialogDescription>Rename or recolor this course block.</DialogDescription>
+          </DialogHeader>
+          {editingCourse && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="custom-title">Course title</Label>
+                <Input
+                  id="custom-title"
+                  value={tempCustomTitle}
+                  onChange={(e) => setTempCustomTitle(e.currentTarget.value)}
+                  placeholder={getDefaultSelectedCourseTitle(editingCourse, getDisplayCode)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="custom-color">Block color</Label>
+                <div className="flex items-center gap-3">
+                  <HexColorPicker color={tempCustomColor} onChange={(color) => setTempCustomColor(color)} />
+                  <div className="flex flex-col gap-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block h-6 w-6 rounded border" style={{ backgroundColor: tempCustomColor }} />
+                      <Input
+                        id="custom-color"
+                        value={tempCustomColor}
+                        onChange={(e) => setTempCustomColor(e.currentTarget.value)}
+                        className="w-28"
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500">Use hex (e.g., #3b82f6).</p>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-slate-200/70 bg-slate-50/70 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800/60">
+                <div className="space-y-0.5">
+                  <p className="font-medium text-slate-800 dark:text-slate-100">Apply to all sections</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Keep this title and color when switching sections for this course.</p>
+                </div>
+                <Switch
+                  checked={applyCustomizationToCourse}
+                  onCheckedChange={(value) => setApplyCustomizationToCourse(Boolean(value))}
+                  aria-label="Apply customization to all sections"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setEditingCourse(null)} className="w-full sm:w-auto">
+              Cancel
+            </Button>
+            <Button onClick={saveCustomization} className="w-full sm:w-auto">
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={historyDialogOpen} onOpenChange={setHistoryDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>History</DialogTitle>
+            <DialogDescription>Restore a previous schedule state.</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[360px] space-y-2 overflow-y-auto">
+            {history.length === 0 && <p className="text-sm text-slate-500">No history yet.</p>}
+            {[...history]
+              .map((entry, index) => ({ entry, index }))
+              .reverse()
+              .map(({ entry, index }) => {
+                const isActive = historyIndex === index
+                const timestampLabel = new Date(entry.timestamp).toLocaleString()
+                return (
+                  <div
+                    key={entry.id}
+                    className={`rounded-md border px-3 py-2 text-sm transition ${
+                      isActive
+                        ? "border-blue-500 bg-blue-50/60 dark:border-blue-400/70 dark:bg-blue-500/10"
+                        : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-0.5">
+                        <p className="font-semibold leading-snug">{entry.label}</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">{timestampLabel}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {isActive && <Badge variant="secondary">Current</Badge>}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8"
+                          onClick={() => {
+                            restoreHistoryEntry(entry, index)
+                            setHistoryDialogOpen(false)
+                          }}
+                        >
+                          Restore
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setHistoryDialogOpen(false)} className="w-full sm:w-auto">
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4370,7 +4894,12 @@ const renderScheduleView = () => {
 
   <div className="grid flex-1 min-h-0 max-h-full gap-2 overflow-hidden lg:grid-cols-[280px_minmax(0,1fr)_280px] xl:grid-cols-[300px_minmax(0,1fr)_300px]">
           {/* Left Sidebar */}
-          <div className="flex min-h-0 h-full flex-col gap-3 overflow-auto pr-1 hide-scrollbar">
+          <motion.div
+            className="flex min-h-0 h-full flex-col gap-3 overflow-auto pr-1 hide-scrollbar"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, ease: "easeOut", delay: 0.05 }}
+          >
             {/* Combined card for search and selected courses */}
             <Card className="flex flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
               <CardHeader className="space-y-2 pb-3">
@@ -4630,7 +5159,7 @@ const renderScheduleView = () => {
                   <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Selected courses</h3>
                   <p className="text-xs text-slate-500">Pick sections to send them to the calendar.</p>
                 </div>
-                <div className="space-y-2 max-h-[560px] overflow-y-auto">
+                <div className="space-y-2 max-h-[560px] overflow-y-auto themed-scrollbar">
                   {selectedCourseCodes.length === 0 && (
                     <p className="text-sm text-slate-500">No courses selected yet.</p>
                   )}
@@ -4642,13 +5171,23 @@ const renderScheduleView = () => {
                         (section) => getSelectedCourseCanonicalCode(section) === code,
                       )
                       const sectionsCount = course.sections.length
+                      const collapsed = Boolean(collapsedCourses[code])
+                      const hasAnimatedSections = sectionsAnimatedRef.current[code] === true
+                      const shouldAnimateSections = !collapsed && !hasAnimatedSections
+                      if (!collapsed) {
+                        sectionsAnimatedRef.current[code] = true
+                      }
+                      const sectionAnimate = shouldAnimateSections
+                        ? { opacity: 1, y: 0, transition: { duration: 0.16, ease: "easeOut", delay: 0.08 } }
+                        : { opacity: 1, y: 0, transition: { duration: 0 } }
+                      const sectionInitial = shouldAnimateSections ? { opacity: 0, y: -6 } : false
                       return (
                         <motion.div
                           key={code}
-                          layout
-                          initial={{ opacity: 0, y: -6, scale: 0.98 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: -8, scale: 0.96 }}
+                          layout="position"
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -8 }}
                           transition={{ duration: 0.16, ease: "easeInOut" }}
                         >
                           <CourseDragWrapper
@@ -4656,65 +5195,94 @@ const renderScheduleView = () => {
                             source="selected"
                             className="group relative space-y-1.5 border-l border-slate-200 pl-2 dark:border-slate-700"
                           >
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <p className="text-[13px] font-semibold leading-tight flex items-center gap-1.5">
-                                  {course.code}
-                                  <span className="text-[11px] font-medium text-slate-500">({course.credits}U)</span>
-                                </p>
-                                <p className="text-[11px] text-slate-500 leading-snug break-words">{course.name}</p>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                                  {sectionsCount} section{sectionsCount === 1 ? "" : "s"}
-                                </span>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => {
-                                    toggleCourseSelection(code)
-                                  }}
-                                  className="h-7 w-7 rounded-full p-0 text-slate-500 hover:text-red-600 hover:bg-red-50"
-                                  title="Remove course from selected list"
-                                  aria-label={`Remove ${course.code} from selected courses`}
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                </Button>
-                              </div>
-                            </div>
-                            <div className="space-y-1.5">
-                              {sectionsCount === 0 && (
-                                <p className="text-[11px] text-amber-600 dark:text-amber-300">No extracted sections yet.</p>
-                              )}
-                              {course.sections.map((section) => {
-                                const isSelectedSection = activeSections.some(
-                                  (selected) => selected.section === section.section,
-                                )
-                                return (
-                                  <div
-                                    key={`${section.courseCode}-${section.section}`}
-                                    className="flex items-start gap-2 rounded-sm px-1.5 py-1.5"
-                                  >
-                                    <Checkbox
-                                      id={`${section.courseCode}-${section.section}`}
-                                      checked={isSelectedSection}
-                                      onCheckedChange={(checked) => toggleSectionSelection(section, Boolean(checked))}
-                                    />
-                                    <div className="flex-1 text-[12px] leading-snug">
-                                      <div className="flex items-center justify-between">
-                                        <span className="font-semibold text-[12px]">{section.section}</span>
-                                        <Badge variant={section.hasSlots ? "secondary" : "destructive"} className="text-[10px] px-2">
-                                          {section.hasSlots ? `${section.remainingSlots}/${section.classSize}` : "Full"}
-                                        </Badge>
-                                      </div>
-                                      <p className="text-[11px] text-slate-500">{formatMeetingDays(section.meetingDays)}</p>
-                                      <p className="text-[11px] text-slate-500">{cleanTimeString(section.meetingTime)}</p>
-                                      <p className="text-[11px] text-slate-500">{cleanRoomString(section.room)}</p>
-                                    </div>
+                            <div className="flex items-start gap-2">
+                              <button
+                                type="button"
+                                onClick={() => toggleCourseCollapse(code)}
+                                className="flex flex-1 items-start justify-between gap-3 rounded px-1 py-1 text-left transition hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:hover:bg-slate-800/30"
+                                aria-expanded={!collapsed}
+                              >
+                                <div className="flex items-start gap-2">
+                                  <ChevronDown
+                                    className={`mt-0.5 h-4 w-4 text-slate-500 transition-transform ${collapsed ? "-rotate-90" : "rotate-0"}`}
+                                  />
+                                  <div>
+                                    <p className="text-[13px] font-semibold leading-tight flex items-center gap-1.5">
+                                      {course.code}
+                                      <span className="text-[11px] font-medium text-slate-500">({course.credits}U)</span>
+                                    </p>
+                                    <p className="text-[11px] text-slate-500 leading-snug break-words">{course.name}</p>
                                   </div>
-                                )
-                              })}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                                    {sectionsCount} section{sectionsCount === 1 ? "" : "s"}
+                                  </span>
+                                </div>
+                              </button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  toggleCourseSelection(code)
+                                }}
+                                className="h-7 w-7 rounded-full p-0 text-slate-500 hover:text-red-600 hover:bg-red-50"
+                                title="Remove course from selected list"
+                                aria-label={`Remove ${course.code} from selected courses`}
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </Button>
                             </div>
+                            {!collapsed && (
+                              <motion.div
+                                className="space-y-1.5"
+                                initial={sectionInitial as any}
+                                animate={sectionAnimate as any}
+                                exit={{ opacity: 0, y: -6, transition: { duration: 0.12, ease: "easeIn" } }}
+                                layout="position"
+                              >
+                                {sectionsCount === 0 && (
+                                  <p className="text-[11px] text-amber-600 dark:text-amber-300">No extracted sections yet.</p>
+                                )}
+                                {course.sections.map((section) => {
+                                  const isSelectedSection = activeSections.some(
+                                    (selected) => selected.section === section.section,
+                                  )
+                                  const selectedInstance = isSelectedSection
+                                    ? activeSections.find((selected) => selected.section === section.section)
+                                    : null
+                                  return (
+                                    <div
+                                      key={`${section.courseCode}-${section.section}`}
+                                      className="flex items-start gap-2 rounded-sm px-1.5 py-1.5"
+                                      onContextMenu={(event) => {
+                                        if (!selectedInstance) return
+                                        event.preventDefault()
+                                        openCustomization(selectedInstance)
+                                      }}
+                                    >
+                                      <Checkbox
+                                        id={`${section.courseCode}-${section.section}`}
+                                        checked={isSelectedSection}
+                                        onCheckedChange={(checked) => toggleSectionSelection(section, Boolean(checked))}
+                                      />
+                                      <div className="flex-1 text-[12px] leading-snug">
+                                        <div className="flex items-center justify-between">
+                                          <span className="font-semibold text-[12px]">{section.section}</span>
+                                          <Badge variant={section.hasSlots ? "secondary" : "destructive"} className="text-[10px] px-2">
+                                            {section.hasSlots ? `${section.remainingSlots}/${section.classSize}` : "Full"}
+                                          </Badge>
+                                        </div>
+                                        <p className="text-[11px] text-slate-500">{formatMeetingDays(section.meetingDays)}</p>
+                                        <p className="text-[11px] text-slate-500">{cleanTimeString(section.meetingTime)}</p>
+                                        <p className="text-[11px] text-slate-500">{cleanRoomString(section.room)}</p>
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                              </motion.div>
+                            )}
                           </CourseDragWrapper>
                         </motion.div>
                       )
@@ -4771,10 +5339,15 @@ const renderScheduleView = () => {
               className="sr-only"
               onChange={handleImportSelectedCourses}
             />
-          </div>
+          </motion.div>
 
           {/* Center Panel */}
-          <div className="flex min-h-0 h-full flex-col overflow-hidden">
+          <motion.div
+            className="flex min-h-0 h-full flex-col overflow-hidden"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.28, ease: "easeOut", delay: 0.12 }}
+          >
             <Card
               data-schedule-card
               className="flex min-h-0 h-full flex-1 flex-col overflow-hidden bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50"
@@ -4874,10 +5447,15 @@ const renderScheduleView = () => {
                 </div>
               </CardContent>
             </Card>
-          </div>
+          </motion.div>
 
           {/* Right Sidebar */}
-          <div className="flex min-h-0 h-full flex-col gap-3 overflow-auto pl-1 hide-scrollbar">
+          <motion.div
+            className="flex min-h-0 h-full flex-col gap-3 overflow-auto pl-1 hide-scrollbar"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.24, ease: "easeOut", delay: 0.18 }}
+          >
             <Card className="flex flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
               <CardHeader className="flex items-start justify-start py-3">
                 <CardTitle className="text-base font-semibold text-left">Versions</CardTitle>
@@ -5192,15 +5770,14 @@ const renderScheduleView = () => {
                 )}
               </CardContent>
             </Card>
-
             <Card className="bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
               <CardHeader className="py-3">
                 <CardTitle className="text-base font-semibold">Summary</CardTitle>
               </CardHeader>
               <CardContent className="space-y-1.5 pt-0 text-sm">
-                <div className="flex justify-between"><span>Total units</span><span>{totalSelectedCredits}</span></div>
-                <div className="flex justify-between"><span>Courses selected</span><span>{selectedCourseCodes.length}</span></div>
-                <div className="flex justify-between"><span>Sections added</span><span>{selectedCourses.length}</span></div>
+                <div className="flex justify-between"><span>Total units</span><AnimatePresence mode="popLayout" initial={false}><AnimatedNumber value={totalSelectedCredits} /></AnimatePresence></div>
+                <div className="flex justify-between"><span>Courses selected</span><AnimatePresence mode="popLayout" initial={false}><AnimatedNumber value={selectedCourseCodes.length} /></AnimatePresence></div>
+                <div className="flex justify-between"><span>Sections added</span><AnimatePresence mode="popLayout" initial={false}><AnimatedNumber value={selectedCourses.length} /></AnimatePresence></div>
               </CardContent>
             </Card>
 
@@ -5209,23 +5786,53 @@ const renderScheduleView = () => {
                 <CardTitle className="text-base font-semibold">Exports & actions</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 pt-0">
+                <div className="grid grid-cols-3 gap-2">
+                  <Button
+                    variant="outline"
+                    className="h-9 w-full justify-center gap-1.5 text-xs font-medium whitespace-nowrap"
+                    onClick={handleUndo}
+                    disabled={historyIndex <= 0}
+                  >
+                    <Undo className="h-3.5 w-3.5" /> Undo
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="h-9 w-full justify-center gap-1.5 text-xs font-medium whitespace-nowrap"
+                    onClick={handleRedo}
+                    disabled={historyIndex < 0 || historyIndex >= history.length - 1}
+                  >
+                    <Redo className="h-3.5 w-3.5" /> Redo
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="h-9 w-full justify-center gap-1.5 text-xs font-medium whitespace-nowrap"
+                    onClick={() => setHistoryDialogOpen(true)}
+                    disabled={history.length === 0}
+                  >
+                    <History className="h-3.5 w-3.5" /> History
+                  </Button>
+                </div>
                 <Button variant="outline" className="h-9 w-full justify-start gap-2 text-sm" onClick={downloadScheduleImage}>
                   <Download className="h-3.5 w-3.5" /> Download schedule
                 </Button>
                 <Button variant="outline" className="h-9 w-full justify-start gap-2 text-sm" onClick={openIcsDialog}>
                   <Calendar className="h-3.5 w-3.5" /> Export to calendar
                 </Button>
-                <Button variant="ghost" className="h-9 w-full justify-start gap-2 text-sm" disabled>
-                  <ExternalLink className="h-3.5 w-3.5" /> Add to SOLAR-OSES (soon)
+                <Button
+                  variant="outline"
+                  className="h-9 w-full justify-start gap-2 text-sm"
+                  onClick={openSolarOSESWindow}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" /> Add to SOLAR-OSES
                 </Button>
               </CardContent>
             </Card>
-          </div>
+          </motion.div>
         </div>
       </div>
     </div>
 
-      <Dialog open={Boolean(importErrorDialog)} onOpenChange={(open) => (!open ? closeImportDialog() : undefined)}>
+    <Dialog open={Boolean(importErrorDialog)} onOpenChange={(open) => (!open ? closeImportDialog() : undefined)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{importErrorDialog?.title || "Import notice"}</DialogTitle>
@@ -5239,13 +5846,22 @@ const renderScheduleView = () => {
         </DialogContent>
       </Dialog>
 
-      <DragOverlay dropAnimation={null}>
-        {dragCourseCode ? (
-          <div className="rounded-md border border-slate-300 bg-white px-3 py-1 text-sm font-semibold shadow-lg dark:border-slate-700 dark:bg-slate-800">
-            Drag {getDisplayCode(dragCourseCode)}
+      <DragOverlay dropAnimation={null} className="pointer-events-none">
+        {dragOverlayCourse ? (
+          <div className="w-52 rounded-lg border border-slate-200 bg-white/95 px-3 py-2 text-left shadow-xl ring-1 ring-slate-200 dark:border-slate-700 dark:bg-slate-900/90 dark:ring-slate-700">
+            <div className="flex items-center justify-between text-sm font-semibold text-slate-800 dark:text-slate-100">
+              <span>{dragOverlayCourse.code}</span>
+              <span className="text-[11px] text-slate-500">{dragOverlayCourse.credits}U</span>
+            </div>
+            <p className="mt-1 line-clamp-2 text-[12px] text-slate-600 dark:text-slate-300">{dragOverlayCourse.name}</p>
+            <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+              <span>{dragOverlayCourse.sections} section{dragOverlayCourse.sections === 1 ? "" : "s"}</span>
+              <span className="text-blue-600 dark:text-blue-300">Drag to calendar</span>
+            </div>
           </div>
         ) : null}
       </DragOverlay>
     </DndContext>
   )
 }
+

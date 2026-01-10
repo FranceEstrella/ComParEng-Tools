@@ -1,9 +1,171 @@
+@import url("https://fonts.googleapis.com/css2?family=Audiowide&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --scrollbar-track: #f1f5f9; /* slate-100 */
+  --scrollbar-thumb: rgba(148, 163, 184, 0.75); /* slate-400 */
+  --scrollbar-thumb-hover: rgba(100, 116, 139, 0.9); /* slate-500 */
+}
+
+.dark {
+  --scrollbar-track: #0b1220; /* deep slate */
+  --scrollbar-thumb: rgba(100, 116, 139, 0.85); /* slate-500 */
+  --scrollbar-thumb-hover: rgba(148, 163, 184, 0.95); /* slate-400 */
+}
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+html::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+html::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 9999px;
+  border: 2px solid var(--scrollbar-track);
+}
+
+html::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+html {
+  background-color: #f9fafb;
+}
+
+.dark html {
+  background-color: #111827;
+}
+
 body {
   font-family: Arial, Helvetica, sans-serif;
+  background-color: #f9fafb;
+  min-height: 100vh;
+}
+
+.dark body {
+  background-color: #111827;
+}
+
+.theme-transition,
+.theme-transition * {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 220ms;
+  transition-timing-function: ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-transition,
+  .theme-transition * {
+    transition: none !important;
+  }
+}
+
+.signature-font {
+  font-family: "Audiowide", cursive;
+}
+
+.page-fade-in {
+  animation: page-fade-in 0.28s ease-in both;
+}
+
+.day-column-fade {
+  animation: column-fade-in 0.32s ease-out both;
+}
+
+.program-roller {
+  display: inline-block;
+  height: 1.35em;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.program-roller__track {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1em;
+  animation: program-roller-steps 5s steps(5, end) infinite;
+}
+
+.program-roller__item {
+  line-height: 1.35em;
+}
+
+.typewriter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  position: relative;
+}
+
+.audiowide-regular {
+  font-family: "Audiowide", sans-serif;
+  font-weight: 400;
+  font-style: normal;
+}
+
+.typewriter__text {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.dark .typewriter__text {
+  color: #4ade80;
+  text-shadow: 0 0 6px rgba(74, 222, 128, 0.55), 0 0 14px rgba(74, 222, 128, 0.35);
+}
+
+.typewriter__tail {
+  display: inline-block;
+  white-space: normal;
+}
+
+.typewriter__caret {
+  width: 2px;
+  height: 1.1em;
+  margin-left: 4px;
+  background: currentColor;
+  border-radius: 9999px;
+  animation: caret-blink 1s steps(2, start) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typewriter__caret {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .program-roller__track {
+    animation: none;
+    transform: none !important;
+  }
+}
+
+.credit-reveal {
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  animation: credit-reveal 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: 0.6s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .credit-reveal {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @layer utilities {
@@ -22,6 +184,36 @@ body {
 
   .hide-scrollbar::-webkit-scrollbar {
     display: none;
+  }
+
+  .themed-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(148 163 184 / 0.6) transparent;
+  }
+
+  .themed-scrollbar::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .themed-scrollbar::-webkit-scrollbar-thumb {
+    background-color: rgb(148 163 184 / 0.7);
+    border-radius: 9999px;
+  }
+
+  .themed-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(100 116 139 / 0.85);
+  }
+
+  .dark .themed-scrollbar {
+    scrollbar-color: rgb(100 116 139 / 0.7) transparent;
+  }
+
+  .dark .themed-scrollbar::-webkit-scrollbar-thumb {
+    background-color: rgb(100 116 139 / 0.8);
+  }
+
+  .dark .themed-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(148 163 184 / 0.9);
   }
 }
 
@@ -43,6 +235,55 @@ body {
   }
   100% {
     transform: translateX(0);
+  }
+}
+
+@keyframes page-fade-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes column-fade-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes program-roller-steps {
+  0% {
+    transform: translateY(0%);
+  }
+  100% {
+    transform: translateY(-400%);
+  }
+}
+
+@keyframes caret-blink {
+  0%, 49% {
+    opacity: 1;
+  }
+  50%, 100% {
+    opacity: 0;
+  }
+}
+
+@keyframes credit-reveal {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
