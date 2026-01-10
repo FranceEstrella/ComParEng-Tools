@@ -21,6 +21,34 @@ import {
 
 const KEY_STORAGE = "compareng.analytics.key"
 
+const escapeHtml = (value: unknown) => {
+  const s = String(value ?? "")
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#039;")
+}
+
+const downloadTextFile = (filename: string, content: string, mime: string) => {
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+const formatTimestampForFile = (ms: number) => {
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`
+}
+
 const formatCompact = (n: number) => {
   try {
     return new Intl.NumberFormat(undefined, { notation: "compact" }).format(n)
@@ -168,6 +196,392 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
     } finally {
       setLoading(false)
     }
+  }
+
+  const exportHtml = () => {
+    if (!snapshot) {
+      setError("No analytics snapshot loaded yet. Click Refresh first.")
+      return
+    }
+
+    const now = Date.now()
+    const filename = `compareng-analytics-${formatTimestampForFile(now)}.html`
+
+    const countsEntries = Object.entries(snapshot.counts ?? {}).sort((a, b) => b[1] - a[1])
+    const total = Object.values(snapshot.counts ?? {}).reduce((a, b) => a + b, 0)
+    const unique = Object.keys(snapshot.counts ?? {}).length
+    const recent = snapshot.recent ?? []
+
+    const activity = (() => {
+      const hours = 24
+      const buckets = Array.from({ length: hours }, () => 0)
+      for (const evt of recent) {
+        const ageHours = Math.floor((now - evt.at) / 3600000)
+        if (ageHours < 0 || ageHours >= hours) continue
+        const idx = hours - 1 - ageHours
+        buckets[idx]++
+      }
+      return buckets
+    })()
+
+    const renderMiniBars = (values: number[]) => {
+      const max = Math.max(1, ...values)
+      return values
+        .map((v) => {
+          const h = Math.max(2, Math.round((v / max) * 44))
+          return `<div class="bar" style="height:${h}px" title="${escapeHtml(v)}"></div>`
+        })
+        .join("")
+    }
+
+    const topEventsRows = countsEntries.slice(0, 8)
+    const topMax = Math.max(1, ...topEventsRows.map(([, c]) => c))
+    const renderTopEvents = () => {
+      if (topEventsRows.length === 0) return `<div class="muted">No events yet.</div>`
+      return topEventsRows
+        .map(([name, count]) => {
+          const pct = Math.max(2, Math.round((count / topMax) * 100))
+          return `<div class="row">
+  <div class="rowHead">
+    <div class="name mono">${escapeHtml(name)}</div>
+    <div class="badge">${escapeHtml(count)}</div>
+  </div>
+  <div class="meter"><div class="meterFill" style="width:${pct}%"></div></div>
+</div>`
+        })
+        .join("\n")
+    }
+
+    const renderCountsList = () => {
+      if (countsEntries.length === 0) return `<div class="muted">No events yet.</div>`
+      return countsEntries
+        .map(
+          ([name, count]) =>
+            `<div class="kv"><div class="k mono">${escapeHtml(name)}</div><div class="badge">${escapeHtml(count)}</div></div>`
+        )
+        .join("\n")
+    }
+
+    const renderRecentCards = () => {
+      if (recent.length === 0) return `<div class="muted">No recent events.</div>`
+      return recent
+        .slice(0, 50)
+        .map((evt) => {
+          const when = new Date(evt.at).toLocaleString()
+          const path = evt.path ? `<div class="muted mono">${escapeHtml(evt.path)}</div>` : ""
+          return `<div class="eventCard">
+  <div class="eventTop">
+    <div class="eventName mono">${escapeHtml(evt.name)}</div>
+    <div class="eventTime muted">${escapeHtml(when)}</div>
+  </div>
+  ${path}
+</div>`
+        })
+        .join("\n")
+    }
+
+    const pathMap = new Map<string, number>()
+    for (const evt of recent) {
+      const p = evt.path || "(no path)"
+      pathMap.set(p, (pathMap.get(p) ?? 0) + 1)
+    }
+    const topPaths = Array.from(pathMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8)
+    const renderTopPaths = () => {
+      if (topPaths.length === 0) return `<div class="muted">No events yet.</div>`
+      return topPaths
+        .map(
+          ([p, c]) =>
+            `<div class="kv"><div class="k mono">${escapeHtml(p)}</div><div class="badge">${escapeHtml(c)}</div></div>`
+        )
+        .join("\n")
+    }
+
+    const renderKeyCountList = (items: Array<[string, number]>, empty: string) => {
+      if (!items.length) return `<div class="muted">${escapeHtml(empty)}</div>`
+      return items
+        .map(
+          ([k, v]) =>
+            `<div class="kv"><div class="k">${escapeHtml(k)}</div><div class="v2">${escapeHtml(v)}</div></div>`
+        )
+        .join("\n")
+    }
+
+    const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Analytics</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f9fafb;
+        --fg: #111827;
+        --muted: #6b7280;
+        --card: #ffffff;
+        --border: #e5e7eb;
+        --pill: #f1f5f9;
+        --pill-fg: #0f172a;
+        --bar: #cbd5e1;
+        --bar-strong: #94a3b8;
+        --meter: #e2e8f0;
+        --meterFill: #94a3b8;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111827;
+          --fg: #f9fafb;
+          --muted: #9ca3af;
+          --card: #0b1220;
+          --border: #1f2937;
+          --pill: #111827;
+          --pill-fg: #e5e7eb;
+          --bar: #334155;
+          --bar-strong: #475569;
+          --meter: #1f2937;
+          --meterFill: #475569;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      }
+      .container {
+        max-width: 56rem;
+        margin: 0 auto;
+        padding: 40px 16px;
+      }
+      h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em; }
+      .subtitle { margin-top: 6px; font-size: 13px; color: var(--muted); }
+      .muted { color: var(--muted); }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .space6 { height: 24px; }
+      .space4 { height: 16px; }
+      .grid2 { display: grid; grid-template-columns: 1fr; gap: 16px; }
+      .grid4 { display: grid; grid-template-columns: 1fr; gap: 12px; }
+      @media (min-width: 768px) {
+        .grid2 { grid-template-columns: 1fr 1fr; }
+        .grid4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+      }
+      .cardHead {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .cardTitle { font-size: 16px; font-weight: 700; }
+      .cardBody { padding: 14px 16px; }
+      .pillRow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: var(--pill);
+        color: var(--pill-fg);
+        border: 1px solid var(--border);
+        font-size: 12px;
+      }
+      .stats {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .statsK { font-size: 12px; color: var(--muted); }
+      .statsV { margin-top: 8px; font-size: 22px; font-weight: 800; line-height: 1; }
+      .statsS { margin-top: 6px; font-size: 12px; color: var(--muted); }
+      .bars { display: flex; align-items: flex-end; gap: 4px; height: 44px; }
+      .bar { width: 8px; background: var(--bar); border-radius: 3px; }
+      .sectionTitle { font-size: 16px; font-weight: 800; margin: 0 0 10px; }
+      .row { margin-bottom: 10px; }
+      .rowHead { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+      .name { font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        border: 1px solid var(--border);
+        background: var(--pill);
+        color: var(--pill-fg);
+        flex: 0 0 auto;
+      }
+      .meter { height: 8px; border-radius: 999px; background: var(--meter); overflow: hidden; margin-top: 6px; }
+      .meterFill { height: 100%; background: var(--meterFill); }
+      .kv { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; }
+      .k { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .v2 { font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; }
+      .eventList { max-height: 28rem; overflow: auto; padding-right: 6px; }
+      .eventCard { border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+      .eventTop { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+      .eventName { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .eventTime { font-size: 12px; }
+      details { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--card); }
+      summary { cursor: pointer; font-weight: 700; }
+      pre { margin: 10px 0 0; padding: 10px; border-radius: 10px; background: rgba(128,128,128,.10); overflow: auto; }
+      .insightsGrid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+      @media (min-width: 768px) { .insightsGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+      .subCard { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+      .subTitle { font-size: 12px; color: var(--muted); }
+      .subLine { margin-top: 6px; font-size: 13px; }
+      .subStrong { font-weight: 800; }
+      .miniHead { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Analytics</h1>
+      <div class="subtitle">Hidden page export. Generated: ${escapeHtml(new Date(now).toLocaleString())}</div>
+
+      <div class="space6"></div>
+
+      <div class="card">
+        <div class="cardHead">
+          <div class="cardTitle">Access</div>
+          <div class="pillRow">
+            <span class="pill">Key: ${escapeHtml(activeKey.trim() ? "present" : "none")}</span>
+            <span class="pill">Unauthorized: ${escapeHtml(unauthorized ? "yes" : "no")}</span>
+          </div>
+        </div>
+        <div class="cardBody">
+          <div class="muted" style="font-size:12px;">This file contains a snapshot of in-memory analytics at export time.</div>
+        </div>
+      </div>
+
+      <div class="space4"></div>
+
+      <div class="grid4">
+        <div class="stats"><div class="statsK">Total events</div><div class="statsV">${escapeHtml(total)}</div><div class="statsS">All-time (in-memory)</div></div>
+        <div class="stats"><div class="statsK">Unique event types</div><div class="statsV">${escapeHtml(unique)}</div><div class="statsS">Distinct names</div></div>
+        <div class="stats"><div class="statsK">Last event</div><div class="statsV">${escapeHtml(totals.lastAt ? new Date(totals.lastAt).toLocaleTimeString() : "—")}</div><div class="statsS">${escapeHtml(totals.lastAt ? new Date(totals.lastAt).toLocaleDateString() : "No events")}</div></div>
+        <div class="stats"><div class="statsK">Activity (24h)</div><div class="statsV">${escapeHtml(activity.reduce((a, b) => a + b, 0))}</div><div class="statsS">From recent buffer</div></div>
+      </div>
+
+      <div class="space6"></div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHead"><div class="cardTitle">Activity (last 24 hours)</div></div>
+          <div class="cardBody">
+            ${recent.length ? `<div class="bars">${renderMiniBars(activity)}</div><div class="miniHead"><span>24h ago</span><span>now</span></div>` : `<div class="muted">No events yet.</div>`}
+          </div>
+        </div>
+        <div class="card">
+          <div class="cardHead"><div class="cardTitle">Top events</div></div>
+          <div class="cardBody">
+            ${renderTopEvents()}
+          </div>
+        </div>
+      </div>
+
+      <div class="space6"></div>
+
+      <div class="card">
+        <div class="cardHead"><div class="cardTitle">Insights</div></div>
+        <div class="cardBody">
+          <div class="insightsGrid">
+            <div class="subCard">
+              <div class="subTitle">Course Tracker</div>
+              <div class="subLine">Curriculum imports: <span class="subStrong">${escapeHtml(insights.rawCounts.courseTrackerCurriculumImportSuccess)}</span> ok / <span class="subStrong">${escapeHtml(insights.rawCounts.courseTrackerCurriculumImportFailed)}</span> failed</div>
+              <div class="subLine">Download progress: <span class="subStrong">${escapeHtml(insights.rawCounts.courseTrackerDownloadProgressClicks)}</span> clicks / <span class="subStrong">${escapeHtml(insights.rawCounts.courseTrackerDownloadProgressSuccess)}</span> success</div>
+              <div class="subLine">Avg starting year: <span class="subStrong">${escapeHtml(insights.courseTrackerStartYear.avg === null ? "N/A" : insights.courseTrackerStartYear.avg.toFixed(1))}</span> <span class="muted">(n=${escapeHtml(insights.courseTrackerStartYear.n)})</span></div>
+            </div>
+
+            <div class="subCard">
+              <div class="subTitle">Schedule Maker</div>
+              <div class="subLine">Download schedule image: <span class="subStrong">${escapeHtml(insights.rawCounts.scheduleMakerDownloadImageSuccess)}</span> success</div>
+              <div class="subLine">Export to calendar (ICS): <span class="subStrong">${escapeHtml(insights.rawCounts.scheduleMakerDownloadIcsSuccess)}</span> success</div>
+              <div class="subLine">Add to SOLAR-OSES: <span class="subStrong">${escapeHtml(insights.rawCounts.scheduleMakerOpenSolarOsesClicks)}</span> clicks</div>
+              <div class="subLine">Avg versions per term: <span class="subStrong">${escapeHtml(insights.scheduleMakerVersions.avg === null ? "N/A" : insights.scheduleMakerVersions.avg.toFixed(2))}</span> <span class="muted">(n=${escapeHtml(insights.scheduleMakerVersions.n)})</span></div>
+              <div class="subLine">Selected courses: <span class="subStrong">${escapeHtml(insights.rawCounts.scheduleMakerExportSelectedSuccess)}</span> exports / <span class="subStrong">${escapeHtml(insights.rawCounts.scheduleMakerImportSelectedResult)}</span> imports</div>
+            </div>
+
+            <div class="subCard">
+              <div class="subTitle">Academic Planner</div>
+              <div class="subLine">Plans: <span class="subStrong">${escapeHtml(insights.rawCounts.plannerExportPlanSuccess)}</span> exports / <span class="subStrong">${escapeHtml(insights.rawCounts.plannerImportPlanSuccess)}</span> imports</div>
+              <div class="subLine">Apply profile clicks: <span class="subStrong">${escapeHtml(insights.rawCounts.plannerApplyProfileClicks)}</span></div>
+              <div class="space4"></div>
+              <div class="subTitle">Profile usage (applied)</div>
+              ${renderKeyCountList(insights.plannerAppliedProfiles, "No apply events yet.")}
+              <div class="space4"></div>
+              <div class="subTitle">Profile taps (selected)</div>
+              ${renderKeyCountList(insights.plannerSelectedProfiles, "No selection events yet.")}
+            </div>
+          </div>
+
+          <div class="space4"></div>
+
+          <div class="grid2">
+            <div class="subCard">
+              <div class="subTitle">General</div>
+              <div class="subLine">Feedback: <span class="subStrong">${escapeHtml(insights.rawCounts.feedbackSuccess)}</span> sent / <span class="subStrong">${escapeHtml(insights.rawCounts.feedbackFailed)}</span> failed</div>
+              <div class="subLine">Onboarding: <span class="subStrong">${escapeHtml(insights.onboarding.completed)}</span> completed / <span class="subStrong">${escapeHtml(insights.onboarding.notCompletedEstimate)}</span> not completed (estimate)</div>
+            </div>
+            <div class="subCard">
+              <div class="subTitle">Theme preference (from toggles)</div>
+              ${renderKeyCountList(insights.themeToggles, "No theme toggle events yet.")}
+            </div>
+          </div>
+
+          <div class="space4"></div>
+          <div class="muted" style="font-size:12px;">Averages and breakdowns are computed from the “Recent” buffer (up to 200 events).</div>
+        </div>
+      </div>
+
+      <div class="space6"></div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHead"><div class="cardTitle">Counts</div></div>
+          <div class="cardBody">
+            ${renderCountsList()}
+          </div>
+        </div>
+        <div class="card">
+          <div class="cardHead"><div class="cardTitle">Recent</div></div>
+          <div class="cardBody">
+            <div class="eventList">
+              ${renderRecentCards()}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="space4"></div>
+
+      <div class="card">
+        <div class="cardHead"><div class="cardTitle">Top paths (recent)</div></div>
+        <div class="cardBody">
+          ${renderTopPaths()}
+        </div>
+      </div>
+
+      <div class="space6"></div>
+
+      <details>
+        <summary>Raw snapshot JSON</summary>
+        <pre class="mono">${escapeHtml(JSON.stringify(snapshot, null, 2))}</pre>
+      </details>
+    </div>
+  </body>
+</html>`
+
+    downloadTextFile(filename, html, "text/html;charset=utf-8")
   }
 
   useEffect(() => {
@@ -319,6 +733,9 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
               <Button variant="outline" size="sm" onClick={fetchSnapshot} disabled={loading}>
                 <RefreshCw className="h-4 w-4" />
                 Refresh
+              </Button>
+              <Button variant="outline" size="sm" onClick={exportHtml} disabled={!snapshot || loading}>
+                Export HTML
               </Button>
               <Button variant="destructive" size="sm" onClick={reset} disabled={loading}>
                 <Trash2 className="h-4 w-4" />
