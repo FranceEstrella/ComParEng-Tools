@@ -5,6 +5,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@dnd-kit/core": "latest",
     "@emotion/is-prop-valid": "latest",
     "@radix-ui/react-accordion": "latest",
     "@radix-ui/react-alert-dialog": "latest",
@@ -30,7 +31,6 @@
     "@radix-ui/react-switch": "latest",
     "@radix-ui/react-tabs": "latest",
     "@radix-ui/react-toast": "latest",
-    "@dnd-kit/core": "latest",
     "@radix-ui/react-toggle": "latest",
     "@radix-ui/react-toggle-group": "latest",
     "@radix-ui/react-tooltip": "latest",
