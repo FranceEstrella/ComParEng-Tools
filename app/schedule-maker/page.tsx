@@ -1,6 +1,18 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from "react"
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragOverlay,
+  DragStartEvent,
+  DragEndEvent,
+  DragCancelEvent,
+  useDroppable,
+  useDraggable,
+} from "@dnd-kit/core"
 import { createPortal } from "react-dom"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card"
@@ -21,6 +33,7 @@ import {
   Check,
   Calendar,
   Download,
+  Upload,
   Minus,
   Sun,
   Moon,
@@ -80,6 +93,19 @@ const TIME_SLOTS = [
   "13:00", "13:30", "14:00", "14:30", "15:00", "15:30",
   "16:00", "16:30", "17:00", "17:30", "18:00", "18:30",
   "19:00", "19:30", "20:00", "20:30", "21:00"
+]
+
+const DEPARTMENT_COLOR_PALETTE = [
+  "#2563eb", // blue
+  "#0ea5e9", // sky
+  "#22c55e", // green
+  "#e11d48", // rose
+  "#a855f7", // purple
+  "#f59e0b", // amber
+  "#14b8a6", // teal
+  "#f97316", // orange
+  "#38bdf8", // light sky
+  "#ec4899", // pink
 ]
 
 const getFullDayName = (day: DayToken): string => {
@@ -245,6 +271,24 @@ interface SelectedCourse extends CourseSection {
   parsedDays: DayToken[]
   displayTime: string
   displayRoom: string
+}
+
+interface SectionPreview {
+  sectionKey: string
+  section: CourseSection
+  parsedDays: DayToken[]
+  startMinutes: number
+  endMinutes: number
+  displayTime: string
+  displayRoom: string
+  color: string
+}
+
+type DragCourseData = {
+  type: "course"
+  canonicalCode: string
+  source: "search" | "selected" | "calendar"
+  currentSectionKey?: string
 }
 
 interface CourseCustomization {
@@ -620,6 +664,22 @@ const getContrastColor = (hexColor: string): string => {
   return luminance > 0.5 ? "#000000" : "#ffffff"
 }
 
+const lightenHexColor = (hexColor: string, amount = 0.18): string => {
+  const normalized = hexColor.startsWith("#") ? hexColor.slice(1) : hexColor
+  const num = parseInt(normalized, 16)
+  if (Number.isNaN(num) || normalized.length !== 6) return `#${normalized}`
+
+  const r = (num >> 16) & 0xff
+  const g = (num >> 8) & 0xff
+  const b = num & 0xff
+
+  const mix = (channel: number) => Math.min(255, Math.round(channel + (255 - channel) * amount))
+
+  const toHex = (value: number) => value.toString(16).padStart(2, "0")
+
+  return `#${toHex(mix(r))}${toHex(mix(g))}${toHex(mix(b))}`
+}
+
 export default function ScheduleMaker() {
   const { theme, setTheme } = useTheme()
 
@@ -642,15 +702,21 @@ export default function ScheduleMaker() {
   const [noActiveDialogOpen, setNoActiveDialogOpen] = useState(false)
   const [hideNoActiveDialog, setHideNoActiveDialog] = useState(false)
   const [noActiveDialogDismissed, setNoActiveDialogDismissed] = useState(false)
+  const [dragCourseCode, setDragCourseCode] = useState<string | null>(null)
+  const [dragPreviewSections, setDragPreviewSections] = useState<SectionPreview[]>([])
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
   const scheduleRef = useRef<HTMLDivElement>(null)
   const lastAvailableHashRef = useRef<string>("")
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
   const pendingImportFollowUpRef = useRef<(() => void) | null>(null)
   const loadingVersionRef = useRef<boolean>(false)
   const hasHydratedVersionRef = useRef<boolean>(false)
+  const departmentColorCache = useRef<Map<string, string>>(new Map())
   const [startDate, setStartDate] = useState<Date>(new Date())
   const [searchTerm, setSearchTerm] = useState("")
   const [showLockedCourses, setShowLockedCourses] = useState(false)
+  const [importExportMounted, setImportExportMounted] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; scope: "chip" | "expanded" } | null>(null)
   const hasTrackerProgress = trackerCourses.length > 0
 
   useEffect(() => {
@@ -760,6 +826,28 @@ export default function ScheduleMaker() {
     [hasTrackerProgress, readinessByCanonical],
   )
 
+  const getDepartmentBaseColor = useCallback(
+    (courseCode: string): string => {
+      const dept = extractDepartmentCode(courseCode) || "OTHER"
+      const cached = departmentColorCache.current.get(dept)
+      if (cached) return cached
+      const color = DEPARTMENT_COLOR_PALETTE[departmentColorCache.current.size % DEPARTMENT_COLOR_PALETTE.length]
+      departmentColorCache.current.set(dept, color)
+      return color
+    },
+    [],
+  )
+
+  const getAutoColorForCourse = useCallback(
+    (courseCode: string): string => {
+      const base = getDepartmentBaseColor(courseCode)
+      const canonical = getCanonicalCourseCode(courseCode)
+      const isLab = canonical.endsWith("L")
+      return isLab ? lightenHexColor(base, 0.2) : base
+    },
+    [getDepartmentBaseColor],
+  )
+
   const isDefaultVisible = useCallback(
     (canonical: string) => {
       if (!hasTrackerProgress) return true
@@ -792,8 +880,11 @@ export default function ScheduleMaker() {
   const [rememberPairingRemoveToggle, setRememberPairingRemoveToggle] = useState(false)
   const [preferencesDialogOpen, setPreferencesDialogOpen] = useState(false)
   const [versionStore, setVersionStore] = useState<Record<string, TermYearVersionState>>({})
-  const [versionsExpanded, setVersionsExpanded] = useState<boolean>(false)
   const [addVersionMenuOpen, setAddVersionMenuOpen] = useState(false)
+  const [versionsExpanded, setVersionsExpanded] = useState<boolean>(false)
+  const [editingVersionId, setEditingVersionId] = useState<string | null>(null)
+  const [versionNameDraft, setVersionNameDraft] = useState<string>("")
+  const [hideActivateHover, setHideActivateHover] = useState<boolean>(false)
   const [errorDialogOpen, setErrorDialogOpen] = useState(false)
   const [zoomLevel, setZoomLevel] = useState<number>(0)
   const [searchPanelVisible, setSearchPanelVisible] = useState<boolean>(false)
@@ -1015,6 +1106,10 @@ export default function ScheduleMaker() {
   }, [])
 
   useEffect(() => {
+    setImportExportMounted(true)
+  }, [])
+
+  useEffect(() => {
     const preferences = loadTrackerPreferences()
     if (preferences?.currentYearLevel && Number.isFinite(preferences.currentYearLevel)) {
       setCurrentYearLevel(preferences.currentYearLevel)
@@ -1204,11 +1299,50 @@ export default function ScheduleMaker() {
     [activeTermYearKey, persistVersionStore],
   )
 
-  const confirmDeleteVersion = useCallback(
-    (versionId: string) => {
-      if (window.confirm("Delete this version?")) {
-        deleteVersion(versionId)
+  const startRenamingVersion = useCallback((version: ScheduleVersion) => {
+    setEditingVersionId(version.id)
+    setVersionNameDraft(version.name)
+  }, [])
+
+  const cancelRenamingVersion = useCallback(() => {
+    setEditingVersionId(null)
+    setVersionNameDraft("")
+  }, [])
+
+  const saveVersionName = useCallback(() => {
+    if (!editingVersionId) return
+    const trimmed = versionNameDraft.trim()
+
+    setVersionStore((prev) => {
+      const entry = prev[activeTermYearKey]
+      if (!entry) return prev
+
+      const versions = entry.versions.map((version) => {
+        if (version.id !== editingVersionId) return version
+        return { ...version, name: trimmed || version.name }
+      })
+
+      const nextStore = {
+        ...prev,
+        [activeTermYearKey]: { ...entry, versions },
       }
+
+      persistVersionStore(nextStore)
+      return nextStore
+    })
+
+    setEditingVersionId(null)
+    setVersionNameDraft("")
+  }, [activeTermYearKey, editingVersionId, persistVersionStore, versionNameDraft])
+
+  const openDeleteConfirm = useCallback((versionId: string, scope: "chip" | "expanded") => {
+    setDeleteConfirm({ id: versionId, scope })
+  }, [])
+
+  const handleDeleteVersionConfirmed = useCallback(
+    (versionId: string) => {
+      deleteVersion(versionId)
+      setDeleteConfirm(null)
     },
     [deleteVersion],
   )
@@ -1390,10 +1524,10 @@ export default function ScheduleMaker() {
     if (!activeVersion) return
 
     const currentCourseKeys = JSON.stringify(
-      selectedCourses.map((course) => course.id || `${course.courseCode}-${course.section}`),
+      selectedCourses.map((course) => `${course.courseCode}-${course.section}`),
     )
     const versionCourseKeys = JSON.stringify(
-      activeVersion.selectedCourses.map((course) => course.id || `${course.courseCode}-${course.section}`),
+      activeVersion.selectedCourses.map((course) => `${course.courseCode}-${course.section}`),
     )
 
     const shouldHydrateFromVersion =
@@ -2201,8 +2335,97 @@ export default function ScheduleMaker() {
     }
   }
 
+  const buildSectionPreview = useCallback(
+    (section: CourseSection): SectionPreview | null => {
+      const { startMinutes, endMinutes } = parseTimeRange(section.meetingTime)
+      const parsedDays = parseDays(section.meetingDays)
+      if (Number.isNaN(startMinutes) || Number.isNaN(endMinutes) || parsedDays.length === 0) return null
+
+      const sectionKey = buildCourseLookupKey(section.courseCode, section.section)
+      return {
+        sectionKey,
+        section,
+        parsedDays,
+        startMinutes,
+        endMinutes,
+        displayTime: cleanTimeString(section.meetingTime),
+        displayRoom: cleanRoomString(section.room),
+        color: getAutoColorForCourse(section.courseCode),
+      }
+    },
+    [getAutoColorForCourse],
+  )
+
+  const handleDragStartEvent = useCallback(
+    (event: DragStartEvent) => {
+      const data = event.active?.data?.current as DragCourseData | undefined
+      if (!data || data.type !== "course") return
+
+      setDragCourseCode(data.canonicalCode)
+
+      const course = courseCatalog.find((c) => c.code === data.canonicalCode)
+      if (!course) return
+
+      const previews = course.sections
+        .map((section) => buildSectionPreview(section))
+        .filter((entry): entry is SectionPreview => Boolean(entry))
+
+      setDragPreviewSections(previews)
+    },
+    [buildSectionPreview, courseCatalog],
+  )
+
+  const handleDragEndEvent = useCallback(
+    (event: DragEndEvent) => {
+      const activeData = event.active?.data?.current as (DragCourseData & { currentSectionKey?: string }) | undefined
+      const overSectionKey = (event.over?.data?.current as { sectionKey?: string } | undefined)?.sectionKey
+
+      if (activeData?.type === "course") {
+        if (overSectionKey) {
+          const target = dragPreviewSections.find((entry) => entry.sectionKey === overSectionKey)
+          if (target) {
+            if (activeData.source === "calendar") {
+              const canonical = activeData.canonicalCode
+              const toRemove = selectedCourses.filter(
+                (course) => getSelectedCourseCanonicalCode(course) === canonical,
+              )
+              toRemove.forEach((course) => removeCourse(course.courseCode, course.section))
+            }
+
+            toggleSectionSelection(target.section, true)
+            setSearchPanelVisible(false)
+          }
+        } else if (activeData.source === "calendar" && activeData.currentSectionKey) {
+          const [courseCode, section] = activeData.currentSectionKey.split("-")
+          if (courseCode && section) {
+            const existing = selectedCourses.find(
+              (course) => course.courseCode === courseCode && course.section === section,
+            )
+            if (existing) {
+              toggleSectionSelection(existing, false)
+            } else {
+              removeCourse(courseCode, section)
+            }
+          }
+        }
+      }
+
+      setDragCourseCode(null)
+      setDragPreviewSections([])
+    },
+    [dragPreviewSections, removeCourse, selectedCourses, toggleSectionSelection],
+  )
+
+  const handleDragCancelEvent = useCallback(
+    (_event: DragCancelEvent) => {
+      setDragCourseCode(null)
+      setDragPreviewSections([])
+    },
+    [],
+  )
+
   // Remove a course from selected courses
-  const removeCourse = (courseCode: string, section: string) => {
+  function removeCourse(courseCode: string, section: string) {
     setSelectedCourses((prev) =>
       prev.filter((course) => !(course.courseCode === courseCode && course.section === section)),
     )
@@ -2708,58 +2931,97 @@ export default function ScheduleMaker() {
     return slotTime >= startTime && slotTime < endTime
   }
 
-  // Fetch available courses from the API
+  // Fetch available courses from the API (primary hosted domain, fallback to local)
   const fetchAvailableCourses = useCallback(async () => {
-    try {
-      const response = await fetch("/api/get-available-courses", {
-        method: "GET",
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-          "Cache-Control": "no-cache",
-        },
-      })
+    const envBase = (process.env.NEXT_PUBLIC_COURSE_API_BASE || "").trim().replace(/\/$/, "")
+    const targetPool = [
+      envBase ? `${envBase}/api/get-available-courses` : "",
+      "https://compareng-tools.vercel.app/api/get-available-courses",
+      "/api/get-available-courses",
+      "http://127.0.0.1:3000/api/get-available-courses",
+    ].filter(Boolean)
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`API returned status: ${response.status}. Details: ${errorText}`)
-      }
-
-      const contentType = response.headers.get("content-type")
-      if (!contentType || !contentType.includes("application/json")) {
-        const text = await response.text()
-        throw new Error(`API did not return JSON. Content-Type: ${contentType || "undefined"}`)
-      }
-
-      const result = await response.json()
-      if (!result.success) {
-        throw new Error(result.error || "Failed to fetch available courses")
-      }
-
-      const payload: CourseSection[] = Array.isArray(result.data) ? result.data : []
-      payload.forEach((course: CourseSection) => {
-        if (!validateDayString(course.meetingDays)) {
-          console.warn(`Invalid day format for ${course.courseCode}: ${course.meetingDays}`)
-        }
-      })
-
-      const parseTimestamp = (value: any) => {
-        if (!value) return null
-        if (typeof value === "number") return value
-        const parsed = Date.parse(value)
-        return Number.isNaN(parsed) ? null : parsed
-      }
-
-      return {
-        data: payload,
-        lastUpdated: parseTimestamp(result.lastUpdated),
-        expired: Boolean(result.isExpired),
-      }
-    } catch (err: any) {
-      console.error("Error fetching available courses:", err)
-      throw new Error(err.message || "Error fetching available courses")
+    if (typeof window !== "undefined") {
+      const originTarget = `${window.location.origin}/api/get-available-courses`
+      targetPool.unshift(originTarget)
     }
-  }, [])
+
+    const targets = Array.from(new Set(targetPool))
+
+    const parseTimestamp = (value: any) => {
+      if (!value) return null
+      if (typeof value === "number") return value
+      const parsed = Date.parse(value)
+      return Number.isNaN(parsed) ? null : parsed
+    }
+
+    const fetchWithTimeout = async (url: string, timeoutMs = 10000) => {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        return await fetch(url, {
+          method: "GET",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+            "Cache-Control": "no-cache",
+          },
+          signal: controller.signal,
+        })
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+
+    let lastError: any = null
+    const errors: string[] = []
+
+    for (const url of targets) {
+      try {
+        const response = await fetchWithTimeout(url)
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => "")
+          throw new Error(`API returned status: ${response.status}. Details: ${errorText}`)
+        }
+
+        const contentType = response.headers.get("content-type")
+        if (!contentType || !contentType.includes("application/json")) {
+          const text = await response.text().catch(() => "")
+          throw new Error(`API did not return JSON. Content-Type: ${contentType || "undefined"}. Body: ${text}`)
+        }
+
+        const result = await response.json()
+        if (!result.success) {
+          throw new Error(result.error || "Failed to fetch available courses")
+        }
+
+        const payload: CourseSection[] = Array.isArray(result.data) ? result.data : []
+        payload.forEach((course: CourseSection) => {
+          if (!validateDayString(course.meetingDays)) {
+            console.warn(`Invalid day format for ${course.courseCode}: ${course.meetingDays}`)
+          }
+        })
+
+        return {
+          data: payload,
+          lastUpdated: parseTimestamp(result.lastUpdated),
+          expired: Boolean(result.isExpired),
+        }
+      } catch (err: any) {
+        lastError = err
+        const message = err?.name === "AbortError" ? "Request timed out after 5s" : err?.message || "Unknown error"
+        errors.push(`${url} → ${message}`)
+        console.error(`Error fetching available courses from ${url}:`, err)
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new Error(`All course endpoints failed. ${errors.join(" | ")}`)
+    }
+
+    throw new Error(lastError?.message || "Error fetching available courses")
+  }, [validateDayString])
 
   const loadTrackerCourseData = useCallback(() => {
     if (typeof window === "undefined") {
@@ -2788,9 +3050,9 @@ export default function ScheduleMaker() {
           const creditsValue =
             typeof course.credits === "number"
               ? course.credits
-              : Number.isFinite(Number.parseFloat(course.credits))
-              ? Number.parseFloat(course.credits)
-              : undefined
+              : typeof course.credits === "string" && Number.isFinite(Number.parseFloat(course.credits))
+                ? Number.parseFloat(course.credits)
+                : undefined
           const prerequisiteList = Array.isArray(course.prerequisites)
             ? course.prerequisites.filter((id: unknown): id is string => typeof id === "string")
             : undefined
@@ -3185,7 +3447,7 @@ const downloadScheduleImage = async () => {
     // Hide edit/chevron icons in header during capture
     const headerEl = cardEl.querySelector('.schedule-card-header') as HTMLElement | null
     const renameButton = headerEl?.querySelector('[aria-label="Rename schedule title"]') as HTMLElement | null
-    const headerSvgs = Array.from(headerEl?.querySelectorAll('svg') ?? []) as HTMLElement[]
+    const headerSvgs = Array.from(headerEl?.querySelectorAll<SVGSVGElement>('svg') ?? [])
     const originalRenameDisplay = renameButton?.style.display
     const svgDisplays = headerSvgs.map((el) => el.style.display)
     if (renameButton) renameButton.style.display = 'none'
@@ -3356,7 +3618,169 @@ const downloadScheduleImage = async () => {
   // Get course color
   const getCourseColor = (course: SelectedCourse) => {
     const key = `${course.courseCode}-${course.section}`
-    return customizations[key]?.color || DEFAULT_CUSTOM_COLOR // Default blue
+    const custom = customizations[key]?.color
+    if (custom) return custom
+    return getAutoColorForCourse(course.courseCode)
+  }
+
+  const SectionPreviewSlot: React.FC<{
+    droppableId: string
+    sectionKey: string
+    left: string
+    top: number
+    height: number
+    width: string
+    color: string
+    label: string
+    timeLabel: string
+    roomLabel: string
+    hasSlots: boolean
+    isConflicted: boolean
+  }> = ({ droppableId, sectionKey, left, top, height, width, color, label, timeLabel, roomLabel, hasSlots, isConflicted }) => {
+    const { setNodeRef, isOver } = useDroppable({ id: droppableId, data: { type: "section-preview", sectionKey } })
+    const background = lightenHexColor(color, 0.38)
+
+    return (
+      <div
+        ref={setNodeRef}
+        className="absolute rounded-md border text-[11px] leading-snug shadow-sm transition"
+        style={{
+          left,
+          top,
+          height,
+          width,
+          backgroundColor: background,
+          borderColor: isConflicted ? "#f59e0b" : color,
+          opacity: isOver ? 1 : 0.9,
+          boxShadow: isOver ? "0 0 0 2px rgba(59,130,246,0.45)" : undefined,
+          zIndex: 15,
+          padding: "6px 8px",
+          boxSizing: "border-box",
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+        }}
+      >
+        <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-900">
+          <span className="truncate">{label}</span>
+          <Badge
+            variant="outline"
+            className={`h-5 px-2 text-[10px] ${hasSlots ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}
+          >
+            {hasSlots ? "Open" : "Full"}
+          </Badge>
+        </div>
+        <div className="text-[11px] text-slate-700">
+          <div>{timeLabel}</div>
+          <div className="text-[10px] text-slate-500">{roomLabel}</div>
+          {isConflicted && <div className="mt-1 text-[10px] text-amber-700">May overlap with an existing block</div>}
+        </div>
+      </div>
+    )
+  }
+
+  const ScheduledBlock: React.FC<{
+    course: SelectedCourse
+    day: DayToken
+    style: React.CSSProperties
+    displayTitle: string
+    showTime: boolean
+    showRoom: boolean
+    displayTime: string
+    displayRoom: string
+    compactTitle: boolean
+    blockPadding: string
+    textColor: string
+  }> = ({
+    course,
+    day,
+    style,
+    displayTitle,
+    showTime,
+    showRoom,
+    displayTime,
+    displayRoom,
+    compactTitle,
+    blockPadding,
+    textColor,
+  }) => {
+    const canonicalCode = getSelectedCourseCanonicalCode(course)
+    const draggableId = `calendar-${canonicalCode}-${course.section}-${day}`
+
+    const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+      id: draggableId,
+      data: {
+        type: "course",
+        canonicalCode,
+        source: "calendar" as const,
+        currentSectionKey: `${course.courseCode}-${course.section}`,
+      },
+    })
+
+    return (
+      <div
+        ref={setNodeRef}
+        {...attributes}
+        {...listeners}
+        className="absolute rounded p-1 cursor-grab active:cursor-grabbing"
+        style={{
+          ...style,
+          color: textColor,
+          opacity: isDragging ? 0.82 : 1,
+        }}
+        role="button"
+        aria-label={`Drag ${displayTitle}`}
+      >
+        <div
+          className={`font-bold leading-tight break-words ${
+            compactTitle ? "text-[11px] line-clamp-2" : "text-[12px] line-clamp-2"
+          }`}
+        >
+          {displayTitle}
+        </div>
+        {showTime && (
+          <div className="text-[11px] leading-tight break-words">
+            {displayTime}
+          </div>
+        )}
+        {showRoom && (
+          <div className="text-[11px] leading-tight break-words">
+            {displayRoom}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const CourseDragWrapper: React.FC<{
+    canonicalCode: string
+    source: "search" | "selected"
+    className?: string
+    onClick?: () => void
+    role?: React.AriaRole
+    tabIndex?: number
+    ariaPressed?: boolean
+    children: React.ReactNode
+  }> = ({ canonicalCode, source, className, onClick, role, tabIndex, ariaPressed, children }) => {
+    const { attributes, listeners, setNodeRef } = useDraggable({
+      id: `${source}-${canonicalCode}`,
+      data: { type: "course", canonicalCode, source } satisfies DragCourseData,
+    })
+
+    return (
+      <div
+        ref={setNodeRef}
+        {...attributes}
+        {...listeners}
+        className={className}
+        onClick={onClick}
+        role={role}
+        tabIndex={tabIndex}
+        aria-pressed={ariaPressed}
+      >
+        {children}
+      </div>
+    )
   }
 
   const MIN_ZOOM_LEVEL = -2
@@ -3450,92 +3874,121 @@ const renderScheduleView = () => {
               />
             ))}
 
-            {/* Course blocks - adjusted 30 minutes up */}
-            {selectedCourses.map(course => {
-              const key = `${course.courseCode}-${course.section}`;
-              const customization = customizations[key] || {};
-              const bgColor = customization.color || DEFAULT_CUSTOM_COLOR;
-              const textColor = getContrastColor(bgColor);
-              const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode);
-              
-              // Calculate exact positions with 30-minute adjustment
-              const [startHour, startMinute] = course.timeStart.split(':').map(Number);
-              const [endHour, endMinute] = course.timeEnd.split(':').map(Number);
-              
-              // Subtract 30 minutes from both start and end times
-              let adjustedStartHour = startHour;
-              let adjustedStartMinute = startMinute - 30;
-              let adjustedEndHour = endHour;
-              let adjustedEndMinute = endMinute - 30;
-              
-              // Handle minute underflow
-              if (adjustedStartMinute < 0) {
-                adjustedStartHour -= 1;
-                adjustedStartMinute += 60;
-              }
-              if (adjustedEndMinute < 0) {
-                adjustedEndHour -= 1;
-                adjustedEndMinute += 60;
-              }
-              
-              const startTop = HEADER_HEIGHT + 
-                ((adjustedStartHour - FIRST_HOUR) * HOUR_HEIGHT) + 
-                (adjustedStartMinute / 60 * HOUR_HEIGHT);
-              
-              const endTop = HEADER_HEIGHT + 
-                ((adjustedEndHour - FIRST_HOUR) * HOUR_HEIGHT) + 
-                (adjustedEndMinute / 60 * HOUR_HEIGHT);
-              
-              const height = endTop - startTop;
-              const showTime = height >= 64;
-              const showRoom = height >= 88;
-              const compactTitle = height < 72;
-              const blockPadding = height < 56 ? '4px 8px' : '6px 10px 12px';
-              const justifyContent = showTime || showRoom ? 'space-between' : 'center';
+            {/* Drag preview slots */}
+            {dragPreviewSections.map((preview) =>
+              preview.parsedDays.map((day) => {
+                const dayIndex = DAYS.indexOf(day)
+                if (dayIndex === -1) return null
 
-              return course.parsedDays.map(day => {
-                const dayIndex = DAYS.indexOf(day);
-                if (dayIndex === -1) return null;
+                const startOffsetMinutes = preview.startMinutes - FIRST_HOUR * 60
+                const endOffsetMinutes = preview.endMinutes - FIRST_HOUR * 60
+                const heightMinutes = endOffsetMinutes - startOffsetMinutes
+                if (heightMinutes <= 0) return null
+
+                const top = (startOffsetMinutes / 60) * HOUR_HEIGHT
+                const height = (heightMinutes / 60) * HOUR_HEIGHT
+
+                const hasConflict = selectedCourses.some(
+                  (course) =>
+                    course.parsedDays.includes(day) &&
+                    preview.startMinutes < course.endMinutes &&
+                    preview.endMinutes > course.startMinutes,
+                )
+
+                const droppableId = `${preview.sectionKey}__${day}`
 
                 return (
-                  <div
-                    key={`${key}-${day}`}
-                    className="absolute rounded p-1"
-                    style={{
-                      left: `calc(var(--time-col) + var(--day-width) * ${dayIndex})`,
-                      top: `${startTop}px`,
-                      height: `${height}px`,
-                      backgroundColor: bgColor,
-                      color: textColor,
-                      width: `calc(var(--day-width) - 4px)`,
-                      zIndex: 10,
-                      margin: '0 2px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      justifyContent,
-                      padding: blockPadding,
-                      boxSizing: 'border-box',
-                      overflow: 'hidden',
-                      gap: showTime || showRoom ? 4 : 0,
-                    }}
-                  >
-                    <div className={`font-bold leading-tight break-words ${compactTitle ? 'text-[11px] line-clamp-2' : 'text-[12px] line-clamp-2'}`}>
-                      {displayTitle}
-                    </div>
-                    {showTime && (
-                      <div className="text-[11px] leading-tight break-words">
-                        {course.displayTime}
-                      </div>
-                    )}
-                    {showRoom && (
-                      <div className="text-[11px] leading-tight break-words">
-                        {course.displayRoom}
-                      </div>
-                    )}
-                  </div>
-                );
-              });
-            })}
+                  <SectionPreviewSlot
+                    key={droppableId}
+                    droppableId={droppableId}
+                    sectionKey={preview.sectionKey}
+                    left={`calc(var(--time-col) + var(--day-width) * ${dayIndex})`}
+                    top={top}
+                    height={height}
+                    width={`calc(var(--day-width) - 4px)`}
+                    color={preview.color}
+                    label={`${getDisplayCode(preview.section.courseCode)} ${preview.section.section}`}
+                    timeLabel={preview.displayTime}
+                    roomLabel={preview.displayRoom}
+                    hasSlots={preview.section.hasSlots}
+                    isConflicted={hasConflict}
+                  />
+                )
+              }),
+            )}
+
+            {/* Course blocks */}
+            <AnimatePresence initial={false}>
+              {selectedCourses.flatMap((course) => {
+                const key = `${course.courseCode}-${course.section}`
+                const customization = customizations[key] || {}
+                const bgColor = getCourseColor(course)
+                const textColor = getContrastColor(bgColor)
+                const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode)
+
+                // Calculate exact positions based on actual start/end
+                const [startHour, startMinute] = course.timeStart.split(":").map(Number)
+                const [endHour, endMinute] = course.timeEnd.split(":").map(Number)
+
+                const startTop = (startHour - FIRST_HOUR) * HOUR_HEIGHT + (startMinute / 60) * HOUR_HEIGHT
+
+                const endTop = (endHour - FIRST_HOUR) * HOUR_HEIGHT + (endMinute / 60) * HOUR_HEIGHT
+
+                const height = endTop - startTop
+                const showTime = height >= 64
+                const showRoom = height >= 88
+                const compactTitle = height < 72
+                const blockPadding = height < 56 ? "4px 8px" : "6px 10px 12px"
+                const justifyContent = showTime || showRoom ? "space-between" : "center"
+
+                return course.parsedDays.map((day) => {
+                  const dayIndex = DAYS.indexOf(day)
+                  if (dayIndex === -1) return null
+
+                  const blockStyle: React.CSSProperties = {
+                    left: `calc(var(--time-col) + var(--day-width) * ${dayIndex})`,
+                    top: `${startTop}px`,
+                    height: `${height}px`,
+                    backgroundColor: bgColor,
+                    width: `calc(var(--day-width) - 4px)`,
+                    zIndex: 10,
+                    margin: "0 2px",
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent,
+                    padding: blockPadding,
+                    boxSizing: "border-box",
+                    overflow: "hidden",
+                    gap: showTime || showRoom ? 4 : 0,
+                  }
+
+                  return (
+                    <motion.div
+                      key={`${key}-${day}`}
+                      layout
+                      initial={{ opacity: 0, scale: 0.96, y: -6 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.96, y: -8 }}
+                      transition={{ duration: 0.16, ease: "easeInOut" }}
+                    >
+                      <ScheduledBlock
+                        course={course}
+                        day={day}
+                        style={blockStyle}
+                        displayTitle={displayTitle}
+                        showTime={showTime}
+                        showRoom={showRoom}
+                        displayTime={course.displayTime}
+                        displayRoom={course.displayRoom}
+                        compactTitle={compactTitle}
+                        blockPadding={blockPadding}
+                        textColor={textColor}
+                      />
+                    </motion.div>
+                  )
+                })
+              })}
+            </AnimatePresence>
           </div>
         </div>
       </div>
@@ -3544,7 +3997,13 @@ const renderScheduleView = () => {
 };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-gray-50 text-gray-900 transition-colors duration-200 dark:bg-gray-900 dark:text-gray-100">
+    <DndContext
+      sensors={sensors}
+      onDragStart={handleDragStartEvent}
+      onDragEnd={handleDragEndEvent}
+      onDragCancel={handleDragCancelEvent}
+    >
+      <div className="flex h-screen flex-col overflow-hidden bg-gray-50 text-gray-900 transition-colors duration-200 dark:bg-gray-900 dark:text-gray-100">
       <Dialog open={showMobilePrompt} onOpenChange={(open) => setShowMobilePrompt(open)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -3900,7 +4359,7 @@ const renderScheduleView = () => {
                   size="icon"
                   onClick={() => setErrorDialogOpen(true)}
                   aria-label="Show error details"
-                  className="h-8 w-8 border-amber-400/70 text-amber-600 transition-colors hover:bg-amber-100/60 dark:border-amber-400/40 dark:text-amber-300 dark:hover:bg-amber-500/10"
+                  className="h-8 w-8 border-amber-400/70 text-amber-600 transition-colors hover:bg-amber-100/60 dark:border-amber-400/40 dark:text-amber-300 dark:hover:bg-amber-500/10 animate-pulse"
                 >
                   <FileWarning className="h-3.5 w-3.5" />
                 </Button>
@@ -4061,9 +4520,10 @@ const renderScheduleView = () => {
                                         const isSelected = selectedCourseCodes.includes(course.code)
                                         const availabilityMeta = availabilityBadgeConfig[course.availability]
                                         return (
-                                          <button
+                                          <CourseDragWrapper
                                             key={`s-${course.code}`}
-                                            type="button"
+                                            canonicalCode={course.code}
+                                            source="search"
                                             onClick={() => {
                                               toggleCourseSelection(course.code)
                                               setSearchPanelVisible(false)
@@ -4071,6 +4531,8 @@ const renderScheduleView = () => {
                                             className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-blue-400 hover:bg-blue-50/70 dark:hover:bg-blue-900/30 ${
                                               isSelected ? "border-blue-500 bg-blue-50/80 dark:bg-blue-900/30" : "border-slate-200 dark:border-slate-700"
                                             }`}
+                                            role="button"
+                                            tabIndex={0}
                                           >
                                             <div className="flex items-start justify-between gap-3 text-[13px]">
                                               <div className="min-w-0">
@@ -4100,7 +4562,7 @@ const renderScheduleView = () => {
                                                 </Badge>
                                               </div>
                                             </div>
-                                          </button>
+                                          </CourseDragWrapper>
                                         )
                                       })}
                                     </div>
@@ -4109,9 +4571,10 @@ const renderScheduleView = () => {
                                     const isSelected = selectedCourseCodes.includes(course.code)
                                     const availabilityMeta = availabilityBadgeConfig[course.availability]
                                     return (
-                                      <button
+                                      <CourseDragWrapper
                                         key={course.code}
-                                        type="button"
+                                        canonicalCode={course.code}
+                                        source="search"
                                         onClick={() => {
                                           toggleCourseSelection(course.code)
                                           setSearchPanelVisible(false)
@@ -4119,6 +4582,8 @@ const renderScheduleView = () => {
                                         className={`w-full rounded-lg border px-3 py-2 text-left text-[13px] transition hover:border-blue-400 hover:bg-blue-50/60 dark:hover:bg-blue-900/20 ${
                                           isSelected ? "border-blue-500 bg-blue-50/70 dark:bg-blue-900/20" : "border-slate-200 dark:border-slate-700"
                                         }`}
+                                        role="button"
+                                        tabIndex={0}
                                       >
                                         <div className="flex items-start justify-between gap-3">
                                           <div className="min-w-0">
@@ -4145,7 +4610,7 @@ const renderScheduleView = () => {
                                               </Badge>
                                           </div>
                                         </div>
-                                      </button>
+                                      </CourseDragWrapper>
                                     )
                                   })}
                                 </div>
@@ -4166,86 +4631,146 @@ const renderScheduleView = () => {
                   <p className="text-xs text-slate-500">Pick sections to send them to the calendar.</p>
                 </div>
                 <div className="space-y-2 max-h-[560px] overflow-y-auto">
-                {selectedCourseCodes.length === 0 && (
-                  <p className="text-sm text-slate-500">No courses selected yet.</p>
-                )}
-                {selectedCourseCodes.map((code) => {
-                  const course = courseCatalog.find((c) => c.code === code)
-                  if (!course) return null
-                  const activeSections = selectedCourses.filter(
-                    (section) => getSelectedCourseCanonicalCode(section) === code,
-                  )
-                  const sectionsCount = course.sections.length
-                  return (
-                    <div
-                      key={code}
-                      className="group relative space-y-1.5 border-l border-slate-200 pl-2 dark:border-slate-700"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <p className="text-[13px] font-semibold leading-tight flex items-center gap-1.5">
-                            {course.code}
-                            <span className="text-[11px] font-medium text-slate-500">({course.credits}U)</span>
-                          </p>
-                          <p className="text-[11px] text-slate-500 leading-snug break-words">{course.name}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                            {sectionsCount} section{sectionsCount === 1 ? "" : "s"}
-                          </span>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              toggleCourseSelection(code)
-                            }}
-                            className="h-7 w-7 rounded-full p-0 text-slate-500 hover:text-red-600 hover:bg-red-50"
-                            title="Remove course from selected list"
-                            aria-label={`Remove ${course.code} from selected courses`}
+                  {selectedCourseCodes.length === 0 && (
+                    <p className="text-sm text-slate-500">No courses selected yet.</p>
+                  )}
+                  <AnimatePresence initial={false}>
+                    {selectedCourseCodes.map((code) => {
+                      const course = courseCatalog.find((c) => c.code === code)
+                      if (!course) return null
+                      const activeSections = selectedCourses.filter(
+                        (section) => getSelectedCourseCanonicalCode(section) === code,
+                      )
+                      const sectionsCount = course.sections.length
+                      return (
+                        <motion.div
+                          key={code}
+                          layout
+                          initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -8, scale: 0.96 }}
+                          transition={{ duration: 0.16, ease: "easeInOut" }}
+                        >
+                          <CourseDragWrapper
+                            canonicalCode={code}
+                            source="selected"
+                            className="group relative space-y-1.5 border-l border-slate-200 pl-2 dark:border-slate-700"
                           >
-                            <X className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="space-y-1.5">
-                        {sectionsCount === 0 && (
-                          <p className="text-[11px] text-amber-600 dark:text-amber-300">No extracted sections yet.</p>
-                        )}
-                        {course.sections.map((section) => {
-                          const isSelectedSection = activeSections.some(
-                            (selected) => selected.section === section.section,
-                          )
-                          return (
-                            <div
-                              key={`${section.courseCode}-${section.section}`}
-                              className="flex items-start gap-2 rounded-sm px-1.5 py-1.5"
-                            >
-                              <Checkbox
-                                id={`${section.courseCode}-${section.section}`}
-                                checked={isSelectedSection}
-                                onCheckedChange={(checked) => toggleSectionSelection(section, Boolean(checked))}
-                              />
-                              <div className="flex-1 text-[12px] leading-snug">
-                                <div className="flex items-center justify-between">
-                                  <span className="font-semibold text-[12px]">{section.section}</span>
-                                  <Badge variant={section.hasSlots ? "secondary" : "destructive"} className="text-[10px] px-2">
-                                    {section.hasSlots ? `${section.remainingSlots}/${section.classSize}` : "Full"}
-                                  </Badge>
-                                </div>
-                                <p className="text-[11px] text-slate-500">{formatMeetingDays(section.meetingDays)}</p>
-                                <p className="text-[11px] text-slate-500">{cleanTimeString(section.meetingTime)}</p>
-                                <p className="text-[11px] text-slate-500">{cleanRoomString(section.room)}</p>
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="text-[13px] font-semibold leading-tight flex items-center gap-1.5">
+                                  {course.code}
+                                  <span className="text-[11px] font-medium text-slate-500">({course.credits}U)</span>
+                                </p>
+                                <p className="text-[11px] text-slate-500 leading-snug break-words">{course.name}</p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                                  {sectionsCount} section{sectionsCount === 1 ? "" : "s"}
+                                </span>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => {
+                                    toggleCourseSelection(code)
+                                  }}
+                                  className="h-7 w-7 rounded-full p-0 text-slate-500 hover:text-red-600 hover:bg-red-50"
+                                  title="Remove course from selected list"
+                                  aria-label={`Remove ${course.code} from selected courses`}
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </Button>
                               </div>
                             </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )
-                })}
+                            <div className="space-y-1.5">
+                              {sectionsCount === 0 && (
+                                <p className="text-[11px] text-amber-600 dark:text-amber-300">No extracted sections yet.</p>
+                              )}
+                              {course.sections.map((section) => {
+                                const isSelectedSection = activeSections.some(
+                                  (selected) => selected.section === section.section,
+                                )
+                                return (
+                                  <div
+                                    key={`${section.courseCode}-${section.section}`}
+                                    className="flex items-start gap-2 rounded-sm px-1.5 py-1.5"
+                                  >
+                                    <Checkbox
+                                      id={`${section.courseCode}-${section.section}`}
+                                      checked={isSelectedSection}
+                                      onCheckedChange={(checked) => toggleSectionSelection(section, Boolean(checked))}
+                                    />
+                                    <div className="flex-1 text-[12px] leading-snug">
+                                      <div className="flex items-center justify-between">
+                                        <span className="font-semibold text-[12px]">{section.section}</span>
+                                        <Badge variant={section.hasSlots ? "secondary" : "destructive"} className="text-[10px] px-2">
+                                          {section.hasSlots ? `${section.remainingSlots}/${section.classSize}` : "Full"}
+                                        </Badge>
+                                      </div>
+                                      <p className="text-[11px] text-slate-500">{formatMeetingDays(section.meetingDays)}</p>
+                                      <p className="text-[11px] text-slate-500">{cleanTimeString(section.meetingTime)}</p>
+                                      <p className="text-[11px] text-slate-500">{cleanRoomString(section.room)}</p>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </CourseDragWrapper>
+                        </motion.div>
+                      )
+                    })}
+                  </AnimatePresence>
                 </div>
               </CardContent>
             </Card>
+            {importExportMounted ? (
+              <Card className="bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
+                <CardContent className="pt-4 pb-3">
+                  <div className="grid w-full grid-cols-2 gap-3">
+                    <Button
+                      variant="outline"
+                      type="button"
+                      className="w-full justify-center gap-2 text-[11px] h-8"
+                      onClick={handleExportSelectedCourses}
+                    >
+                      <Download className="h-3 w-3" />
+                      Export selected
+                    </Button>
+                    <Button
+                      variant="outline"
+                      type="button"
+                      className="w-full justify-center gap-2 text-[11px] h-8"
+                      onClick={triggerImportSelectedCourses}
+                    >
+                      <Upload className="h-3 w-3" />
+                      Import selected
+                    </Button>
+                  </div>
+                  {importStatus && (
+                    <p
+                      className={`mt-2 text-[11px] font-medium ${
+                        importStatus.type === "success"
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : importStatus.type === "warning"
+                            ? "text-amber-600 dark:text-amber-400"
+                            : "text-rose-600 dark:text-rose-400"
+                      }`}
+                    >
+                      {importStatus.message}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="h-[76px]" aria-hidden="true" />
+            )}
+            <input
+              ref={importFileInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="sr-only"
+              onChange={handleImportSelectedCourses}
+            />
           </div>
 
           {/* Center Panel */}
@@ -4296,7 +4821,9 @@ const renderScheduleView = () => {
                     </>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <CardTitle className="text-left text-xl font-semibold leading-tight">{scheduleTitle}</CardTitle>
+                      <h2 className="text-xl font-semibold leading-tight text-slate-900 dark:text-white">
+                        {scheduleTitle}
+                      </h2>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -4377,17 +4904,63 @@ const renderScheduleView = () => {
                           {label}
                         </button>
                         {versions.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              confirmDeleteVersion(version.id)
+                          <Popover
+                            open={deleteConfirm?.id === version.id && deleteConfirm?.scope === "chip"}
+                            onOpenChange={(open) => {
+                              setDeleteConfirm(open ? { id: version.id, scope: "chip" } : null)
                             }}
-                            className="absolute -top-1 -right-1 hidden h-5 w-5 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-500 transition group-hover:flex hover:border-rose-500 hover:bg-rose-500 hover:text-white dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-rose-400 dark:hover:bg-rose-500/80 dark:hover:text-white"
-                            aria-label={`Delete ${version.name}`}
                           >
-                            <X className="h-3 w-3" />
-                          </button>
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  openDeleteConfirm(version.id, "chip")
+                                }}
+                                    className={`absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-500 opacity-0 transition hover:border-rose-500 hover:bg-rose-500 hover:text-white dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-rose-400 dark:hover:bg-rose-500/80 dark:hover:text-white group-hover:opacity-100 data-[state=open]:opacity-100 ${
+                                      deleteConfirm?.id === version.id && deleteConfirm?.scope === "chip" ? "opacity-100" : ""
+                                    }`}
+                                aria-label={`Delete ${version.name}`}
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              side="top"
+                              align="end"
+                              sideOffset={4}
+                              className="w-48 space-y-2 text-xs"
+                              onOpenAutoFocus={(event) => event.preventDefault()}
+                            >
+                              <p className="font-semibold text-slate-700 dark:text-slate-200">Delete this version?</p>
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 px-2"
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                        setDeleteConfirm(null)
+                                  }}
+                                >
+                                  Cancel
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="destructive"
+                                  size="sm"
+                                  className="h-7 px-2"
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    handleDeleteVersionConfirmed(version.id)
+                                  }}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </PopoverContent>
+                          </Popover>
                         )}
                       </div>
                     )
@@ -4431,48 +5004,6 @@ const renderScheduleView = () => {
                     </PopoverContent>
                   </Popover>
                 </div>
-                {versionsExpanded && versions.length > 0 && (
-                  <div className="space-y-2">
-                    {versions.map((version) => {
-                      const isActive = version.id === activeVersionState?.activeVersionId
-                      return (
-                        <div
-                          key={`${version.id}-expanded`}
-                          className={`flex items-center justify-between rounded-lg border px-3 py-2 ${
-                            isActive
-                              ? "border-blue-500 bg-blue-50/70 dark:bg-blue-900/20"
-                              : "border-slate-200 dark:border-slate-700"
-                          }`}
-                        >
-                          <div>
-                            <p className="text-sm font-semibold">{version.name}</p>
-                            <p className="text-xs text-slate-500">{version.selectedCourses.length} sections</p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {!isActive && (
-                              <Button variant="ghost" size="sm" onClick={() => setActiveVersion(version.id)}>
-                                Activate
-                              </Button>
-                            )}
-                            {versions.length > 1 && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => confirmDeleteVersion(version.id)}
-                                aria-label="Delete version"
-                              >
-                                <Trash className="h-4 w-4" />
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-                {!versionsExpanded && versions.length === 0 && (
-                  <p className="text-sm text-slate-500">No versions yet. Use + to add one.</p>
-                )}
                 {versions.length > 0 && (
                   <div className="flex justify-center">
                     <button
@@ -4483,6 +5014,181 @@ const renderScheduleView = () => {
                       {versionsExpanded ? "See less" : "See more"}
                     </button>
                   </div>
+                )}
+                <AnimatePresence mode="sync" initial={false}>
+                  {versionsExpanded && versions.length > 0 && (
+                    <motion.div
+                      key="versions-expanded-wrapper"
+                      initial={{ opacity: 0, height: 0, y: -6 }}
+                      animate={{ opacity: 1, height: "auto", y: 0 }}
+                      exit={{ opacity: 0, height: 0, y: -6 }}
+                      transition={{ duration: 0.22, ease: "easeInOut" }}
+                      className="space-y-2 overflow-hidden"
+                    >
+                      {versions.map((version) => {
+                        const isActive = version.id === activeVersionState?.activeVersionId
+                        const isEditing = editingVersionId === version.id
+                        const sectionCount = version.selectedCourses.length
+                        return (
+                          <motion.div
+                            key={`${version.id}-expanded`}
+                            layout
+                            initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: -10, scale: 0.98 }}
+                            transition={{ duration: 0.16, ease: "easeInOut" }}
+                            className={`group flex items-center justify-between rounded-lg border px-3 py-2 ${
+                              isActive
+                                ? "border-blue-500 bg-blue-50/70 dark:bg-blue-900/20"
+                                : "border-slate-200 dark:border-slate-700"
+                            }`}
+                          >
+                            <div className="flex-1 min-w-0 pr-3">
+                              {isEditing ? (
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    value={versionNameDraft}
+                                    onChange={(e) => setVersionNameDraft(e.currentTarget.value)}
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter") {
+                                        event.preventDefault()
+                                        saveVersionName()
+                                      }
+                                      if (event.key === "Escape") {
+                                        event.preventDefault()
+                                        cancelRenamingVersion()
+                                      }
+                                    }}
+                                    className="h-8 text-sm"
+                                    aria-label={`Rename ${version.name}`}
+                                    autoFocus
+                                  />
+                                  <Button variant="ghost" size="icon" onClick={saveVersionName} aria-label="Save name">
+                                    <Check className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={cancelRenamingVersion}
+                                    aria-label="Cancel rename"
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-3">
+                                  <div
+                                    className="min-w-0 cursor-text"
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      startRenamingVersion(version)
+                                    }}
+                                    title="Click to rename"
+                                  >
+                                    <p className="text-sm font-semibold truncate">{version.name}</p>
+                                    <p className="text-xs text-slate-500">{sectionCount} sections</p>
+                                  </div>
+                                  <div className="relative flex items-center gap-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        startRenamingVersion(version)
+                                      }}
+                                      onMouseEnter={() => setHideActivateHover(true)}
+                                      onMouseLeave={() => setHideActivateHover(false)}
+                                      aria-label={`Rename ${version.name}`}
+                                    >
+                                      <Pencil className="h-4 w-4" />
+                                    </Button>
+                                    {!isEditing && (
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className={`pointer-events-none opacity-0 absolute left-9 top-1/2 -translate-y-1/2 transition ${
+                                          hideActivateHover ? "" : "group-hover:opacity-100 group-hover:pointer-events-auto"
+                                        }`}
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          setActiveVersion(version.id)
+                                        }}
+                                        aria-label={`Activate ${version.name}`}
+                                      >
+                                        Activate
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            {!isEditing && versions.length > 1 && (
+                              <div className="flex items-center pl-2">
+                                <Popover
+                                  open={deleteConfirm?.id === version.id && deleteConfirm?.scope === "expanded"}
+                                  onOpenChange={(open) => setDeleteConfirm(open ? { id: version.id, scope: "expanded" } : null)}
+                                >
+                                  <PopoverTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        openDeleteConfirm(version.id, "expanded")
+                                      }}
+                                      onMouseEnter={() => setHideActivateHover(true)}
+                                      onMouseLeave={() => setHideActivateHover(false)}
+                                      aria-label={`Delete ${version.name}`}
+                                    >
+                                      <Trash className="h-4 w-4" />
+                                    </Button>
+                                  </PopoverTrigger>
+                                  <PopoverContent
+                                    side="top"
+                                    align="end"
+                                    sideOffset={6}
+                                    className="w-48 space-y-2 text-xs"
+                                    onOpenAutoFocus={(event) => event.preventDefault()}
+                                  >
+                                    <p className="font-semibold text-slate-700 dark:text-slate-200">Delete this version?</p>
+                                    <div className="flex justify-end gap-2">
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-7 px-2"
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          setDeleteConfirm(null)
+                                        }}
+                                      >
+                                        Cancel
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="destructive"
+                                        size="sm"
+                                        className="h-7 px-2"
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          handleDeleteVersionConfirmed(version.id)
+                                        }}
+                                      >
+                                        Delete
+                                      </Button>
+                                    </div>
+                                  </PopoverContent>
+                                </Popover>
+                              </div>
+                            )}
+                          </motion.div>
+                        )
+                      })}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                {versions.length === 0 && (
+                  <p className="text-sm text-slate-500">No versions yet. Use + to add one.</p>
                 )}
               </CardContent>
             </Card>
@@ -4518,5 +5224,28 @@ const renderScheduleView = () => {
         </div>
       </div>
     </div>
+
+      <Dialog open={Boolean(importErrorDialog)} onOpenChange={(open) => (!open ? closeImportDialog() : undefined)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{importErrorDialog?.title || "Import notice"}</DialogTitle>
+            <DialogDescription>{importErrorDialog?.message}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" onClick={closeImportDialog}>
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <DragOverlay dropAnimation={null}>
+        {dragCourseCode ? (
+          <div className="rounded-md border border-slate-300 bg-white px-3 py-1 text-sm font-semibold shadow-lg dark:border-slate-700 dark:bg-slate-800">
+            Drag {getDisplayCode(dragCourseCode)}
+          </div>
+        ) : null}
+      </DragOverlay>
+    </DndContext>
   )
 }

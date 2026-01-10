@@ -945,48 +945,53 @@ export default function AcademicPlanner() {
 
       // Load available sections
       try {
-        // First check if the API endpoint exists
-        const response = await fetch("/api/get-available-courses", {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-          },
-        })
+        const targets = ["https://compareng-tools.vercel.app/api/get-available-courses", "/api/get-available-courses"]
+        let fetched = false
+        let lastErr: any = null
 
-        // Log response details for debugging
-        console.log("API Response status:", response.status)
-        console.log("API Response headers:", Object.fromEntries(response.headers.entries()))
+        for (const url of targets) {
+          try {
+            const response = await fetch(url, {
+              method: "GET",
+              headers: {
+                Accept: "application/json",
+              },
+            })
 
-        // Check if response is OK
-        if (!response.ok) {
-          throw new Error(`API returned status: ${response.status}`)
+            console.log("API Response status:", response.status, "from", url)
+            if (!response.ok) {
+              throw new Error(`API returned status: ${response.status}`)
+            }
+
+            const contentType = response.headers.get("content-type")
+            if (!contentType || !contentType.includes("application/json")) {
+              const textResponse = await response.text()
+              console.error("Non-JSON response:", textResponse)
+              throw new Error("API did not return JSON")
+            }
+
+            const result = await response.json()
+            if (!result.success) {
+              throw new Error(result.error || "Failed to fetch available courses")
+            }
+
+            setAvailableSections(Array.isArray(result.data) ? result.data : [])
+            fetched = true
+            break
+          } catch (err) {
+            lastErr = err
+            console.error(`Error fetching available sections from ${url}:`, err)
+          }
         }
 
-        // Try to parse as JSON, but handle non-JSON responses
-        let result
-        const contentType = response.headers.get("content-type")
-
-        if (contentType && contentType.includes("application/json")) {
-          result = await response.json()
-
-          if (result.success) {
-            setAvailableSections(result.data)
-          } else {
-            throw new Error(result.error || "Failed to fetch available courses")
-          }
-        } else {
-          // If not JSON, log the text response for debugging
-          const textResponse = await response.text()
-          console.error("Non-JSON response:", textResponse)
-          throw new Error("API did not return JSON")
+        if (!fetched) {
+          throw lastErr || new Error("Failed to fetch available courses")
         }
       } catch (err: any) {
         console.error("Error fetching available sections:", err)
-        // Set a more informative error message
         setError(
           "Could not load available course sections. Using empty data for recommendations. Error: " + err.message,
         )
-        // Use empty array as fallback
         setAvailableSections([])
       }
 
