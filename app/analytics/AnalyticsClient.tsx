@@ -1,45 +1,146 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import type { AnalyticsSnapshot } from "@/lib/analytics-storage"
+import {
+  KeyRound,
+  Lock,
+  RefreshCw,
+  Trash2,
+  Activity,
+  Sigma,
+  ListOrdered,
+  Clock,
+  BarChart3,
+  Route,
+} from "lucide-react"
 
-type AnalyticsEvent = {
-  name: string
-  at: number
-  path?: string
-  meta?: Record<string, unknown>
+const KEY_STORAGE = "compareng.analytics.key"
+
+const formatCompact = (n: number) => {
+  try {
+    return new Intl.NumberFormat(undefined, { notation: "compact" }).format(n)
+  } catch {
+    return String(n)
+  }
 }
 
-type AnalyticsSnapshot = {
-  counts: Record<string, number>
-  recent: AnalyticsEvent[]
+const isUnauthorizedResponse = async (res: Response) => {
+  if (res.status === 401) return true
+  try {
+    const ct = res.headers.get("content-type") || ""
+    if (!ct.includes("application/json")) return false
+    const body = (await res.json()) as any
+    return body?.error === "Unauthorized"
+  } catch {
+    return false
+  }
+}
+
+function MiniBars({ values, height = 44 }: { values: number[]; height?: number }) {
+  const max = Math.max(1, ...values)
+  return (
+    <div className="flex items-end gap-1" style={{ height }}>
+      {values.map((v, idx) => (
+        <div
+          key={idx}
+          className="w-2 rounded-sm bg-slate-300 dark:bg-slate-700"
+          style={{ height: `${Math.max(2, Math.round((v / max) * height))}px` }}
+          title={`${v}`}
+        />
+      ))}
+    </div>
+  )
+}
+
+function StatCard({
+  title,
+  value,
+  sub,
+  icon,
+}: {
+  title: string
+  value: string
+  sub?: string
+  icon: React.ReactNode
+}) {
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs text-muted-foreground">{title}</div>
+        <div className="text-slate-500 dark:text-slate-400">{icon}</div>
+      </div>
+      <div className="mt-2 text-2xl font-semibold leading-none">{value}</div>
+      {sub ? <div className="mt-1 text-xs text-muted-foreground">{sub}</div> : null}
+    </div>
+  )
 }
 
 export default function AnalyticsClient({ initialKey }: { initialKey?: string }) {
-  const [key, setKey] = useState(initialKey ?? "")
+  const [keyInput, setKeyInput] = useState(initialKey ?? "")
+  const [activeKey, setActiveKey] = useState(initialKey ?? "")
   const [snapshot, setSnapshot] = useState<AnalyticsSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [unauthorized, setUnauthorized] = useState(false)
+  const intervalRef = useRef<number | null>(null)
 
   const query = useMemo(() => {
-    const k = key?.trim()
+    const k = activeKey?.trim()
     return k ? `?key=${encodeURIComponent(k)}` : ""
-  }, [key])
+  }, [activeKey])
+
+  const stopPolling = () => {
+    if (intervalRef.current !== null) {
+      window.clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+  }
+
+  const startPolling = () => {
+    stopPolling()
+    intervalRef.current = window.setInterval(() => {
+      fetchSnapshot().catch(() => {
+        // handled in fetchSnapshot
+      })
+    }, 5000)
+  }
+
+  const applyKey = (next: string) => {
+    const trimmed = next.trim()
+    setActiveKey(trimmed)
+    try {
+      if (trimmed) localStorage.setItem(KEY_STORAGE, trimmed)
+      else localStorage.removeItem(KEY_STORAGE)
+    } catch {
+      // ignore storage failures
+    }
+  }
 
   const fetchSnapshot = async () => {
     setLoading(true)
     try {
       const res = await fetch(`/api/analytics${query}`, { cache: "no-store" })
       if (!res.ok) {
-        const text = await res.text()
+        const is401 = await isUnauthorizedResponse(res)
+        if (is401) {
+          setUnauthorized(true)
+          setSnapshot(null)
+          stopPolling()
+          throw new Error("Unauthorized. Enter the analytics key to view this page.")
+        }
+        const text = await res.text().catch(() => "")
         throw new Error(text || `HTTP ${res.status}`)
       }
       const data = (await res.json()) as AnalyticsSnapshot
       setSnapshot(data)
       setError(null)
+      setUnauthorized(false)
+      startPolling()
     } catch (e: any) {
       setSnapshot(null)
       setError(e?.message || "Failed to load analytics")
@@ -52,7 +153,15 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
     setLoading(true)
     try {
       const res = await fetch(`/api/analytics${query}`, { method: "DELETE" })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) {
+        const is401 = await isUnauthorizedResponse(res)
+        if (is401) {
+          setUnauthorized(true)
+          stopPolling()
+          throw new Error("Unauthorized. Enter the analytics key to reset analytics.")
+        }
+        throw new Error(`HTTP ${res.status}`)
+      }
       await fetchSnapshot()
     } catch (e: any) {
       setError(e?.message || "Failed to reset")
@@ -62,15 +171,65 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
   }
 
   useEffect(() => {
+    // Prefer URL-provided key, otherwise fall back to localStorage.
+    try {
+      const stored = localStorage.getItem(KEY_STORAGE)
+      if (!initialKey && stored && !activeKey) {
+        setKeyInput(stored)
+        setActiveKey(stored)
+      }
+      if (initialKey) {
+        localStorage.setItem(KEY_STORAGE, initialKey)
+      }
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
     fetchSnapshot()
-    const id = window.setInterval(fetchSnapshot, 5000)
-    return () => window.clearInterval(id)
+    return () => stopPolling()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query])
 
   const entries = useMemo(() => {
     const counts = snapshot?.counts ?? {}
     return Object.entries(counts).sort((a, b) => b[1] - a[1])
+  }, [snapshot])
+
+  const totals = useMemo(() => {
+    const counts = snapshot?.counts ?? {}
+    const total = Object.values(counts).reduce((a, b) => a + b, 0)
+    const unique = Object.keys(counts).length
+    const lastAt = snapshot?.recent?.[0]?.at
+    return { total, unique, lastAt }
+  }, [snapshot])
+
+  const activityLast24h = useMemo(() => {
+    const recent = snapshot?.recent ?? []
+    const now = Date.now()
+    const hours = 24
+    const buckets = Array.from({ length: hours }, () => 0)
+    for (const evt of recent) {
+      const ageHours = Math.floor((now - evt.at) / 3600000)
+      if (ageHours < 0 || ageHours >= hours) continue
+      const idx = hours - 1 - ageHours
+      buckets[idx]++
+    }
+    return buckets
+  }, [snapshot])
+
+  const topEvents = useMemo(() => entries.slice(0, 8), [entries])
+
+  const pathBreakdown = useMemo(() => {
+    const recent = snapshot?.recent ?? []
+    const map = new Map<string, number>()
+    for (const evt of recent) {
+      const p = evt.path || "(no path)"
+      map.set(p, (map.get(p) ?? 0) + 1)
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8)
   }, [snapshot])
 
   const insights = useMemo(() => {
@@ -158,21 +317,143 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
             <CardTitle className="text-lg">Access</CardTitle>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={fetchSnapshot} disabled={loading}>
+                <RefreshCw className="h-4 w-4" />
                 Refresh
               </Button>
               <Button variant="destructive" size="sm" onClick={reset} disabled={loading}>
+                <Trash2 className="h-4 w-4" />
                 Reset
               </Button>
             </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="text-sm font-medium sm:w-24">Key</div>
-              <Input value={key} onChange={(e) => setKey(e.target.value)} placeholder="(optional)" className="sm:max-w-sm" />
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+              <div className="text-sm font-medium sm:w-24 flex items-center gap-2">
+                <KeyRound className="h-4 w-4" />
+                Key
+              </div>
+              <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+                <Input
+                  value={keyInput}
+                  onChange={(e) => setKeyInput(e.target.value)}
+                  placeholder={unauthorized ? "Required" : "(optional)"}
+                  className="sm:max-w-sm"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") applyKey(keyInput)
+                  }}
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => applyKey(keyInput)}
+                    disabled={loading || keyInput.trim() === activeKey.trim()}
+                  >
+                    Apply
+                  </Button>
+                  {activeKey.trim() ? (
+                    <Badge variant="secondary" className="flex items-center gap-1">
+                      <Lock className="h-3 w-3" />
+                      unlocked
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline">no key</Badge>
+                  )}
+                </div>
+              </div>
             </div>
             {error ? <div className="text-sm text-red-500">{error}</div> : null}
+            {unauthorized ? (
+              <div className="text-xs text-muted-foreground">
+                Set the server env var `ANALYTICS_KEY` and then enter it here (or open the page with `?key=...`).
+              </div>
+            ) : null}
           </CardContent>
         </Card>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <StatCard
+            title="Total events"
+            value={formatCompact(totals.total)}
+            sub="All-time (in-memory)"
+            icon={<Sigma className="h-5 w-5" />}
+          />
+          <StatCard
+            title="Unique event types"
+            value={formatCompact(totals.unique)}
+            sub="Distinct names"
+            icon={<ListOrdered className="h-5 w-5" />}
+          />
+          <StatCard
+            title="Last event"
+            value={totals.lastAt ? new Date(totals.lastAt).toLocaleTimeString() : "—"}
+            sub={totals.lastAt ? new Date(totals.lastAt).toLocaleDateString() : "No events"}
+            icon={<Clock className="h-5 w-5" />}
+          />
+          <StatCard
+            title="Activity (24h)"
+            value={formatCompact(activityLast24h.reduce((a, b) => a + b, 0))}
+            sub="From recent buffer"
+            icon={<Activity className="h-5 w-5" />}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <BarChart3 className="h-5 w-5" />
+                Activity (last 24 hours)
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {snapshot?.recent?.length ? (
+                <div className="space-y-2">
+                  <MiniBars values={activityLast24h} />
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>24h ago</span>
+                    <span>now</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">No events yet.</div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <BarChart3 className="h-5 w-5" />
+                Top events
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {topEvents.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No events yet.</div>
+              ) : (
+                <div className="space-y-2">
+                  {(() => {
+                    const max = Math.max(1, ...topEvents.map(([, c]) => c))
+                    return topEvents.map(([name, count]) => (
+                      <div key={name} className="space-y-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm font-medium truncate">{name}</div>
+                          <Badge variant="secondary">{count}</Badge>
+                        </div>
+                        <div className="h-2 rounded bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                          <div
+                            className="h-full bg-slate-400 dark:bg-slate-600"
+                            style={{ width: `${Math.max(2, Math.round((count / max) * 100))}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))
+                  })()}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <Card className="md:col-span-2">
@@ -296,6 +577,29 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
                         <div className="text-xs text-muted-foreground">{new Date(evt.at).toLocaleString()}</div>
                       </div>
                       {evt.path ? <div className="text-xs text-muted-foreground">{evt.path}</div> : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Route className="h-5 w-5" />
+                Top paths (recent)
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {pathBreakdown.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No events yet.</div>
+              ) : (
+                <div className="space-y-2">
+                  {pathBreakdown.map(([p, count]) => (
+                    <div key={p} className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-medium truncate">{p}</div>
+                      <Badge variant="secondary">{count}</Badge>
                     </div>
                   ))}
                 </div>
