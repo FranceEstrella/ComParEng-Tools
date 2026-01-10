@@ -5864,4 +5864,3 @@ const renderScheduleView = () => {
     </DndContext>
   )
 }
-
