@@ -34,6 +34,7 @@ import {
   Sun,
   Moon,
   Save,
+  Settings,
 } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -240,6 +241,7 @@ const PERIOD_CONFIRM_PREFIX = "planner.period.confirmed"
 const PERIOD_REGULAR_PREFIX = "planner.period.regular"
 const CREDIT_LIMITS_STORAGE_KEY = "planner.creditLimits"
 const SAVED_PLAN_STORAGE_KEY = "planner.savedPlan.v1"
+const AUTO_SAVE_PREF_KEY = "planner.autoSaveEnabled"
 const DEFAULT_CURRICULUM_CODE_SET = new Set(
   (curriculumCodes ?? [])
     .map((code) => (typeof code === "string" ? code.toUpperCase() : ""))
@@ -513,9 +515,15 @@ export default function AcademicPlanner() {
   const [planDirty, setPlanDirty] = useState(false)
   const [planLocked, setPlanLocked] = useState(false)
   const [lastSavedPlan, setLastSavedPlan] = useState<SavedPlanSnapshot | null>(null)
+  const [manualSaveMessage, setManualSaveMessage] = useState<string | null>(null)
+  const [lastSaveSource, setLastSaveSource] = useState<"manual" | "auto" | null>(null)
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(true)
   const [displayAliasMap, setDisplayAliasMap] = useState<Map<string, string>>(new Map())
   const [pendingNavigationHref, setPendingNavigationHref] = useState<string | null>(null)
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
+  const [preferencesDialogOpen, setPreferencesDialogOpen] = useState(false)
+  const [saveHoverLocked, setSaveHoverLocked] = useState(false)
+  const [saveHoverActive, setSaveHoverActive] = useState(false)
   const restoredPlanRef = useRef(false)
   const [startYear, setStartYear] = useState<number>(new Date().getFullYear())
   const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear())
@@ -754,14 +762,29 @@ export default function AcademicPlanner() {
     if (typeof window === "undefined") return
 
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!planDirty) return
+      if (!planDirty && lastSavedPlan) return
       event.preventDefault()
       event.returnValue = ""
     }
 
     window.addEventListener("beforeunload", handleBeforeUnload)
     return () => window.removeEventListener("beforeunload", handleBeforeUnload)
-  }, [planDirty])
+  }, [planDirty, lastSavedPlan])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const stored = window.localStorage.getItem(AUTO_SAVE_PREF_KEY)
+    if (stored === "false") {
+      setAutoSaveEnabled(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(AUTO_SAVE_PREF_KEY, autoSaveEnabled ? "true" : "false")
+    } catch {}
+  }, [autoSaveEnabled])
 
   // Load persisted settings
   useEffect(() => {
@@ -1767,7 +1790,7 @@ export default function AcademicPlanner() {
     [courses, getAvailableSections, findBestSection],
   )
 
-  const saveCurrentPlan = useCallback(() => {
+  const saveCurrentPlan = useCallback((source: "manual" | "auto" = "manual") => {
     const snapshot = buildSavedPlanSnapshot()
     if (!snapshot) return false
 
@@ -1776,6 +1799,11 @@ export default function AcademicPlanner() {
       setLastSavedPlan(snapshot)
       setPlanDirty(false)
       setPlanLocked(true)
+      setLastSaveSource(source)
+      setManualSaveMessage(source === "auto" ? "Auto-saved" : "Saved")
+      if (typeof window !== "undefined") {
+        window.setTimeout(() => setManualSaveMessage(null), 2500)
+      }
       return true
     } catch (err) {
       console.error("Failed to save planner plan", err)
@@ -1783,18 +1811,29 @@ export default function AcademicPlanner() {
     }
   }, [buildSavedPlanSnapshot])
 
+  const handleManualSavePlan = useCallback(() => {
+    const saved = saveCurrentPlan("manual")
+    if (!saved) {
+      setManualSaveMessage("Could not save plan. Please try again.")
+      if (typeof window !== "undefined") {
+        window.setTimeout(() => setManualSaveMessage(null), 2500)
+      }
+    }
+    return saved
+  }, [saveCurrentPlan])
+
   // Auto-save local snapshot shortly after any edits to the plan
   useEffect(() => {
-    if (loading || !planDirty) return
+    if (loading || !planDirty || !autoSaveEnabled) return
     const timeout = window.setTimeout(() => {
-      saveCurrentPlan()
+      saveCurrentPlan("auto")
     }, 1200)
     return () => window.clearTimeout(timeout)
-  }, [loading, planDirty, graduationPlan, startYear, saveCurrentPlan])
+  }, [loading, planDirty, autoSaveEnabled, graduationPlan, startYear, saveCurrentPlan])
 
   const handleNavigationIntent = useCallback(
-    (href: string, event?: React.MouseEvent<HTMLAnchorElement>) => {
-      if (planDirty) {
+    (href: string, event?: React.MouseEvent<HTMLElement>) => {
+      if (planDirty || !lastSavedPlan) {
         event?.preventDefault()
         setPendingNavigationHref(href)
         setLeaveDialogOpen(true)
@@ -1802,7 +1841,7 @@ export default function AcademicPlanner() {
       }
       router.push(href)
     },
-    [planDirty, router],
+    [planDirty, lastSavedPlan, router],
   )
 
   const proceedNavigation = useCallback(
@@ -1822,7 +1861,7 @@ export default function AcademicPlanner() {
 
   const handleSaveAndLeave = useCallback(() => {
     const target = pendingNavigationHref
-    const saved = saveCurrentPlan()
+    const saved = saveCurrentPlan("manual")
     setLeaveDialogOpen(false)
     setPendingNavigationHref(null)
     if (target) {
@@ -5843,6 +5882,23 @@ export default function AcademicPlanner() {
   const pendingPrereqShiftPair = pendingPrereqShift?.pair ?? null
   const pendingPrereqShiftHasDependents = (pendingPrereqShift?.adjustments.length ?? 0) > 0
 
+  const hasSavedPlan = Boolean(lastSavedPlan)
+  const statusLabel = planDirty
+    ? "Unsaved changes"
+    : hasSavedPlan
+    ? lastSaveSource === "auto"
+      ? "Auto-saved"
+      : "Saved"
+    : "Not saved yet"
+  const statusClass = planDirty
+    ? "text-amber-600"
+    : hasSavedPlan
+    ? lastSaveSource === "auto"
+      ? "text-blue-700"
+      : "text-emerald-600"
+    : "text-slate-600"
+  const hoverButtonLabel = planDirty ? "Save Plan" : "Already saved!"
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
       <div
@@ -5855,6 +5911,58 @@ export default function AcademicPlanner() {
           <QuickNavigation onNavigate={handleNavigationIntent} />
         </div>
 
+        <Dialog
+          open={leaveDialogOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              setLeaveDialogOpen(false)
+              setPendingNavigationHref(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-lg max-w-[90vw] w-full overflow-hidden">
+            <DialogHeader>
+              <DialogTitle>Save changes before leaving?</DialogTitle>
+              <DialogDescription>
+                You have planner changes that are not yet saved to your browser. Save now so the Course Tracker sees
+                the latest plan before you switch tools or close this tab.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="flex flex-col sm:flex-row sm:justify-end sm:space-x-2">
+              <Button variant="ghost" className="w-full sm:w-auto" onClick={handleStayOnPage}>
+                Stay on page
+              </Button>
+              <Button variant="secondary" className="w-full sm:w-auto" onClick={handleLeaveWithoutSaving}>
+                Leave without saving
+              </Button>
+              <Button className="w-full sm:w-auto" onClick={handleSaveAndLeave}>
+                Save and continue
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={preferencesDialogOpen} onOpenChange={setPreferencesDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Planner Preferences</DialogTitle>
+              <DialogDescription>Adjust how the Academic Planner handles saving and automation.</DialogDescription>
+            </DialogHeader>
+            <div className="flex items-center justify-between gap-3 py-2">
+              <div>
+                <p className="font-medium">Auto-save plan changes</p>
+                <p className="text-sm text-muted-foreground">Automatically save after edits so Course Tracker stays in sync.</p>
+              </div>
+              <Switch checked={autoSaveEnabled} onCheckedChange={setAutoSaveEnabled} />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setPreferencesDialogOpen(false)}>
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <div className="mb-6" ref={topHeaderRef}>
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
@@ -5863,7 +5971,58 @@ export default function AcademicPlanner() {
                 Plan your path to graduation based on your current progress
               </p>
             </div>
-            <div className="flex items-center gap-2 self-start md:self-auto">
+            <div className="flex items-center gap-2 self-start md:self-auto flex-wrap">
+              {(() => {
+                const saveOverlayVisible = saveHoverActive && !saveHoverLocked
+                return (
+                  <div
+                    className="relative inline-flex"
+                    onMouseEnter={() => setSaveHoverActive(true)}
+                    onMouseLeave={() => {
+                      setSaveHoverActive(false)
+                      setSaveHoverLocked(false)
+                    }}
+                    onFocusCapture={() => setSaveHoverActive(true)}
+                    onBlurCapture={() => {
+                      setSaveHoverActive(false)
+                      setSaveHoverLocked(false)
+                    }}
+                  >
+                    <div
+                      className={cn(
+                        "flex flex-col items-start justify-center gap-0.5 px-3 py-2 w-[15rem] min-h-[3.25rem] rounded-md border border-slate-200 bg-white/60 text-sm dark:border-slate-700 dark:bg-slate-800/60 transition-all duration-200",
+                        saveOverlayVisible && "opacity-0 -translate-y-1",
+                      )}
+                    >
+                      <span className={statusClass}>{statusLabel}</span>
+                      {manualSaveMessage ? (
+                        <span className="text-xs text-muted-foreground">{manualSaveMessage}</span>
+                      ) : hasSavedPlan ? (
+                        <span className="text-xs text-muted-foreground truncate w-full">
+                          Saved {new Date(lastSavedPlan!.savedAt).toLocaleString()}
+                        </span>
+                      ) : null}
+                    </div>
+                    <Button
+                      className={cn(
+                        "absolute inset-0 px-3 py-2 w-[15rem] min-h-[3.25rem] gap-2 transition-all duration-200 transform",
+                        saveOverlayVisible
+                          ? "opacity-100 pointer-events-auto translate-y-0 scale-100"
+                          : "opacity-0 pointer-events-none",
+                      )}
+                      variant={planDirty ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => {
+                        handleManualSavePlan()
+                        setSaveHoverLocked(true)
+                      }}
+                    >
+                      <Save className="h-4 w-4" />
+                      {hoverButtonLabel}
+                    </Button>
+                  </div>
+                )
+              })()}
               <Button
                 variant="outline"
                 size="sm"
@@ -5883,12 +6042,24 @@ export default function AcademicPlanner() {
                 <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
                 <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
               </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setPreferencesDialogOpen(true)}
+                aria-label="Open planner preferences"
+                className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+              >
+                <Settings className="h-5 w-5" />
+              </Button>
             </div>
           </div>
         </div>
 
         {/* Non-CpE Student Notice */}
-        <NonCpeNotice onReportIssue={() => setFeedbackDialogOpen(true)} />
+        <NonCpeNotice
+          onReportIssue={() => setFeedbackDialogOpen(true)}
+          onNavigate={handleNavigationIntent}
+        />
         <FeedbackDialog
           open={feedbackDialogOpen}
           onOpenChange={setFeedbackDialogOpen}
@@ -7667,19 +7838,7 @@ export default function AcademicPlanner() {
                                         </div>
                                       </TableCell>
                                       <TableCell>{course.name}</TableCell>
-                                      <TableCell className="relative pr-12">
-                                        {course.credits}
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => removeCourseFromPlan(course.id)}
-                                          className="absolute right-0 -top-2 h-7 w-7 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
-                                          title="Remove from plan"
-                                          aria-label={`Remove ${getDisplayCode(course.code)} from plan`}
-                                        >
-                                          <X className="h-3 w-3" />
-                                        </Button>
-                                      </TableCell>
+                                      <TableCell>{course.credits}</TableCell>
                                       {semesterIsCurrent ? (
                                         <>
                                           <TableCell>
@@ -7859,6 +8018,16 @@ export default function AcademicPlanner() {
                                               )}
                                             </SelectContent>
                                           </Select>
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            onClick={() => removeCourseFromPlan(course.id)}
+                                            className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                            title="Remove from plan"
+                                            aria-label={`Remove ${getDisplayCode(course.code)} from plan`}
+                                          >
+                                            <X className="h-4 w-4" />
+                                          </Button>
                                         </div>
                                       </TableCell>
                                     </TableRow>
@@ -7976,6 +8145,14 @@ export default function AcademicPlanner() {
                       {!planActionsCollapsed && (
                         <CardContent className="pt-0">
                           <div className="space-y-2">
+                            <Button
+                              size="sm"
+                              className="w-full justify-start gap-2"
+                              onClick={handleManualSavePlan}
+                            >
+                              <Save className="h-3 w-3" />
+                              Save Plan
+                            </Button>
                             <Button
                               size="sm"
                               className="w-full justify-start gap-2"

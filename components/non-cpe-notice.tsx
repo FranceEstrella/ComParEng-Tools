@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 interface NonCpeNoticeProps {
   compact?: boolean
   onReportIssue?: () => void
+  onNavigate?: (href: string, event?: React.MouseEvent<HTMLElement>) => void
 }
 
 const NON_CPE_STORAGE_KEY = "compareng.nonCpeNotice.dismissed"
@@ -25,7 +26,7 @@ export const markNonCpeNoticeDismissed = () => {
   window.dispatchEvent(new Event(NON_CPE_NOTICE_DISMISS_EVENT))
 }
 
-export default function NonCpeNotice({ compact = false, onReportIssue }: NonCpeNoticeProps) {
+export default function NonCpeNotice({ compact = false, onReportIssue, onNavigate }: NonCpeNoticeProps) {
   const pathname = usePathname()
   const router = useRouter()
   const [showNotice, setShowNotice] = useState(true)
@@ -51,7 +52,7 @@ export default function NonCpeNotice({ compact = false, onReportIssue }: NonCpeN
     markNonCpeNoticeDismissed()
   }
 
-  const goToImport = () => {
+  const goToImport = (event?: React.MouseEvent<HTMLElement>) => {
     try {
       if (pathname === "/course-tracker") {
         // ensure hash is set so Course Tracker auto-expands Save & Load
@@ -63,6 +64,10 @@ export default function NonCpeNotice({ compact = false, onReportIssue }: NonCpeN
           el.scrollIntoView({ behavior: "smooth", block: "start" })
           return
         }
+      }
+      if (onNavigate) {
+        onNavigate("/course-tracker#import", event)
+        return
       }
       router.push("/course-tracker#import")
     } catch {

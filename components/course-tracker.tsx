@@ -168,6 +168,7 @@ interface AcademicTimelineProps {
   startYear: number
   handleStartYearChange: (v: string | React.ChangeEvent<HTMLInputElement>) => void
   academicYears: AcademicYear[]
+  expectedGraduation: string
   currentYearLevel: number
   onCurrentYearLevelChange: (value: number) => void
   currentTerm: TermName
@@ -195,6 +196,19 @@ interface TranscriptEntry {
   year: number
   term: TermName
   grade: string
+}
+
+interface PlannerSavedPlanSemester {
+  year: number
+  term: string
+  courseIds: string[]
+}
+
+interface PlannerSavedPlanSnapshot {
+  version: 1
+  startYear: number
+  semesters: PlannerSavedPlanSemester[]
+  savedAt: number
 }
 
 interface PrereqCascadeNode {
@@ -466,6 +480,8 @@ const FAIL_GRADE_OPTIONS = FAIL_GRADE_VALUES.map((value) => ({
   label: `${value} — ${GRADE_LABELS[value] ?? ""}`.trim(),
 }))
 
+const PLANNER_SAVED_PLAN_KEY = "planner.savedPlan.v1"
+
 const TERM_SEQUENCE: TermName[] = ["Term 1", "Term 2", "Term 3"]
 
 const sanitizeTermName = (term?: string | null): TermName => {
@@ -487,6 +503,127 @@ const nextYearTerm = (year: number, term: TermName): YearTermOption => {
   return {
     year: isLastTerm ? year + 1 : year,
     term: TERM_SEQUENCE[isLastTerm ? 0 : currentIndex + 1],
+  }
+}
+
+const normalizePlannerTerm = (term: string): TermName => {
+  const trimmed = term?.toString().trim() ?? ""
+  if (!trimmed) return "Term 1"
+
+  const collapsed = trimmed.replace(/\s+/g, " ")
+  const lower = collapsed.toLowerCase()
+
+  const aliasMap: Record<string, TermName> = {
+    "term 1": "Term 1",
+    term1: "Term 1",
+    "trimester 1": "Term 1",
+    "1st term": "Term 1",
+    "first term": "Term 1",
+    "term i": "Term 1",
+    "1": "Term 1",
+    "term 2": "Term 2",
+    term2: "Term 2",
+    "trimester 2": "Term 2",
+    "2nd term": "Term 2",
+    "second term": "Term 2",
+    "term ii": "Term 2",
+    "2": "Term 2",
+    "term 3": "Term 3",
+    term3: "Term 3",
+    "trimester 3": "Term 3",
+    "3rd term": "Term 3",
+    "third term": "Term 3",
+    "term iii": "Term 3",
+    "3": "Term 3",
+  }
+
+  return aliasMap[lower] ?? "Term 1"
+}
+
+const plannerTermIndex = (term: string) => TERM_SEQUENCE.indexOf(normalizePlannerTerm(term))
+
+const plannerNextTerm = (year: number, term: string): { year: number; term: TermName } => {
+  const normalized = normalizePlannerTerm(term)
+  const idx = plannerTermIndex(normalized)
+  const isLastTerm = idx === TERM_SEQUENCE.length - 1
+
+  if (idx === -1) return { year, term: "Term 1" }
+
+  return {
+    year: isLastTerm ? year + 1 : year,
+    term: TERM_SEQUENCE[isLastTerm ? 0 : idx + 1],
+  }
+}
+
+const formatPlannerAcademicYear = (calendarYear: number, baseStartYear: number): string => {
+  const normalizedBase = Number.isFinite(baseStartYear) ? Math.floor(baseStartYear) : new Date().getFullYear()
+  const normalizedYear = Number.isFinite(calendarYear) ? Math.floor(calendarYear) : NaN
+
+  if (!Number.isFinite(normalizedYear)) return "N/A"
+  if (normalizedYear >= 1900) {
+    return `S.Y ${normalizedYear}-${normalizedYear + 1}`
+  }
+
+  const start = normalizedBase + Math.max(0, normalizedYear - 1)
+  return `S.Y ${start}-${start + 1}`
+}
+
+const fallbackGraduationLabel = (baseStartYear: number): string => {
+  if (!Number.isFinite(baseStartYear)) return "N/A"
+  const normalizedBase = Math.floor(baseStartYear)
+  return `S.Y ${normalizedBase + 4}-${normalizedBase + 5}`
+}
+
+const deriveExpectedGraduationFromSnapshot = (
+  snapshot: PlannerSavedPlanSnapshot | null,
+  fallbackStartYear: number,
+): string => {
+  if (!snapshot || !Array.isArray(snapshot.semesters) || snapshot.semesters.length === 0) {
+    return fallbackGraduationLabel(fallbackStartYear)
+  }
+
+  const normalizedSemesters = snapshot.semesters
+    .map((semester) => {
+      const normalizedYear = Number.parseInt(String(semester.year), 10)
+      if (!Number.isFinite(normalizedYear)) return null
+      return {
+        year: Math.floor(normalizedYear),
+        term: normalizePlannerTerm(semester.term),
+      }
+    })
+    .filter((semester): semester is { year: number; term: TermName } => semester !== null)
+    .sort((a, b) => {
+      if (a.year !== b.year) return a.year - b.year
+      return plannerTermIndex(a.term) - plannerTermIndex(b.term)
+    })
+
+  if (normalizedSemesters.length === 0) {
+    return fallbackGraduationLabel(snapshot.startYear ?? fallbackStartYear)
+  }
+
+  const lastSemester = normalizedSemesters[normalizedSemesters.length - 1]
+  const nextTerm = plannerNextTerm(lastSemester.year, lastSemester.term)
+  const baseStartYear = Number.isFinite(snapshot.startYear) ? snapshot.startYear : fallbackStartYear
+  const formattedYear = formatPlannerAcademicYear(nextTerm.year, baseStartYear)
+
+  if (formattedYear === "N/A") {
+    return fallbackGraduationLabel(baseStartYear)
+  }
+
+  return `${formattedYear} ${nextTerm.term}`
+}
+
+const loadPlannerSnapshot = (): PlannerSavedPlanSnapshot | null => {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = window.localStorage.getItem(PLANNER_SAVED_PLAN_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as PlannerSavedPlanSnapshot
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.semesters)) return null
+    return parsed
+  } catch (error) {
+    console.error("Failed to load saved academic planner snapshot", error)
+    return null
   }
 }
 
@@ -1739,6 +1876,7 @@ const AcademicTimeline = ({
   startYear,
   handleStartYearChange,
   academicYears,
+  expectedGraduation,
   currentYearLevel,
   onCurrentYearLevelChange,
   currentTerm,
@@ -1748,7 +1886,6 @@ const AcademicTimeline = ({
 }: AcademicTimelineProps) => {
   const [isExpanded, setIsExpanded] = useState(false)
   const [inputValue, setInputValue] = useState<string>(String(startYear))
-  const expectedGraduation = startYear + 4
 
   // Keep local input in sync with prop changes
   useEffect(() => {
@@ -1896,6 +2033,7 @@ export default function CourseTracker() {
   const [viewMode, setViewMode] = useState<"card" | "table">("card")
   const [showDetailedProgress, setShowDetailedProgress] = useState(false)
   const [startYear, setStartYear] = useState<number>(new Date().getFullYear())
+  const [expectedGraduationLabel, setExpectedGraduationLabel] = useState<string>("N/A")
   const [currentYearLevel, setCurrentYearLevel] = useState(1)
   const [currentTerm, setCurrentTerm] = useState<TermName>("Term 1")
   const [maxYearLevelOption, setMaxYearLevelOption] = useState(4)
@@ -2105,7 +2243,35 @@ export default function CourseTracker() {
 
   // Calculate academic years and expected graduation
   const academicYears = useMemo(() => calculateAcademicYears(startYear), [startYear])
-  const expectedGraduation = startYear + 4
+
+  const refreshExpectedGraduation = useCallback(() => {
+    const snapshot = loadPlannerSnapshot()
+    const hasPlan = snapshot && Array.isArray(snapshot.semesters) && snapshot.semesters.length > 0
+
+    if (!hasPlan) {
+      setExpectedGraduationLabel("Set-Up in Academic Planner")
+      return
+    }
+
+    const label = deriveExpectedGraduationFromSnapshot(snapshot, startYear)
+    setExpectedGraduationLabel(label)
+  }, [startYear])
+
+  useEffect(() => {
+    refreshExpectedGraduation()
+  }, [refreshExpectedGraduation])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === PLANNER_SAVED_PLAN_KEY || event.key === "startYear") {
+        refreshExpectedGraduation()
+      }
+    }
+    window.addEventListener("storage", handleStorage)
+    return () => window.removeEventListener("storage", handleStorage)
+  }, [refreshExpectedGraduation])
+
   const markedCourseCount = useMemo(() => courses.filter((course) => course.status !== "pending").length, [courses])
 
   // Load saved course statuses on component mount
@@ -3696,6 +3862,7 @@ export default function CourseTracker() {
           startYear={startYear}
           handleStartYearChange={handleStartYearChange}
           academicYears={academicYears}
+          expectedGraduation={expectedGraduationLabel}
           currentYearLevel={currentYearLevel}
           onCurrentYearLevelChange={handleCurrentYearLevelChange}
           currentTerm={currentTerm}

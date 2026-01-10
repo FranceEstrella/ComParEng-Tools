@@ -25,6 +25,7 @@ import {
   Sun,
   Moon,
   X,
+  Settings,
   Search,
 } from "lucide-react"
 import Link from "next/link"
@@ -197,6 +198,42 @@ interface ActiveCourse {
   status: string
 }
 
+type CourseStatusValue = "passed" | "active" | "pending"
+
+interface TrackerCourse {
+  id: string
+  code: string
+  name?: string
+  credits?: number
+  status: CourseStatusValue
+  prerequisites?: string[]
+  year?: number
+  term?: string
+}
+
+type CourseAvailabilityTag = "active" | "ready" | "locked" | "completed" | "unknown"
+
+interface CourseReadiness {
+  status: CourseStatusValue | null
+  isActive: boolean
+  isPassed: boolean
+  prerequisitesMet: boolean
+  missingPrerequisites: string[]
+}
+
+interface CatalogCourse {
+  code: string
+  name: string
+  credits: number
+  department: string
+  sections: CourseSection[]
+  year?: number
+  term?: string
+  availability: CourseAvailabilityTag
+  status: CourseStatusValue | null
+  missingPrerequisites: string[]
+}
+
 interface SelectedCourse extends CourseSection {
   canonicalCode: string
   name: string
@@ -221,6 +258,17 @@ interface ScheduleVersion {
   selectedCourses: SelectedCourse[]
   customizations: Record<string, CourseCustomization>
   scheduleTitle?: string
+}
+
+type PairingAction = "add-course" | "remove-course" | "add-section" | "remove-section"
+
+interface PairingPromptState {
+  open: boolean
+  action?: PairingAction
+  primaryCode?: string
+  pairCode?: string
+  primarySection?: CourseSection | null
+  pairSection?: CourseSection | null
 }
 
 interface TermYearVersionState {
@@ -255,6 +303,64 @@ const getSelectedCourseIdentifierLabel = (
   const codeLabel = formatCode ? formatCode(course.courseCode) : course.courseCode
   return `${codeLabel} - ${safeName}`
 }
+
+const getAvailabilityPriority = (availability: CourseAvailabilityTag, showAll = false) => {
+  if (showAll) {
+    switch (availability) {
+      case "active":
+        return 0
+      case "ready":
+        return 1
+      case "locked":
+        return 2
+      case "completed":
+        return 3
+      default:
+        return 4
+    }
+  }
+
+  switch (availability) {
+    case "active":
+      return 0
+    case "ready":
+    case "unknown":
+      return 1
+    case "completed":
+      return 2
+    default:
+      return 3
+  }
+}
+
+const availabilityBadgeConfig: Record<CourseAvailabilityTag, { label: string; className: string }> = {
+  active: {
+    label: "Active",
+    className:
+      "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:border-emerald-400/40 dark:bg-emerald-400/20 dark:text-emerald-200",
+  },
+  ready: {
+    label: "Ready",
+    className:
+      "border-blue-500/30 bg-blue-500/10 text-blue-600 dark:border-blue-400/30 dark:bg-blue-400/20 dark:text-blue-100",
+  },
+  unknown: {
+    label: "Unlocked",
+    className:
+      "border-slate-400/40 bg-slate-400/10 text-slate-600 dark:border-slate-500/40 dark:bg-slate-500/10 dark:text-slate-200",
+  },
+  completed: {
+    label: "Completed",
+    className:
+      "border-slate-400/40 bg-slate-400/20 text-slate-500 dark:border-slate-500/40 dark:bg-slate-500/20 dark:text-slate-200",
+  },
+  locked: {
+    label: "Locked",
+    className:
+      "border-rose-400/40 bg-rose-500/10 text-rose-600 dark:border-rose-400/40 dark:bg-rose-400/20 dark:text-rose-200",
+  },
+}
+
 
 interface GroupedCourseSet {
   value: string
@@ -519,6 +625,7 @@ export default function ScheduleMaker() {
 
   const [availableCourses, setAvailableCourses] = useState<CourseSection[]>([])
   const [activeCourses, setActiveCourses] = useState<ActiveCourse[]>([])
+  const [trackerCourses, setTrackerCourses] = useState<TrackerCourse[]>([])
   const [selectedCourses, setSelectedCourses] = useState<SelectedCourse[]>([])
   const [customizations, setCustomizations] = useState<Record<string, CourseCustomization>>({})
   const [customColorInputs, setCustomColorInputs] = useState<Record<string, string>>({})
@@ -541,9 +648,126 @@ export default function ScheduleMaker() {
   const pendingImportFollowUpRef = useRef<(() => void) | null>(null)
   const loadingVersionRef = useRef<boolean>(false)
   const hasHydratedVersionRef = useRef<boolean>(false)
-  const [showOnlyActive, setShowOnlyActive] = useState(true)
   const [startDate, setStartDate] = useState<Date>(new Date())
   const [searchTerm, setSearchTerm] = useState("")
+  const [showLockedCourses, setShowLockedCourses] = useState(false)
+  const hasTrackerProgress = trackerCourses.length > 0
+
+  useEffect(() => {
+    if (!hasTrackerProgress && showLockedCourses) {
+      setShowLockedCourses(false)
+    }
+  }, [hasTrackerProgress, showLockedCourses])
+
+  const initialCourseById = React.useMemo(() => {
+    const map = new Map<string, CourseDetail>()
+    initialCourses.forEach((course) => {
+      map.set(course.id, course)
+    })
+    return map
+  }, [])
+
+  const initialCourseByCanonical = React.useMemo(() => {
+    const map = new Map<string, CourseDetail>()
+    initialCourses.forEach((course) => {
+      map.set(getCanonicalCourseCode(course.code), course)
+    })
+    return map
+  }, [])
+
+  const trackerCourseById = React.useMemo(() => {
+    const map = new Map<string, TrackerCourse>()
+    trackerCourses.forEach((course) => {
+      if (course.id) {
+        map.set(course.id, course)
+      }
+    })
+    return map
+  }, [trackerCourses])
+
+  const trackerCourseByCanonical = React.useMemo(() => {
+    const map = new Map<string, TrackerCourse>()
+    trackerCourses.forEach((course) => {
+      map.set(getCanonicalCourseCode(course.code), course)
+    })
+    return map
+  }, [trackerCourses])
+
+  const readinessByCanonical = React.useMemo(() => {
+    const map = new Map<string, CourseReadiness>()
+    const assumeUnlocked = !hasTrackerProgress
+
+    const getStatusForId = (id: string | undefined): CourseStatusValue => {
+      if (!id) return "pending"
+      const tracker = trackerCourseById.get(id)
+      if (tracker) return tracker.status
+      const initialCourse = initialCourseById.get(id)
+      if (initialCourse) {
+        const value = initialCourse.status
+        return value === "passed" || value === "active" ? (value as CourseStatusValue) : "pending"
+      }
+      return "pending"
+    }
+
+    const registerReadiness = (canonical: string, fallback?: { id?: string; prerequisites?: string[] }) => {
+      if (!canonical || map.has(canonical)) return
+      const trackerCourse = trackerCourseByCanonical.get(canonical)
+      const courseSource = trackerCourse ?? fallback
+      const status = trackerCourse?.status ?? getStatusForId(courseSource?.id)
+      const prereqIds = Array.isArray(trackerCourse?.prerequisites)
+        ? trackerCourse!.prerequisites
+        : Array.isArray(fallback?.prerequisites)
+        ? fallback!.prerequisites
+        : []
+      const missingPrereqs = assumeUnlocked
+        ? []
+        : prereqIds.filter((prereqId) => getStatusForId(prereqId) !== "passed")
+
+      map.set(canonical, {
+        status,
+        isActive: status === "active",
+        isPassed: status === "passed",
+        prerequisitesMet: assumeUnlocked || missingPrereqs.length === 0,
+        missingPrerequisites: missingPrereqs,
+      })
+    }
+
+    initialCourses.forEach((course) => {
+      registerReadiness(getCanonicalCourseCode(course.code), course)
+    })
+
+    trackerCourses.forEach((course) => {
+      registerReadiness(getCanonicalCourseCode(course.code), course)
+    })
+
+    availableCourses.forEach((section) => {
+      registerReadiness(getCanonicalCourseCode(section.courseCode))
+    })
+
+    return map
+  }, [availableCourses, hasTrackerProgress, initialCourseById, trackerCourseByCanonical, trackerCourseById, trackerCourses])
+
+  const getAvailabilityTag = useCallback(
+    (canonical: string): CourseAvailabilityTag => {
+      if (!hasTrackerProgress) return "unknown"
+      const readiness = readinessByCanonical.get(canonical)
+      if (!readiness) return "unknown"
+      if (readiness.isActive) return "active"
+      if (readiness.isPassed) return "completed"
+      if (readiness.prerequisitesMet) return "ready"
+      return "locked"
+    },
+    [hasTrackerProgress, readinessByCanonical],
+  )
+
+  const isDefaultVisible = useCallback(
+    (canonical: string) => {
+      if (!hasTrackerProgress) return true
+      const availability = getAvailabilityTag(canonical)
+      return availability === "active" || availability === "ready" || availability === "unknown"
+    },
+    [getAvailabilityTag, hasTrackerProgress],
+  )
   const [sortBy, setSortBy] = useState("department")
   const [sortOrder, setSortOrder] = useState("asc")
   const [groupBy, setGroupBy] = useState<GroupByOption>("department")
@@ -561,6 +785,12 @@ export default function ScheduleMaker() {
   const [dayFilter, setDayFilter] = useState<string>("all")
   const [timeFilter, setTimeFilter] = useState<string>("all")
   const [selectedCourseCodes, setSelectedCourseCodes] = useState<string[]>([])
+  const [pairingPrompt, setPairingPrompt] = useState<PairingPromptState>({ open: false })
+  const [rememberPairingAddDecision, setRememberPairingAddDecision] = useState<"confirm" | null>(null)
+  const [rememberPairingAddToggle, setRememberPairingAddToggle] = useState(false)
+  const [rememberPairingRemoveDecision, setRememberPairingRemoveDecision] = useState<"confirm" | null>(null)
+  const [rememberPairingRemoveToggle, setRememberPairingRemoveToggle] = useState(false)
+  const [preferencesDialogOpen, setPreferencesDialogOpen] = useState(false)
   const [versionStore, setVersionStore] = useState<Record<string, TermYearVersionState>>({})
   const [versionsExpanded, setVersionsExpanded] = useState<boolean>(false)
   const [addVersionMenuOpen, setAddVersionMenuOpen] = useState(false)
@@ -1276,6 +1506,12 @@ export default function ScheduleMaker() {
       .join(" / ")
   }
 
+  const formatMeetingDays = (daysString: string): string => {
+    const tokens = parseDays(daysString)
+    if (tokens.length === 0) return "TBD"
+    return tokens.join(" / ")
+  }
+
   const timePartRegex = /(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i
 
   const parseTimeToMinutes = (time: string): number => {
@@ -1516,43 +1752,58 @@ export default function ScheduleMaker() {
     [setCustomizations],
   )
 
-  const sortCourses = (courses: CourseSection[]) => {
-    return [...courses].sort((a, b) => {
-      let valueA, valueB
+  const getCoursePriority = useCallback(
+    (course: CourseSection) => {
+      const canonical = getCanonicalCourseCode(course.courseCode)
+      const availability = getAvailabilityTag(canonical)
+      return getAvailabilityPriority(availability, showLockedCourses)
+    },
+    [getAvailabilityTag, showLockedCourses],
+  )
 
-      if (sortBy === "courseCode") {
-        valueA = a.courseCode
-        valueB = b.courseCode
-      } else if (sortBy === "department") {
-        valueA = extractDepartmentCode(a.courseCode)
-        valueB = extractDepartmentCode(b.courseCode)
+  const sortCourses = useCallback(
+    (courses: CourseSection[]) => {
+      return [...courses].sort((a, b) => {
+        const priorityDiff = getCoursePriority(a) - getCoursePriority(b)
+        if (priorityDiff !== 0) {
+          return priorityDiff
+        }
 
-        if (valueA === valueB) {
+        let valueA, valueB
+
+        if (sortBy === "courseCode") {
           valueA = a.courseCode
           valueB = b.courseCode
-        }
-      } else if (sortBy === "remainingSlots") {
-        valueA = Number.parseInt(a.remainingSlots)
-        valueB = Number.parseInt(b.remainingSlots)
-      } else if (sortBy === "meetingDays") {
-        valueA = a.meetingDays
-        valueB = b.meetingDays
-      } else {
-        // sortBy is a dynamic key — narrow to keyof CourseSection when possible
-        const key = sortBy as keyof CourseSection
-        // @ts-ignore access via dynamic key
-        valueA = (a as any)[key]
-        // @ts-ignore
-        valueB = (b as any)[key]
-      }
+        } else if (sortBy === "department") {
+          valueA = extractDepartmentCode(a.courseCode)
+          valueB = extractDepartmentCode(b.courseCode)
 
-      if (sortOrder === "asc") {
-        return valueA > valueB ? 1 : -1
-      } else {
+          if (valueA === valueB) {
+            valueA = a.courseCode
+            valueB = b.courseCode
+          }
+        } else if (sortBy === "remainingSlots") {
+          valueA = Number.parseInt(a.remainingSlots)
+          valueB = Number.parseInt(b.remainingSlots)
+        } else if (sortBy === "meetingDays") {
+          valueA = a.meetingDays
+          valueB = b.meetingDays
+        } else {
+          const key = sortBy as keyof CourseSection
+          // @ts-ignore dynamic property access fallback
+          valueA = (a as any)[key]
+          // @ts-ignore dynamic property access fallback
+          valueB = (b as any)[key]
+        }
+
+        if (sortOrder === "asc") {
+          return valueA > valueB ? 1 : -1
+        }
         return valueA < valueB ? 1 : -1
-      }
-    })
-  }
+      })
+    },
+    [getCoursePriority, sortBy, sortOrder],
+  )
 
   // Add a course to the selected courses
   const addCourse = (course: CourseSection) => {
@@ -1605,37 +1856,114 @@ export default function ScheduleMaker() {
     })
   }
 
-  const toggleCourseSelection = (courseCode: string) => {
-    const canonical = getCanonicalCourseCode(courseCode)
-    let shouldRemoveSections = false
-
-    setSelectedCourseCodes((prev) => {
-      const next = new Set(prev)
-      if (next.has(canonical)) {
-        next.delete(canonical)
-        shouldRemoveSections = true
-      } else {
-        next.add(canonical)
+  const courseCatalog = React.useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        code: string
+        name: string
+        credits: number
+        department: string
+        sections: CourseSection[]
+        year?: number
+        term?: string
       }
-      return Array.from(next)
+    >()
+
+    initialCourses.forEach((course) => {
+      const canonical = getCanonicalCourseCode(course.code)
+      map.set(canonical, {
+        code: canonical,
+        name: course.name,
+        credits: course.credits,
+        department: extractDepartmentCode(course.code),
+        sections: [],
+        year: course.year,
+        term: course.term,
+      })
     })
 
-    if (shouldRemoveSections) {
+    availableCourses.forEach((section) => {
+      const canonical = getCanonicalCourseCode(section.courseCode)
+      const existing = map.get(canonical) ?? {
+        code: canonical,
+        name: getCourseNameAndCredits(section.courseCode).name,
+        credits: getCourseNameAndCredits(section.courseCode).credits,
+        department: extractDepartmentCode(section.courseCode),
+        sections: [],
+      }
+      existing.sections = [...existing.sections, section]
+      map.set(canonical, existing)
+    })
+
+    return Array.from(map.values())
+      .map<CatalogCourse>((entry) => {
+        const readiness = readinessByCanonical.get(entry.code)
+        const availability = getAvailabilityTag(entry.code)
+        return {
+          ...entry,
+          availability,
+          status: readiness?.status ?? null,
+          missingPrerequisites: readiness?.missingPrerequisites ?? [],
+        }
+      })
+      .sort((a, b) => a.code.localeCompare(b.code))
+  }, [availableCourses, getAvailabilityTag, readinessByCanonical])
+
+  const findPairedCanonical = useCallback(
+    (canonical: string): string | null => {
+      if (!canonical) return null
+      const isLab = canonical.endsWith("L")
+      const base = isLab ? canonical.slice(0, -1) : canonical
+      const pair = isLab ? base : `${base}L`
+      if (!pair || pair === canonical) return null
+      const exists = courseCatalog.some((course) => getCanonicalCourseCode(course.code) === pair)
+      return exists ? pair : null
+    },
+    [courseCatalog],
+  )
+
+  const closePairingPrompt = () => setPairingPrompt({ open: false })
+
+  const handlePairingConfirm = () => {
+    if (!pairingPrompt.action) {
+      closePairingPrompt()
+      return
+    }
+
+    const { action, primaryCode, pairCode, primarySection, pairSection } = pairingPrompt
+
+    const rememberAdd = pairingPrompt.action === "add-course" || pairingPrompt.action === "add-section"
+
+    if (action === "add-course" && primaryCode) {
+      const additions = [primaryCode]
+      if (pairCode) additions.push(pairCode)
+      setSelectedCourseCodes((prev) => Array.from(new Set([...prev, ...additions])))
+      if (rememberAdd && rememberPairingAddToggle) {
+        setRememberPairingAddDecision("confirm")
+      }
+      closePairingPrompt()
+      return
+    }
+
+    if (action === "remove-course" && primaryCode) {
+      const removals = [primaryCode]
+      if (pairCode) removals.push(pairCode)
+
+      setSelectedCourseCodes((prev) => {
+        const next = new Set(prev)
+        removals.forEach((code) => next.delete(code))
+        return Array.from(next)
+      })
+
       setSelectedCourses((prevCourses) => {
-        const [remaining, removed] = prevCourses.reduce<[
-          SelectedCourse[],
-          SelectedCourse[]
-        ]>(
-          (acc, course) => {
-            if (getSelectedCourseCanonicalCode(course) === canonical) {
-              acc[1].push(course)
-            } else {
-              acc[0].push(course)
-            }
-            return acc
-          },
-          [[], []],
-        )
+        const removed: SelectedCourse[] = []
+        const remaining = prevCourses.filter((course) => {
+          const code = getSelectedCourseCanonicalCode(course)
+          const keep = !removals.includes(code)
+          if (!keep) removed.push(course)
+          return keep
+        })
 
         if (removed.length > 0) {
           setCustomizations((prev) => {
@@ -1657,15 +1985,218 @@ export default function ScheduleMaker() {
 
         return remaining
       })
+
+      if (removals.length > 1 && rememberPairingRemoveToggle) {
+        setRememberPairingRemoveDecision("confirm")
+      }
+
+      closePairingPrompt()
+      return
     }
+
+    if (action === "add-section" && primarySection) {
+      if (pairSection) {
+        addCourse(pairSection)
+        setSelectedCourseCodes((prev) =>
+          Array.from(new Set([...prev, getCanonicalCourseCode(pairSection.courseCode)])),
+        )
+      }
+      addCourse(primarySection)
+      setSelectedCourseCodes((prev) =>
+        Array.from(new Set([...prev, getCanonicalCourseCode(primarySection.courseCode)])),
+      )
+      if (rememberAdd && rememberPairingAddToggle) {
+        setRememberPairingAddDecision("confirm")
+      }
+      closePairingPrompt()
+      return
+    }
+
+    if (action === "remove-section" && primarySection) {
+      removeCourse(primarySection.courseCode, primarySection.section)
+      if (pairSection) {
+        removeCourse(pairSection.courseCode, pairSection.section)
+        if (rememberPairingRemoveToggle) {
+          setRememberPairingRemoveDecision("confirm")
+        }
+      }
+      closePairingPrompt()
+      return
+    }
+
+    closePairingPrompt()
   }
+
+  const toggleCourseSelection = (courseCode: string) => {
+    const canonical = getCanonicalCourseCode(courseCode)
+    const pairCanonical = findPairedCanonical(canonical)
+    const isSelected = selectedCourseCodes.includes(canonical)
+    const pairSelected = pairCanonical ? selectedCourseCodes.includes(pairCanonical) : false
+
+    if (isSelected) {
+      if (pairCanonical && pairSelected && rememberPairingRemoveDecision === "confirm") {
+        const removals = [canonical, pairCanonical]
+        setSelectedCourseCodes((prev) => {
+          const next = new Set(prev)
+          removals.forEach((code) => next.delete(code))
+          return Array.from(next)
+        })
+
+        setSelectedCourses((prevCourses) => {
+          const removed: SelectedCourse[] = []
+          const remaining = prevCourses.filter((course) => {
+            const code = getSelectedCourseCanonicalCode(course)
+            const keep = !removals.includes(code)
+            if (!keep) removed.push(course)
+            return keep
+          })
+
+          if (removed.length > 0) {
+            setCustomizations((prev) => {
+              const next = { ...prev }
+              removed.forEach((course) => {
+                delete next[`${course.courseCode}-${course.section}`]
+              })
+              return next
+            })
+
+            setCustomColorInputs((prev) => {
+              const next = { ...prev }
+              removed.forEach((course) => {
+                delete next[`${course.courseCode}-${course.section}`]
+              })
+              return next
+            })
+          }
+
+          return remaining
+        })
+        return
+      }
+
+      setPairingPrompt({
+        open: true,
+        action: "remove-course",
+        primaryCode: canonical,
+        pairCode: pairCanonical && pairSelected ? pairCanonical : undefined,
+      })
+      return
+    }
+
+    const toAdd = [canonical]
+    if (pairCanonical && !pairSelected) {
+      if (rememberPairingAddDecision === "confirm") {
+        setSelectedCourseCodes((prev) => Array.from(new Set([...prev, ...toAdd, pairCanonical])))
+        return
+      }
+
+      setPairingPrompt({
+        open: true,
+        action: "add-course",
+        primaryCode: canonical,
+        pairCode: pairCanonical,
+      })
+      return
+    }
+
+    setSelectedCourseCodes((prev) => Array.from(new Set([...prev, ...toAdd])))
+  }
+
+  const findLabPairSection = useCallback(
+    (section: CourseSection): CourseSection | null => {
+      const canonical = getCanonicalCourseCode(section.courseCode)
+      if (!canonical) return null
+      const normalizeSection = (value: string) => (value || "").trim().toUpperCase()
+      const normalizedSection = normalizeSection(section.section)
+      const isLab = canonical.endsWith("L")
+      const base = isLab ? canonical.slice(0, -1) : canonical
+      const pairCanonical = isLab ? base : `${base}L`
+      if (!pairCanonical || pairCanonical === canonical) return null
+
+      const sameSectionMatch = [...availableCourses, ...courseCatalog.flatMap((c) => c.sections)].find(
+        (candidate: CourseSection) =>
+          getCanonicalCourseCode(candidate.courseCode) === pairCanonical &&
+          normalizeSection(candidate.section) === normalizedSection,
+      )
+
+      if (sameSectionMatch) return sameSectionMatch
+
+      const anyMatch = [...availableCourses, ...courseCatalog.flatMap((c) => c.sections)].find(
+        (candidate: CourseSection) => getCanonicalCourseCode(candidate.courseCode) === pairCanonical,
+      )
+
+      return anyMatch || null
+    },
+    [availableCourses, courseCatalog],
+  )
 
   const toggleSectionSelection = (section: CourseSection, checked: boolean) => {
     if (checked) {
+      const pairSection = findLabPairSection(section)
+      const normalizeSection = (value: string) => (value || "").trim().toUpperCase()
+      const pairSelected = pairSection
+        ? selectedCourses.some(
+            (course) =>
+              getSelectedCourseCanonicalCode(course) === getCanonicalCourseCode(pairSection.courseCode) &&
+              normalizeSection(course.section) === normalizeSection(pairSection.section),
+          )
+        : false
+
+      if (pairSection && !pairSelected) {
+        if (rememberPairingAddDecision === "confirm") {
+          addCourse(pairSection)
+          setSelectedCourseCodes((prev) =>
+            Array.from(new Set([...prev, getCanonicalCourseCode(pairSection.courseCode)])),
+          )
+          addCourse(section)
+          const canonical = getCanonicalCourseCode(section.courseCode)
+          setSelectedCourseCodes((prev) => Array.from(new Set([...prev, canonical])))
+          return
+        }
+
+        setPairingPrompt({
+          open: true,
+          action: "add-section",
+          primarySection: section,
+          pairSection,
+          primaryCode: getCanonicalCourseCode(section.courseCode),
+          pairCode: getCanonicalCourseCode(pairSection.courseCode),
+        })
+        return
+      }
+
       addCourse(section)
       const canonical = getCanonicalCourseCode(section.courseCode)
       setSelectedCourseCodes((prev) => Array.from(new Set([...prev, canonical])))
     } else {
+      const pairSection = findLabPairSection(section)
+      const normalizeSection = (value: string) => (value || "").trim().toUpperCase()
+      const pairSelected = pairSection
+        ? selectedCourses.some(
+            (course) =>
+              getSelectedCourseCanonicalCode(course) === getCanonicalCourseCode(pairSection.courseCode) &&
+              normalizeSection(course.section) === normalizeSection(pairSection.section),
+          )
+        : false
+
+      if (pairSection && pairSelected) {
+        if (rememberPairingRemoveDecision === "confirm") {
+          removeCourse(pairSection.courseCode, pairSection.section)
+          removeCourse(section.courseCode, section.section)
+          return
+        }
+
+        setPairingPrompt({
+          open: true,
+          action: "remove-section",
+          primarySection: section,
+          pairSection,
+          primaryCode: getCanonicalCourseCode(section.courseCode),
+          pairCode: getCanonicalCourseCode(pairSection.courseCode),
+        })
+        return
+      }
+
       removeCourse(section.courseCode, section.section)
     }
   }
@@ -2230,24 +2761,82 @@ export default function ScheduleMaker() {
     }
   }, [])
 
-  // Load active courses from localStorage
-  const loadActiveCourses = () => {
-    try {
-      if (typeof window !== "undefined") {
-        const savedCourses = localStorage.getItem("courseStatuses")
-        if (savedCourses) {
-          const parsedCourses = JSON.parse(savedCourses)
-          const activeCoursesOnly = parsedCourses.filter((course: any) => course.status === "active")
-          registerExternalCourses(activeCoursesOnly)
-          return activeCoursesOnly
-        }
-      }
-      return []
-    } catch (err) {
-      console.error("Error loading active courses from localStorage:", err)
-      return []
+  const loadTrackerCourseData = useCallback(() => {
+    if (typeof window === "undefined") {
+      return { courses: [] as TrackerCourse[], active: [] as ActiveCourse[] }
     }
-  }
+
+    try {
+      const savedCourses = localStorage.getItem("courseStatuses")
+      if (!savedCourses) {
+        return { courses: [] as TrackerCourse[], active: [] as ActiveCourse[] }
+      }
+
+      const parsedCourses = JSON.parse(savedCourses)
+      if (!Array.isArray(parsedCourses)) {
+        return { courses: [] as TrackerCourse[], active: [] as ActiveCourse[] }
+      }
+
+      const normalized: TrackerCourse[] = parsedCourses
+        .filter((course: any): course is TrackerCourse => {
+          if (!course || typeof course !== "object") return false
+          if (typeof course.id !== "string" || typeof course.code !== "string") return false
+          const status = (course as Record<string, any>).status
+          return status === "active" || status === "pending" || status === "passed"
+        })
+        .map((course) => {
+          const creditsValue =
+            typeof course.credits === "number"
+              ? course.credits
+              : Number.isFinite(Number.parseFloat(course.credits))
+              ? Number.parseFloat(course.credits)
+              : undefined
+          const prerequisiteList = Array.isArray(course.prerequisites)
+            ? course.prerequisites.filter((id: unknown): id is string => typeof id === "string")
+            : undefined
+          return {
+            id: course.id,
+            code: course.code,
+            name: typeof course.name === "string" ? course.name : undefined,
+            credits: creditsValue,
+            status: course.status as CourseStatusValue,
+            prerequisites: prerequisiteList,
+            year: typeof course.year === "number" ? course.year : undefined,
+            term: typeof course.term === "string" ? course.term : undefined,
+          }
+        })
+
+      if (normalized.length > 0) {
+        registerExternalCourses(normalized)
+      }
+
+      const active: ActiveCourse[] = normalized
+        .filter((course) => course.status === "active")
+        .map((course) => {
+          const metadata = getCourseNameAndCredits(course.code)
+          const resolvedName = course.name || metadata.name
+          const resolvedCredits = typeof course.credits === "number" ? course.credits : metadata.credits
+          return {
+            id: course.id,
+            code: course.code,
+            name: resolvedName,
+            credits: resolvedCredits,
+            status: "active",
+          }
+        })
+
+      return { courses: normalized, active }
+    } catch (err) {
+      console.error("Error loading tracker courses from localStorage:", err)
+      return { courses: [] as TrackerCourse[], active: [] as ActiveCourse[] }
+    }
+  }, [])
+
+  useEffect(() => {
+    const trackerData = loadTrackerCourseData()
+    setTrackerCourses(trackerData.courses)
+    setActiveCourses(trackerData.active)
+  }, [loadTrackerCourseData])
 
   const applyAvailableCourses = useCallback(
     (courseList: CourseSection[], options: ApplyAvailableCoursesOptions = {}) => {
@@ -2329,8 +2918,6 @@ export default function ScheduleMaker() {
           })
         }
 
-        const activeCoursesData = loadActiveCourses()
-        setActiveCourses(activeCoursesData)
       } catch (err: any) {
         console.error("Failed to fetch available courses:", err)
         if (!silent) {
@@ -2348,8 +2935,12 @@ export default function ScheduleMaker() {
         }
         setHasFetchedOnce(true)
       }
+
+      const trackerData = loadTrackerCourseData()
+      setTrackerCourses(trackerData.courses)
+      setActiveCourses(trackerData.active)
     },
-    [applyAvailableCourses, fetchAvailableCourses],
+    [applyAvailableCourses, fetchAvailableCourses, loadTrackerCourseData],
   )
 
   useEffect(() => {
@@ -2386,24 +2977,28 @@ export default function ScheduleMaker() {
           fetchData({ silent: true })
         }
       }
+
+      if (event.key === "courseStatuses") {
+        const trackerData = loadTrackerCourseData()
+        setTrackerCourses(trackerData.courses)
+        setActiveCourses(trackerData.active)
+      }
     }
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
-  }, [curriculumSignature, fetchData, clearScheduleSelections])
+  }, [curriculumSignature, fetchData, clearScheduleSelections, loadTrackerCourseData])
 
-  // Filter courses based on active status and curriculum
   const filteredCourses = availableCourses.filter((course) => {
-    if (showOnlyActive) {
-      const canonicalCode = getCanonicalCourseCode(course.courseCode)
-      return activeCourses.some((active) => getCanonicalCourseCode(active.code) === canonicalCode)
-    } else {
+    if (showLockedCourses || !hasTrackerProgress) {
       return true
     }
+    const canonicalCode = getCanonicalCourseCode(course.courseCode)
+    return isDefaultVisible(canonicalCode)
   })
 
   const filteredAndSortedCourses = React.useMemo(
     () => getFilteredAndSortedCourses(),
-    [filteredCourses, searchTerm, selectedDepartment, dayFilterSet, sortBy, sortOrder],
+    [filteredCourses, searchTerm, selectedDepartment, dayFilterSet, sortBy, sortOrder, sortCourses],
   )
 
   const groupedCourses = React.useMemo(
@@ -2484,38 +3079,6 @@ export default function ScheduleMaker() {
     return Array.from(departments).sort()
   }, [availableCourses])
 
-  const courseCatalog = React.useMemo(() => {
-    const map = new Map<string, { code: string; name: string; credits: number; department: string; sections: CourseSection[]; year?: number; term?: string }>()
-
-    initialCourses.forEach((course) => {
-      const canonical = getCanonicalCourseCode(course.code)
-      map.set(canonical, {
-        code: canonical,
-        name: course.name,
-        credits: course.credits,
-        department: extractDepartmentCode(course.code),
-        sections: [],
-        year: course.year,
-        term: course.term,
-      })
-    })
-
-    availableCourses.forEach((section) => {
-      const canonical = getCanonicalCourseCode(section.courseCode)
-      const existing = map.get(canonical) ?? {
-        code: canonical,
-        name: getCourseNameAndCredits(section.courseCode).name,
-        credits: getCourseNameAndCredits(section.courseCode).credits,
-        department: extractDepartmentCode(section.courseCode),
-        sections: [],
-      }
-      existing.sections = [...existing.sections, section]
-      map.set(canonical, existing)
-    })
-
-    return Array.from(map.values()).sort((a, b) => a.code.localeCompare(b.code))
-  }, [availableCourses])
-
   const departmentTabs = React.useMemo(() => {
     const dynamic = new Set<string>(courseCatalog.map((course) => course.department))
     const ordered = ["All", "GED", "NSTP", "CPE", ...Array.from(dynamic).sort()]
@@ -2545,38 +3108,63 @@ export default function ScheduleMaker() {
   const suggestedCourses = React.useMemo(() => {
     return courseCatalog
       .filter((course) => course.year === currentYearLevel && course.term === currentTerm)
+      .filter((course) => {
+        if (course.availability === "locked") return false
+        if (showLockedCourses || !hasTrackerProgress) return true
+        return course.availability === "active" || course.availability === "ready" || course.availability === "unknown"
+      })
+      .sort(
+        (a, b) =>
+          getAvailabilityPriority(a.availability, showLockedCourses) -
+          getAvailabilityPriority(b.availability, showLockedCourses),
+      )
       .slice(0, 10)
-  }, [courseCatalog, currentYearLevel, currentTerm])
+  }, [courseCatalog, currentYearLevel, currentTerm, hasTrackerProgress, showLockedCourses])
 
   const filteredCatalog = React.useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLowerCase()
-    return courseCatalog.filter((course) => {
-      const matchesDept = departmentTab === "All" || course.department === departmentTab
-      const matchesSection =
-        sectionFilter === "all" ||
-        course.sections.some((section) => (section.section || "").trim().toUpperCase() === sectionFilter)
-      const matchesDay =
-        dayFilter === "all" ||
-        course.sections.some((section) => parseDays(section.meetingDays).includes(dayFilter as DayToken))
-      const matchesTime = (() => {
-        if (timeFilter === "all") return true
-        return course.sections.some((section) => {
-          const { startMinutes } = parseTimeRange(section.meetingTime)
-          if (Number.isNaN(startMinutes)) return false
-          const hour = startMinutes / 60
-          if (timeFilter === "morning") return hour < 12
-          if (timeFilter === "afternoon") return hour >= 12 && hour < 17
-          if (timeFilter === "evening") return hour >= 17
-          return true
-        })
-      })()
-      const matchesSearch =
-        normalizedSearch.length === 0 ||
-        course.code.toLowerCase().includes(normalizedSearch) ||
-        course.name.toLowerCase().includes(normalizedSearch)
-      return matchesDept && matchesSection && matchesDay && matchesTime && matchesSearch
-    })
-  }, [courseCatalog, departmentTab, sectionFilter, dayFilter, timeFilter, searchTerm])
+    return courseCatalog
+      .filter((course) => {
+        if (!showLockedCourses && hasTrackerProgress) {
+          const availabilityVisible =
+            course.availability === "active" || course.availability === "ready" || course.availability === "unknown"
+          if (!availabilityVisible) {
+            return false
+          }
+        }
+        const matchesDept = departmentTab === "All" || course.department === departmentTab
+        const matchesSection =
+          sectionFilter === "all" ||
+          course.sections.some((section) => (section.section || "").trim().toUpperCase() === sectionFilter)
+        const matchesDay =
+          dayFilter === "all" ||
+          course.sections.some((section) => parseDays(section.meetingDays).includes(dayFilter as DayToken))
+        const matchesTime = (() => {
+          if (timeFilter === "all") return true
+          return course.sections.some((section) => {
+            const { startMinutes } = parseTimeRange(section.meetingTime)
+            if (Number.isNaN(startMinutes)) return false
+            const hour = startMinutes / 60
+            if (timeFilter === "morning") return hour < 12
+            if (timeFilter === "afternoon") return hour >= 12 && hour < 17
+            if (timeFilter === "evening") return hour >= 17
+            return true
+          })
+        })()
+        const matchesSearch =
+          normalizedSearch.length === 0 ||
+          course.code.toLowerCase().includes(normalizedSearch) ||
+          course.name.toLowerCase().includes(normalizedSearch)
+        return matchesDept && matchesSection && matchesDay && matchesTime && matchesSearch
+      })
+      .sort((a, b) => {
+        const priorityDiff =
+          getAvailabilityPriority(a.availability, showLockedCourses) -
+          getAvailabilityPriority(b.availability, showLockedCourses)
+        if (priorityDiff !== 0) return priorityDiff
+        return a.code.localeCompare(b.code)
+      })
+  }, [courseCatalog, departmentTab, sectionFilter, dayFilter, timeFilter, searchTerm, hasTrackerProgress, showLockedCourses])
 
   const activeVersionState = versionStore[activeTermYearKey]
   const versions = activeVersionState?.versions ?? []
@@ -3153,6 +3741,116 @@ const renderScheduleView = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog open={pairingPrompt.open} onOpenChange={(next) => { if (!next) closePairingPrompt() }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Keep lecture and lab together</DialogTitle>
+            <DialogDescription>
+              {pairingPrompt.action === "add-course" && pairingPrompt.pairCode
+                ? `Add ${pairingPrompt.primaryCode} with its paired ${pairingPrompt.pairCode}?`
+                : pairingPrompt.action === "remove-course" && pairingPrompt.pairCode
+                  ? `Remove ${pairingPrompt.primaryCode} and its paired ${pairingPrompt.pairCode}?`
+                  : pairingPrompt.action === "add-section" && pairingPrompt.pairSection
+                    ? `Add ${pairingPrompt.primarySection?.courseCode} (${pairingPrompt.primarySection?.section}) with ${pairingPrompt.pairSection.courseCode} (${pairingPrompt.pairSection.section})?`
+                    : pairingPrompt.action === "remove-section" && pairingPrompt.pairSection
+                      ? `Remove ${pairingPrompt.primarySection?.courseCode} (${pairingPrompt.primarySection?.section}) with ${pairingPrompt.pairSection.courseCode} (${pairingPrompt.pairSection.section})?`
+                      : "Proceed with the paired course?"}
+            </DialogDescription>
+          </DialogHeader>
+          {(pairingPrompt.action === "add-course" || pairingPrompt.action === "add-section") && (
+            <div className="flex items-center gap-2 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 text-[12px] dark:border-slate-700 dark:bg-slate-800/60">
+              <Checkbox
+                id="remember-pairing-choice"
+                checked={rememberPairingAddToggle}
+                onCheckedChange={(value) => setRememberPairingAddToggle(Boolean(value))}
+              />
+              <Label htmlFor="remember-pairing-choice" className="text-[12px] text-slate-700 dark:text-slate-200">
+                Remember this choice for adding labs/lectures
+              </Label>
+            </div>
+          )}
+          {(pairingPrompt.action === "remove-course" || pairingPrompt.action === "remove-section") && pairingPrompt.pairCode && (
+            <div className="flex items-center gap-2 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 text-[12px] dark:border-slate-700 dark:bg-slate-800/60">
+              <Checkbox
+                id="remember-pairing-remove-choice"
+                checked={rememberPairingRemoveToggle}
+                onCheckedChange={(value) => setRememberPairingRemoveToggle(Boolean(value))}
+              />
+              <Label
+                htmlFor="remember-pairing-remove-choice"
+                className="text-[12px] text-slate-700 dark:text-slate-200"
+              >
+                Remember this choice for removing paired labs/lectures
+              </Label>
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={closePairingPrompt} className="w-full sm:w-auto">
+              Cancel
+            </Button>
+            <Button onClick={handlePairingConfirm} className="w-full sm:w-auto">
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={preferencesDialogOpen} onOpenChange={setPreferencesDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Preferences</DialogTitle>
+            <DialogDescription>Adjust how paired lecture/lab courses are handled.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-slate-700 dark:text-slate-200">
+            <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-800/60">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Auto-add paired lecture/lab</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  When selecting a course with a lab or lecture pair, add both without showing a confirmation.
+                </p>
+              </div>
+              <Switch
+                checked={rememberPairingAddDecision === "confirm"}
+                onCheckedChange={(value) => {
+                  if (value) {
+                    setRememberPairingAddDecision("confirm")
+                    setRememberPairingAddToggle(true)
+                  } else {
+                    setRememberPairingAddDecision(null)
+                    setRememberPairingAddToggle(false)
+                  }
+                }}
+                aria-label="Toggle auto-add paired lecture/lab"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-800/60">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Auto-remove paired lecture/lab</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  When removing a course with a lab or lecture pair, remove both without showing a confirmation.
+                </p>
+              </div>
+              <Switch
+                checked={rememberPairingRemoveDecision === "confirm"}
+                onCheckedChange={(value) => {
+                  if (value) {
+                    setRememberPairingRemoveDecision("confirm")
+                    setRememberPairingRemoveToggle(true)
+                  } else {
+                    setRememberPairingRemoveDecision(null)
+                    setRememberPairingRemoveToggle(false)
+                  }
+                }}
+                aria-label="Toggle auto-remove paired lecture/lab"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setPreferencesDialogOpen(false)} className="w-full sm:w-auto">
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="flex-1 overflow-hidden px-4 pb-4 pt-3 lg:px-8 flex flex-col min-h-0">
         <div className="mb-4 shrink-0">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -3187,6 +3885,15 @@ const renderScheduleView = () => {
                 <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
                 <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
               </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setPreferencesDialogOpen(true)}
+                aria-label="Open preferences"
+                className="h-8 w-8"
+              >
+                <Settings className="h-4 w-4" />
+              </Button>
               {error && (
                 <Button
                   variant="outline"
@@ -3212,18 +3919,20 @@ const renderScheduleView = () => {
                   <CardTitle className="text-base font-semibold">My Courses</CardTitle>
                 </div>
                 {/* Search with floating results */}
-                  <div className="relative text-[13px]">
-                  <div className="relative">
-                    <Input
-                      placeholder="Search courses"
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.currentTarget.value)}
-                      onFocus={() => setSearchPanelVisible(true)}
-                      className="h-9 rounded-md border-slate-200 pl-9 text-[13px] shadow-none focus-visible:ring-0 dark:border-slate-700"
-                    />
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                <div className="relative text-[13px]">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="relative flex-1 min-w-[180px]">
+                      <Input
+                        placeholder="Search courses"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.currentTarget.value)}
+                        onFocus={() => setSearchPanelVisible(true)}
+                        className="h-9 rounded-md border-slate-200 pl-9 text-[13px] shadow-none focus-visible:ring-0 dark:border-slate-700"
+                      />
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                    </div>
                   </div>
-                  
+
                   {/* Floating search results panel (portal to body so it overlays all columns) */}
                   {isClient &&
                     createPortal(
@@ -3258,6 +3967,22 @@ const renderScheduleView = () => {
                                       className="h-9 rounded-md border-slate-200 pl-9 text-[13px] shadow-none focus-visible:ring-0 dark:border-slate-700"
                                     />
                                     <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[11px]">
+                                    <Switch
+                                      id="schedule-lock-toggle-floating"
+                                      checked={showLockedCourses}
+                                      onCheckedChange={(value) => setShowLockedCourses(Boolean(value))}
+                                      disabled={!hasTrackerProgress}
+                                      aria-label="Show locked courses"
+                                      title={hasTrackerProgress ? undefined : "Requires Course Tracker data"}
+                                    />
+                                    <Label
+                                      htmlFor="schedule-lock-toggle-floating"
+                                      className={`text-[11px] font-medium ${hasTrackerProgress ? "cursor-pointer text-slate-600 dark:text-slate-300" : "cursor-not-allowed text-slate-500 dark:text-slate-500"}`}
+                                    >
+                                      Show locked courses
+                                    </Label>
                                   </div>
                                   <Button
                                     variant="ghost"
@@ -3334,6 +4059,7 @@ const renderScheduleView = () => {
                                       <p className="text-[11px] uppercase tracking-wide text-slate-500">Suggested</p>
                                       {suggestedCourses.slice(0, 5).map((course) => {
                                         const isSelected = selectedCourseCodes.includes(course.code)
+                                        const availabilityMeta = availabilityBadgeConfig[course.availability]
                                         return (
                                           <button
                                             key={`s-${course.code}`}
@@ -3350,13 +4076,29 @@ const renderScheduleView = () => {
                                               <div className="min-w-0">
                                                 <p className="font-semibold text-[13px] leading-snug">{course.code}</p>
                                                 <p className="text-[11px] text-slate-500 leading-snug break-words">{course.name}</p>
+                                                {course.availability === "locked" && course.missingPrerequisites.length > 0 && (
+                                                  <p className="mt-1 text-[10px] text-rose-600 dark:text-rose-300">
+                                                    Needs: {course.missingPrerequisites.join(", ")}
+                                                  </p>
+                                                )}
+                                                {course.availability === "completed" && (
+                                                  <p className="mt-1 text-[10px] text-emerald-600 dark:text-emerald-300">Already completed</p>
+                                                )}
                                               </div>
-                                              <Badge
-                                                variant={isSelected ? "secondary" : "outline"}
-                                                className="text-[11px] min-w-[74px] justify-center px-3"
-                                              >
-                                                {course.sections.length || 0} sections
-                                              </Badge>
+                                              <div className="flex flex-col items-end gap-1">
+                                                <Badge
+                                                  variant={isSelected ? "secondary" : "outline"}
+                                                  className="text-[11px] min-w-[74px] justify-center px-3"
+                                                >
+                                                  {course.sections.length || 0} sections
+                                                </Badge>
+                                                <Badge
+                                                  variant="outline"
+                                                  className={`text-[10px] px-2 ${availabilityMeta.className}`}
+                                                >
+                                                  {availabilityMeta.label}
+                                                </Badge>
+                                              </div>
                                             </div>
                                           </button>
                                         )
@@ -3365,6 +4107,7 @@ const renderScheduleView = () => {
                                   )}
                                   {filteredCatalog.map((course) => {
                                     const isSelected = selectedCourseCodes.includes(course.code)
+                                    const availabilityMeta = availabilityBadgeConfig[course.availability]
                                     return (
                                       <button
                                         key={course.code}
@@ -3381,12 +4124,25 @@ const renderScheduleView = () => {
                                           <div className="min-w-0">
                                             <p className="font-semibold text-[13px] leading-snug">{course.code}</p>
                                             <p className="text-[11px] text-slate-500 leading-snug break-words">{course.name}</p>
+                                            {course.availability === "locked" && course.missingPrerequisites.length > 0 && (
+                                              <p className="mt-1 text-[10px] text-rose-600 dark:text-rose-300">
+                                                Needs: {course.missingPrerequisites.join(", ")}
+                                              </p>
+                                            )}
+                                            {course.availability === "completed" && (
+                                              <p className="mt-1 text-[10px] text-emerald-600 dark:text-emerald-300">Already completed</p>
+                                            )}
                                           </div>
-                                          <div className="flex items-center gap-2">
-                                            <Badge variant="outline" className="text-[11px] min-w-[74px] justify-center px-3">
-                                              {course.sections.length} sections
-                                            </Badge>
-                                            {isSelected && <Badge variant="secondary" className="text-[11px]">Added</Badge>}
+                                            <div className="flex flex-col items-end gap-1">
+                                              <div className="flex items-center gap-2">
+                                                <Badge variant="outline" className="text-[11px] min-w-[74px] justify-center px-3">
+                                                  {course.sections.length} sections
+                                                </Badge>
+                                                {isSelected && <Badge variant="secondary" className="text-[11px]">Added</Badge>}
+                                              </div>
+                                              <Badge variant="outline" className={`text-[10px] px-2 ${availabilityMeta.className}`}>
+                                                {availabilityMeta.label}
+                                              </Badge>
                                           </div>
                                         </div>
                                       </button>
@@ -3441,8 +4197,7 @@ const renderScheduleView = () => {
                             variant="ghost"
                             size="icon"
                             onClick={() => {
-                              setSelectedCourses((prev) => prev.filter((c) => getSelectedCourseCanonicalCode(c) !== code))
-                              setSelectedCourseCodes((prev) => prev.filter((c) => c !== code))
+                              toggleCourseSelection(code)
                             }}
                             className="h-7 w-7 rounded-full p-0 text-slate-500 hover:text-red-600 hover:bg-red-50"
                             title="Remove course from selected list"
@@ -3477,6 +4232,7 @@ const renderScheduleView = () => {
                                     {section.hasSlots ? `${section.remainingSlots}/${section.classSize}` : "Full"}
                                   </Badge>
                                 </div>
+                                <p className="text-[11px] text-slate-500">{formatMeetingDays(section.meetingDays)}</p>
                                 <p className="text-[11px] text-slate-500">{cleanTimeString(section.meetingTime)}</p>
                                 <p className="text-[11px] text-slate-500">{cleanRoomString(section.room)}</p>
                               </div>
