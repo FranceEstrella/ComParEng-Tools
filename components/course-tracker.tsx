@@ -65,6 +65,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { orderedPatchNotes } from "@/lib/patch-notes"
+import { trackAnalyticsEvent } from "@/lib/analytics-client"
 
 const APP_VERSION = orderedPatchNotes[0]?.version ?? "Dev"
 
@@ -1079,7 +1080,11 @@ const ThemeToggle = () => {
     <Button
       variant="outline"
       size="icon"
-      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+      onClick={() => {
+        const nextTheme = theme === "dark" ? "light" : "dark"
+        trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "course_tracker" })
+        setTheme(nextTheme)
+      }}
       aria-label="Toggle theme"
       className="rounded-full border-slate-300 bg-white/80 text-foreground hover:bg-white dark:border-white/40 dark:bg-white/10 dark:hover:bg-white/20"
     >
@@ -1912,12 +1917,14 @@ const SaveLoadControls = ({
                 onChange={(e) => {
                   const file = (e.target as HTMLInputElement).files?.[0]
                   if (!file) return
+                  trackAnalyticsEvent("course_tracker.curriculum_import_file", { filename: file.name })
                   const reader = new FileReader()
                   reader.onload = (ev) => {
                     try {
                       const html = ev.target?.result as string
                       const parsed = parseCurriculumHtml(html) as Course[]
                       if (!parsed || parsed.length === 0) {
+                        trackAnalyticsEvent("course_tracker.curriculum_import_failed", { reason: "no_courses" })
                         setSaveMessage("No courses found in the provided HTML file")
                         setTimeout(() => setSaveMessage(null), 3000)
                         return
@@ -1926,10 +1933,12 @@ const SaveLoadControls = ({
                       registerExternalCourses(hydrated)
                       setCourses(hydrated)
                       saveCourseStatuses(hydrated)
+                      trackAnalyticsEvent("course_tracker.curriculum_import_success", { courseCount: hydrated.length })
                       setSaveMessage("Curriculum imported successfully")
                       setTimeout(() => setSaveMessage(null), 3000)
                     } catch (err) {
                       console.error(err)
+                      trackAnalyticsEvent("course_tracker.curriculum_import_failed", { reason: "parse_error" })
                       setSaveMessage("Failed to parse curriculum HTML file")
                       setTimeout(() => setSaveMessage(null), 3000)
                     }
@@ -3844,6 +3853,12 @@ export default function CourseTracker() {
 
   // Download course progress as JSON file
   const downloadProgress = () => {
+    trackAnalyticsEvent("course_tracker.download_progress_click", {
+      startYear,
+      currentYearLevel,
+      currentTerm,
+      courseCount: courses.length,
+    })
     const snapshot = {
       version: 3,
       exportedAt: new Date().toISOString(),
@@ -3864,6 +3879,8 @@ export default function CourseTracker() {
     linkElement.setAttribute("href", dataUri)
     linkElement.setAttribute("download", exportFileDefaultName)
     linkElement.click()
+
+    trackAnalyticsEvent("course_tracker.download_progress_success", { courseCount: courses.length })
 
     setSaveMessage("Course progress and timeline downloaded successfully")
     setTimeout(() => setSaveMessage(null), 3000)
@@ -4007,7 +4024,12 @@ export default function CourseTracker() {
     const valueStr = typeof eOrValue === "string" ? eOrValue : eOrValue.target.value
     const year = Number.parseInt(valueStr)
     if (!isNaN(year) && year >= 2000 && year <= 2100) {
-      setStartYear(year)
+      setStartYear((prev) => {
+        if (prev !== year) {
+          trackAnalyticsEvent("course_tracker.start_year_set", { year })
+        }
+        return year
+      })
     }
     // If the value is empty or invalid, do not update startYear to allow the user to edit freely on mobile
   }

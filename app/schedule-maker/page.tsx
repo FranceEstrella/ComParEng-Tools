@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from "react"
 import {
   DndContext,
   PointerSensor,
@@ -80,6 +80,7 @@ import { format } from "date-fns"
 import { AnimatePresence, motion } from "framer-motion"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useMemo } from "react"
+import { trackAnalyticsEvent } from "@/lib/analytics-client"
 
 // Time slot constants
 const DAYS = ["M", "Tu", "W", "Th", "F", "S"] as const;
@@ -710,6 +711,9 @@ const lightenHexColor = (hexColor: string, amount = 0.18): string => {
 }
 
 export default function ScheduleMaker() {
+  useEffect(() => {
+    trackAnalyticsEvent("schedule_maker.page_view")
+  }, [])
   const { theme, setTheme } = useTheme()
 
   const [availableCourses, setAvailableCourses] = useState<CourseSection[]>([])
@@ -2749,6 +2753,7 @@ export default function ScheduleMaker() {
   }
 
   const handleExportSelectedCourses = () => {
+    trackAnalyticsEvent("schedule_maker.export_selected_courses_click", { selectedCount: selectedCourses.length })
     if (selectedCourses.length === 0) {
       setImportStatus({ type: "warning", message: "Add at least one course before exporting selections." })
       return
@@ -2766,9 +2771,11 @@ export default function ScheduleMaker() {
       document.body.removeChild(link)
       URL.revokeObjectURL(url)
       setImportStatus({ type: "success", message: "Exported selected courses." })
+      trackAnalyticsEvent("schedule_maker.export_selected_courses_success", { selectedCount: selectedCourses.length })
     } catch (err) {
       console.error("Failed to export selected courses:", err)
       setImportStatus({ type: "error", message: "Failed to export selected courses." })
+      trackAnalyticsEvent("schedule_maker.export_selected_courses_failed")
     }
   }
 
@@ -2788,6 +2795,8 @@ export default function ScheduleMaker() {
   const handleImportSelectedCourses: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
     const file = event.target.files?.[0]
     if (!file) return
+
+    trackAnalyticsEvent("schedule_maker.import_selected_courses_file", { filename: file.name })
 
     try {
       if (!file.name.toLowerCase().endsWith(".json")) {
@@ -2901,11 +2910,19 @@ export default function ScheduleMaker() {
       }
 
       setImportStatus({ type: statusType, message: parts.join(" ") })
+      trackAnalyticsEvent("schedule_maker.import_selected_courses_result", {
+        statusType,
+        applied,
+        skippedMissing,
+        skippedInvalid,
+        updatedDetails,
+      })
     } catch (err: any) {
       console.error("Failed to import selected courses:", err)
       const message = err?.message || "Failed to import selected courses."
       setImportStatus({ type: "error", message })
       setImportErrorDialog({ title: "Import error", message })
+      trackAnalyticsEvent("schedule_maker.import_selected_courses_failed")
     } finally {
       if (event.target) {
         event.target.value = ""
@@ -3032,19 +3049,27 @@ export default function ScheduleMaker() {
   }
 
   const handleConfirmIcsDownload = () => {
+    trackAnalyticsEvent("schedule_maker.download_ics_click")
     if (!icsDialogStartDate) {
       setIcsDialogError('Please pick a start date.')
+      trackAnalyticsEvent("schedule_maker.download_ics_failed", { reason: "missing_start_date" })
       return
     }
 
     const chosenDate = new Date(icsDialogStartDate)
     if (Number.isNaN(chosenDate.getTime())) {
       setIcsDialogError('Invalid start date.')
+      trackAnalyticsEvent("schedule_maker.download_ics_failed", { reason: "invalid_start_date" })
       return
     }
 
     setStartDate(chosenDate)
-    downloadICSFile(chosenDate)
+    try {
+      downloadICSFile(chosenDate)
+      trackAnalyticsEvent("schedule_maker.download_ics_success", { selectedCount: selectedCourses.length })
+    } catch {
+      trackAnalyticsEvent("schedule_maker.download_ics_failed", { reason: "unexpected_error" })
+    }
     // Also open Google Calendar export/settings so users can import immediately.
     try {
       window.open("https://calendar.google.com/calendar/u/0/r/settings/export", "_blank")
@@ -3146,14 +3171,17 @@ export default function ScheduleMaker() {
 
   // Open the student portal course offerings page
   const openStudentPortal = () => {
+    trackAnalyticsEvent("schedule_maker.open_student_portal_click")
     window.open("https://solar.feutech.edu.ph/course/offerings", "_blank")
   }
 
   const openCourseTracker = () => {
+    trackAnalyticsEvent("schedule_maker.open_course_tracker_click")
     window.open("/course-tracker", "_blank")
   }
 
   const handleStudentPortalLaunch = () => {
+    trackAnalyticsEvent("schedule_maker.awaiting_data_dialog_open")
     openStudentPortal()
     setAwaitingDataDialogOpen(true)
     setNoDataDialogPaused(true)
@@ -3161,6 +3189,7 @@ export default function ScheduleMaker() {
 
   const openSolarOSESWindow = useCallback(() => {
     if (typeof window === "undefined") return
+    trackAnalyticsEvent("schedule_maker.open_solar_oses_click")
     const url = "https://solar.feutech.edu.ph/course/registration"
     const features = "noopener,noreferrer,width=1280,height=900,left=120,top=80"
     const popup = window.open(url, "_blank", features)
@@ -3728,7 +3757,17 @@ export default function ScheduleMaker() {
   const activeVersionState = versionStore[activeTermYearKey]
   const versions = activeVersionState?.versions ?? []
 
+  const lastReportedVersionCountRef = useRef<Record<string, number>>({})
+  useEffect(() => {
+    const count = versions.length
+    const prev = lastReportedVersionCountRef.current[activeTermYearKey]
+    if (prev === count) return
+    lastReportedVersionCountRef.current = { ...lastReportedVersionCountRef.current, [activeTermYearKey]: count }
+    trackAnalyticsEvent("schedule_maker.versions_count", { termYearKey: activeTermYearKey, count })
+  }, [activeTermYearKey, versions.length])
+
 const downloadScheduleImage = async () => {
+  trackAnalyticsEvent("schedule_maker.download_image_click", { selectedCount: selectedCourses.length })
   if (!scheduleRef.current) return;
   
   // Capture at max zoom for clarity
@@ -3741,6 +3780,9 @@ const downloadScheduleImage = async () => {
     const cardEl = scheduleRef.current.closest('[data-schedule-card]') as HTMLElement | null
     if (!cardEl) return
 
+    const exportIsDark = document.documentElement.classList.contains("dark")
+    const exportBackgroundColor = exportIsDark ? "rgb(15, 23, 42)" : "#ffffff"
+
     // Hide edit/chevron icons in header during capture
     const headerEl = cardEl.querySelector('.schedule-card-header') as HTMLElement | null
     const renameButton = headerEl?.querySelector('[aria-label="Rename schedule title"]') as HTMLElement | null
@@ -3750,7 +3792,20 @@ const downloadScheduleImage = async () => {
     if (renameButton) renameButton.style.display = 'none'
     headerSvgs.forEach((el) => { el.style.display = 'none' })
 
-    // Temporarily expand and unclip the schedule area for full capture
+    // Temporarily expand and unclip the schedule area for full capture.
+    // Add a tiny right-edge safety so the last column/border never gets clipped by sub-pixel rounding,
+    // and an export-only right gutter so the PNG has breathing room after Saturday.
+    // ---- Export knobs (safe to tweak) ----
+    // html2canvas scale: higher can reduce text clipping but costs memory/time.
+    const EXPORT_CANVAS_SCALE = 2
+    // Add some space after Saturday in the exported PNG (does not affect live view).
+    const EXPORT_RIGHT_GUTTER_PX = 26
+    // Crop empty space at the bottom of the exported PNG (does not affect live view).
+    // Increase this if the export has too much empty space; decrease if it crops too aggressively.
+    const EXPORT_CROP_BOTTOM_PX = 350
+    // -------------------------------------
+
+    const RIGHT_EDGE_SAFETY_PX = 4
     const scheduleEl = scheduleRef.current
     const parentEl = scheduleEl.parentElement as HTMLElement | null
     const scrollEl = scheduleEl.querySelector('[data-schedule-scroll]') as HTMLElement | null
@@ -3764,11 +3819,13 @@ const downloadScheduleImage = async () => {
     const originalScrollWidth = scrollEl?.style.width
     const originalScrollHeight = scrollEl?.style.height
     const originalScrollMaxHeight = scrollEl?.style.maxHeight
+    const originalScrollPaddingRight = scrollEl?.style.paddingRight
     scheduleEl.style.height = `${scheduleEl.scrollHeight}px`
     scheduleEl.style.overflow = "visible"
     if (parentEl) parentEl.style.overflow = "visible"
     if (scrollEl) {
-      const fullWidth = scrollEl.scrollWidth || scrollEl.clientWidth
+      scrollEl.style.paddingRight = `${EXPORT_RIGHT_GUTTER_PX}px`
+      const fullWidth = (scrollEl.scrollWidth || scrollEl.clientWidth) + RIGHT_EDGE_SAFETY_PX
       const fullHeight = Math.max(scrollEl.scrollHeight, scheduleEl.scrollHeight, cardEl.scrollHeight)
       scrollEl.style.overflow = "visible"
       scrollEl.style.width = `${fullWidth}px`
@@ -3787,11 +3844,19 @@ const downloadScheduleImage = async () => {
       display: (header as HTMLElement).style.display,
       alignItems: (header as HTMLElement).style.alignItems,
       justifyContent: (header as HTMLElement).style.justifyContent,
-      height: (header as HTMLElement).style.height
+      height: (header as HTMLElement).style.height,
     }));
 
-    // Relax line clamps to avoid descender clipping during export
-    const clampedTextNodes = Array.from(scheduleEl.querySelectorAll('.line-clamp-1, .line-clamp-2')) as HTMLElement[]
+    // We'll disable animations in html2canvas's cloned DOM so the live UI can keep animating.
+    const captureId = `capture-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    cardEl.setAttribute("data-capture-id", captureId)
+
+    // Tag the schedule root so we can force an opaque background in the clone.
+    const scheduleRootCaptureAttr = "data-capture-schedule-root"
+    scheduleEl.setAttribute(scheduleRootCaptureAttr, "true")
+
+    // Relax line clamps to avoid descender clipping during export (includes header term/year).
+    const clampedTextNodes = Array.from(cardEl.querySelectorAll('.line-clamp-1, .line-clamp-2')) as HTMLElement[]
     const originalClampStyles = clampedTextNodes.map((el) => ({
       el,
       lineClamp: (el.style as any).webkitLineClamp,
@@ -3826,7 +3891,16 @@ const downloadScheduleImage = async () => {
     // Small delay to ensure styles are applied
     await new Promise(resolve => setTimeout(resolve, 50));
 
-    const captureWidth = scrollEl?.scrollWidth || cardEl.scrollWidth
+    // Chrome: ensure fonts and paint are settled before capture.
+    try {
+      const fontsReady = (document as any).fonts?.ready
+      if (fontsReady && typeof fontsReady.then === "function") await fontsReady
+    } catch {
+      // ignore
+    }
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+
+    const captureWidth = (scrollEl?.scrollWidth || cardEl.scrollWidth) + RIGHT_EDGE_SAFETY_PX
     const captureHeight = Math.max(
       scrollEl?.scrollHeight || 0,
       scheduleEl.scrollHeight,
@@ -3834,16 +3908,189 @@ const downloadScheduleImage = async () => {
     ) + (headerEl?.offsetHeight ?? 0) + 160
 
     const canvas = await html2canvas(cardEl, {
-      scale: 2.5,
+      scale: EXPORT_CANVAS_SCALE,
       useCORS: true,
       logging: false,
-      backgroundColor: 'white',
+      backgroundColor: exportBackgroundColor,
       scrollX: 0,
       scrollY: 0,
       windowWidth: captureWidth,
       windowHeight: captureHeight,
       width: captureWidth,
-      height: captureHeight
+      height: captureHeight,
+      onclone: (clonedDoc) => {
+        const clonedCard = clonedDoc.querySelector(`[data-capture-id="${captureId}"]`) as HTMLElement | null
+        if (!clonedCard) return
+
+        const isDark = clonedDoc.documentElement.classList.contains("dark")
+        const solidSurface = isDark ? "rgb(15, 23, 42)" : "#ffffff"
+
+        // If any ancestor has opacity/filter/transform (e.g., framer-motion), neutralize it for export.
+        let parent: HTMLElement | null = clonedCard
+        while (parent) {
+          parent.style.opacity = "1"
+          parent.style.transform = "none"
+          parent.style.filter = "none"
+          parent.style.overflow = "visible"
+          parent.style.maxHeight = "none"
+          ;(parent.style as any).contain = "none"
+          ;(parent.style as any).backdropFilter = "none"
+          ;(parent.style as any).webkitBackdropFilter = "none"
+          parent = parent.parentElement
+        }
+
+        // The schedule card lives inside several overflow-hidden flex containers.
+        // In export we need the full expanded card to be "visible" (not clipped) so html2canvas can render it.
+        clonedCard.style.overflow = "visible"
+
+        // Ensure the cloned document itself doesn't clip due to default viewport-sized body/html.
+        clonedDoc.documentElement.style.overflow = "visible"
+        clonedDoc.body.style.overflow = "visible"
+        clonedDoc.documentElement.style.height = "auto"
+        clonedDoc.body.style.height = "auto"
+
+        // Force solid backgrounds to avoid washed-out exports from translucent/backdrop-blur surfaces.
+        clonedCard.style.backgroundColor = solidSurface
+        ;(clonedCard.style as any).backdropFilter = "none"
+        ;(clonedCard.style as any).webkitBackdropFilter = "none"
+        const clonedHeader = clonedCard.querySelector<HTMLElement>(".schedule-card-header")
+        if (clonedHeader) {
+          clonedHeader.style.backgroundColor = solidSurface
+          ;(clonedHeader.style as any).backdropFilter = "none"
+          ;(clonedHeader.style as any).webkitBackdropFilter = "none"
+        }
+
+        const clonedScheduleRoot = clonedCard.querySelector<HTMLElement>(`[${scheduleRootCaptureAttr}="true"]`)
+        if (clonedScheduleRoot) {
+          clonedScheduleRoot.style.backgroundColor = solidSurface
+          ;(clonedScheduleRoot.style as any).backdropFilter = "none"
+          ;(clonedScheduleRoot.style as any).webkitBackdropFilter = "none"
+        }
+
+        // Hard-disable animations/transitions in the clone so headers/background are fully rendered.
+        const style = clonedDoc.createElement("style")
+        style.setAttribute("data-export-style", "true")
+        style.textContent = `
+          *, *::before, *::after { animation: none !important; transition: none !important; }
+          .day-column-fade { opacity: 1 !important; transform: none !important; }
+          /* Export fix: Radix Select trigger uses Tailwind '[&>span]:line-clamp-1' (button > span),
+             which can clip descenders in html2canvas at high scale. */
+          [data-schedule-card] .schedule-card-header [aria-haspopup="listbox"] {
+            overflow: visible !important;
+            height: auto !important;
+            min-height: 36px !important;
+            padding-top: 7px !important;
+            padding-bottom: 9px !important;
+            line-height: 1.35 !important;
+          }
+          [data-schedule-card] .schedule-card-header [aria-haspopup="listbox"] > span,
+          [data-schedule-card] .schedule-card-header [aria-haspopup="listbox"] span {
+            display: block !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            white-space: nowrap !important;
+            max-height: none !important;
+            -webkit-line-clamp: unset !important;
+            -webkit-box-orient: unset !important;
+          }
+          [data-schedule-card] { background-color: ${solidSurface} !important; }
+          [data-schedule-card] .schedule-card-header { background-color: ${solidSurface} !important; }
+          [data-schedule-card] [${scheduleRootCaptureAttr}="true"] { background-color: ${solidSurface} !important; }
+        `
+        clonedDoc.head.appendChild(style)
+
+        // Some Radix/Tailwind clamping styles are applied via generated selectors that can be finicky.
+        // Force inline overrides on the cloned header Select triggers to avoid descender clipping.
+        try {
+          const clonedHeaderArea = clonedCard.querySelector<HTMLElement>(".schedule-card-header")
+          const triggers = Array.from(
+            clonedHeaderArea?.querySelectorAll<HTMLElement>('[aria-haspopup="listbox"]') ?? [],
+          )
+          triggers.forEach((trigger) => {
+            trigger.style.overflow = "visible"
+            trigger.style.height = "auto"
+            trigger.style.minHeight = "40px"
+            trigger.style.paddingTop = "7px"
+            trigger.style.paddingBottom = "12px"
+            trigger.style.lineHeight = "1.35"
+
+            const spans = Array.from(trigger.querySelectorAll<HTMLElement>("span"))
+            spans.forEach((span) => {
+              span.style.display = "inline-block"
+              span.style.overflow = "visible"
+              span.style.maxHeight = "none"
+              span.style.whiteSpace = "nowrap"
+              span.style.lineHeight = "1.35"
+              ;(span.style as any).webkitLineClamp = "unset"
+              ;(span.style as any).webkitBoxOrient = "unset"
+            })
+          })
+        } catch {
+          // ignore
+        }
+
+        // If the browser/html2canvas still clips descenders for form controls, use an export-only replacement.
+        // This mirrors the common workaround of rendering form text as plain div/span during capture.
+        try {
+          const clonedHeaderArea = clonedCard.querySelector<HTMLElement>(".schedule-card-header")
+          const triggers = Array.from(
+            clonedHeaderArea?.querySelectorAll<HTMLElement>('[aria-haspopup="listbox"]') ?? [],
+          )
+          triggers.forEach((trigger) => {
+            const rawText = (trigger.textContent ?? "").replace(/\s+/g, " ").trim()
+            if (!rawText) return
+
+            const replacement = clonedDoc.createElement("div")
+            replacement.textContent = rawText
+
+            // Keep sizing similar to the trigger so header layout doesn't jump.
+            const rect = trigger.getBoundingClientRect();
+            const computed = window.getComputedStyle(trigger);
+
+            // 1. Force the container to be a block with exact dimensions
+            replacement.style.display = "block"; 
+            replacement.style.width = `${Math.ceil(rect.width)}px`;
+            replacement.style.height = `${Math.ceil(rect.height)}px`;
+
+            // 2. Exact Font Matching (Critical for html2canvas)
+            replacement.style.fontFamily = computed.fontFamily;
+            replacement.style.fontSize = computed.fontSize;
+            replacement.style.fontWeight = computed.fontWeight;
+            replacement.style.color = computed.color;
+            replacement.style.letterSpacing = computed.letterSpacing;
+
+            // 3. The "Vertical Center" Hack for html2canvas
+            // Instead of flex, we use line-height equal to the height of the box
+            replacement.style.lineHeight = `${Math.ceil(rect.height)}px`;
+            replacement.style.textAlign = "left"; 
+            replacement.style.padding = "0"; // Reset padding to avoid double-offsetting
+            replacement.style.margin = "0";
+
+            // 4. Clean up the text
+            replacement.style.whiteSpace = "nowrap";
+            replacement.style.overflow = "visible";
+
+            replacement.style.background = "transparent"
+
+            // Insert replacement and remove trigger from flow for export.
+            trigger.insertAdjacentElement("beforebegin", replacement)
+            trigger.style.display = "none"
+          })
+        } catch {
+          // ignore
+        }
+
+        // Some browsers keep computed delays even when animation is removed; force inline reset too.
+        const fadeNodes = Array.from(clonedCard.querySelectorAll<HTMLElement>(".day-column-fade"))
+        fadeNodes.forEach((el) => {
+          el.style.animation = "none"
+          el.style.animationDelay = "0ms"
+          el.style.animationDuration = "0ms"
+          el.style.transition = "none"
+          el.style.opacity = "1"
+          el.style.transform = "none"
+        })
+      },
     });
 
     // Restore overflow/height
@@ -3856,9 +4103,13 @@ const downloadScheduleImage = async () => {
       scrollEl.style.width = originalScrollWidth ?? "";
       scrollEl.style.height = originalScrollHeight ?? ""
       scrollEl.style.maxHeight = originalScrollMaxHeight ?? ""
+      scrollEl.style.paddingRight = originalScrollPaddingRight ?? ""
     }
     cardEl.style.width = originalCardWidth;
     cardEl.style.height = originalCardHeight;
+
+    cardEl.removeAttribute("data-capture-id")
+    scheduleEl.removeAttribute("data-capture-schedule-root")
 
     // Restore header icons
     if (renameButton) renameButton.style.display = originalRenameDisplay ?? ''
@@ -3886,12 +4137,42 @@ const downloadScheduleImage = async () => {
 
     const link = document.createElement('a');
     link.download = `schedule-${new Date().toISOString().slice(0,10)}.png`;
-    link.href = canvas.toDataURL('image/png');
+
+    // Export-only bottom crop (crop in canvas pixels so it stays stable with different scales).
+    let outputCanvas: HTMLCanvasElement = canvas
+    try {
+      const pxRatio = captureWidth > 0 ? canvas.width / captureWidth : 1
+      const cropBottomPx = Math.max(0, EXPORT_CROP_BOTTOM_PX) * pxRatio
+      const targetHeight = Math.max(1, Math.round(canvas.height - cropBottomPx))
+      if (targetHeight > 0 && targetHeight < canvas.height) {
+        const cropped = document.createElement("canvas")
+        cropped.width = canvas.width
+        cropped.height = targetHeight
+        const ctx = cropped.getContext("2d")
+        if (ctx) ctx.drawImage(canvas, 0, 0)
+        outputCanvas = cropped
+      }
+    } catch {
+      // ignore crop errors; fall back to full canvas
+    }
+
+    link.href = outputCanvas.toDataURL('image/png');
     link.click();
+
+    trackAnalyticsEvent("schedule_maker.download_image_success", { selectedCount: selectedCourses.length })
 
   } catch (err) {
     console.error('Error generating image:', err);
+    trackAnalyticsEvent("schedule_maker.download_image_failed")
   } finally {
+    // Ensure we never leave capture attributes behind.
+    try {
+      const cardEl = scheduleRef.current?.closest('[data-schedule-card]') as HTMLElement | null
+      cardEl?.removeAttribute("data-capture-id")
+      scheduleRef.current?.removeAttribute("data-capture-schedule-root")
+    } catch {
+      // ignore
+    }
     // Restore user zoom
     setZoomLevel(prevZoom)
   }
@@ -4075,6 +4356,10 @@ const downloadScheduleImage = async () => {
     textColor,
     onContextMenu,
   }) => {
+    const titleContainerRef = useRef<HTMLDivElement | null>(null)
+    const titleTextRef = useRef<HTMLDivElement | null>(null)
+    const [titleFontPx, setTitleFontPx] = useState(() => (compactTitle ? 11 : 12))
+
     const canonicalCode = getSelectedCourseCanonicalCode(course)
     const draggableId = `calendar-${canonicalCode}-${course.section}-${day}`
 
@@ -4087,6 +4372,37 @@ const downloadScheduleImage = async () => {
         currentSectionKey: `${course.courseCode}-${course.section}`,
       },
     })
+
+    useLayoutEffect(() => {
+      const container = titleContainerRef.current
+      const textEl = titleTextRef.current
+      if (!container || !textEl) return
+
+      // If the title has effectively no room (very short blocks), keep a readable minimum.
+      // We'll still set a tooltip so the full text is accessible.
+      const minFont = 9
+      const maxFont = compactTitle ? 11 : 12
+
+      // Reset to max before measuring.
+      let next = maxFont
+      textEl.style.fontSize = `${next}px`
+
+      // Iteratively shrink until it fits (bounded iterations).
+      for (let i = 0; i < 6; i += 1) {
+        const fits = textEl.scrollHeight <= container.clientHeight + 0.5
+        if (fits) break
+        next -= 1
+        if (next <= minFont) {
+          next = minFont
+          textEl.style.fontSize = `${next}px`
+          break
+        }
+        textEl.style.fontSize = `${next}px`
+      }
+
+      setTitleFontPx(next)
+      // Re-run when the block's size or visible rows change.
+    }, [displayTitle, compactTitle, showTime, showRoom, style.height])
 
     return (
       <div
@@ -4106,20 +4422,23 @@ const downloadScheduleImage = async () => {
         role="button"
         aria-label={`Drag ${displayTitle}`}
       >
-        <div
-          className={`font-bold leading-tight break-words ${
-            compactTitle ? "text-[11px] line-clamp-2" : "text-[12px] line-clamp-2"
-          }`}
-        >
-          {displayTitle}
+        <div ref={titleContainerRef} className="min-h-0 flex-1 overflow-hidden">
+          <div
+            ref={titleTextRef}
+            className="font-bold leading-tight break-words whitespace-normal"
+            style={{ fontSize: `${titleFontPx}px` }}
+            title={displayTitle}
+          >
+            {displayTitle}
+          </div>
         </div>
         {showTime && (
-          <div className="text-[11px] leading-tight break-words">
+          <div className="shrink-0 text-[11px] leading-tight break-words">
             {displayTime}
           </div>
         )}
         {showRoom && (
-          <div className="text-[11px] leading-tight break-words">
+          <div className="shrink-0 text-[11px] leading-tight break-words">
             {displayRoom}
           </div>
         )}
@@ -4215,7 +4534,7 @@ const renderScheduleView = () => {
         >
           {/* Header row - fixed at top */}
           <div
-            className="sticky top-0 z-30 grid min-w-[720px] gap-1 border-b border-slate-200/70 bg-white/95 dark:border-slate-700/80 dark:bg-slate-900/95"
+            className="sticky top-0 z-30 grid min-w-[720px] border-b border-slate-200/70 bg-white/95 dark:border-slate-700/80 dark:bg-slate-900/95"
             style={{ gridTemplateColumns: `var(--time-col) repeat(${DAY_COUNT}, minmax(0, 1fr))` }}
           >
             <div className="day-header rounded-md bg-gray-100 p-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300">
@@ -4861,7 +5180,11 @@ const renderScheduleView = () => {
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                onClick={() => {
+                  const nextTheme = theme === "dark" ? "light" : "dark"
+                  trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "schedule_maker" })
+                  setTheme(nextTheme)
+                }}
                 aria-label="Toggle theme"
                 className="h-8 w-8 rounded-full border-slate-300 bg-white/70 text-slate-900 transition-colors hover:bg-white dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
               >

@@ -21,6 +21,7 @@ import { MESSAGE_MIN } from "../lib/config"
 import NonCpeNotice, { markNonCpeNoticeDismissed } from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
 import OnboardingDialog from "@/components/onboarding-dialog"
+import { trackAnalyticsEvent } from "@/lib/analytics-client"
 
 const PROGRAMS = [
   "Computer Engineering",
@@ -123,6 +124,7 @@ export default function Home() {
       setShouldAutoOpenWhatsNew(completed)
       if (!completed) {
         timeout = setTimeout(() => setOnboardingOpen(true), 400)
+        trackAnalyticsEvent("onboarding.open", { source: "auto" })
       }
     } catch {
       // ignore storage failures
@@ -133,6 +135,10 @@ export default function Home() {
   }, [])
 
   const completeOnboarding = (options?: { deferWhatsNew?: boolean; source?: "finish" | "jump" | "skip" }) => {
+    trackAnalyticsEvent("onboarding.complete", {
+      source: options?.source ?? "finish",
+      deferWhatsNew: Boolean(options?.deferWhatsNew),
+    })
     try {
       localStorage.setItem("compareng.onboarding.completed", "true")
     } catch {
@@ -292,7 +298,10 @@ export default function Home() {
                 <Button
                   variant="outline"
                   className="bg-white/80 text-slate-900 border-slate-300 hover:bg-white dark:bg-white/10 dark:text-white dark:border-white/40 dark:hover:bg-white/20"
-                  onClick={() => setOnboardingOpen(true)}
+                  onClick={() => {
+                    trackAnalyticsEvent("onboarding.open", { source: "button" })
+                    setOnboardingOpen(true)
+                  }}
                 >
                   Start Onboarding
                 </Button>
@@ -300,7 +309,11 @@ export default function Home() {
                 <Button
                   variant="outline"
                   size="icon"
-                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                  onClick={() => {
+                    const nextTheme = theme === "dark" ? "light" : "dark"
+                    trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "home" })
+                    setTheme(nextTheme)
+                  }}
                   aria-label="Toggle theme"
                   className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
                 >
@@ -354,12 +367,13 @@ export default function Home() {
                   <div className="flex flex-col sm:flex-row gap-4 items-center">
                     <Button
                       className="w-full flex items-center gap-2"
-                      onClick={() =>
+                      onClick={() => {
+                        trackAnalyticsEvent("home.install_extension_click")
                         window.open(
                           "https://chromewebstore.google.com/detail/compareng-courses-data-ex/fdfappahfelppgjnpbobconjogebpiml",
                           "_blank",
                         )
-                      }
+                      }}
                     >
                       <Download className="h-4 w-4" />
                       Install Extension
@@ -390,12 +404,13 @@ export default function Home() {
                               <Button
                                 variant="link"
                                 className="text-blue-600 dark:text-blue-400 p-0 h-auto font-normal"
-                                onClick={() =>
+                                onClick={() => {
+                                  trackAnalyticsEvent("home.install_extension_click", { source: "install_guide" })
                                   window.open(
                                     "https://chromewebstore.google.com/detail/compareng-courses-data-ex/fdfappahfelppgjnpbobconjogebpiml",
                                     "_blank",
                                   )
-                                }
+                                }}
                               >
                                 chrome web store. <ExternalLink className="h-3 w-3 inline" />
                               </Button>
@@ -480,6 +495,7 @@ export default function Home() {
                   </ul>
                   <Link
                     href="/course-tracker"
+                    onClick={() => trackAnalyticsEvent("home.open_course_tracker_click")}
                     className="block w-full bg-blue-600 hover:bg-blue-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors mt-auto"
                   >
                     Open Course Tracker
@@ -515,6 +531,7 @@ export default function Home() {
                   </ul>
                   <Link
                     href="/schedule-maker"
+                    onClick={() => trackAnalyticsEvent("home.open_schedule_maker_click")}
                     className="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors mt-auto"
                   >
                     Open Schedule Maker
@@ -550,6 +567,7 @@ export default function Home() {
                   </ul>
                   <Link
                     href="/academic-planner"
+                    onClick={() => trackAnalyticsEvent("home.open_academic_planner_click")}
                     className="block w-full bg-green-600 hover:bg-green-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors mt-auto"
                   >
                     Open Academic Planner

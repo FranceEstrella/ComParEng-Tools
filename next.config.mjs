@@ -3,6 +3,8 @@ import { fileURLToPath } from "url"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
+const turbopackRoot = path.resolve(__dirname).replace(/\\/g, "/")
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typescript: {
@@ -16,7 +18,7 @@ const nextConfig = {
   // within environments that may change the CWD resolution. Use an absolute
   // path so Next's warning about relative turbopack.root is avoided.
   turbopack: {
-    root: path.resolve(__dirname),
+    root: turbopackRoot,
   },
   async headers() {
     return [

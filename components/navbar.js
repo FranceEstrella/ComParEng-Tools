@@ -9,6 +9,7 @@ import dynamic from "next/dynamic"
 // Lazy-load to avoid server render issues with dialog on some routes
 const PatchNotesButton = dynamic(() => import("./patch-notes"), { ssr: false })
 import { useTheme } from "next-themes"
+import { trackAnalyticsEvent } from "@/lib/analytics-client"
 
 export default function Navbar() {
   const pathname = usePathname()
@@ -34,7 +35,11 @@ export default function Navbar() {
           <div className="md:hidden flex items-center gap-2">
             {isHomePage && (
               <button
-                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                onClick={() => {
+                  const nextTheme = theme === "dark" ? "light" : "dark"
+                  trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "navbar" })
+                  setTheme(nextTheme)
+                }}
                 className="p-2 rounded-full hover:bg-blue-700"
                 aria-label="Toggle theme"
               >
@@ -76,7 +81,11 @@ export default function Navbar() {
             <PatchNotesButton />
             {isHomePage && (
               <button
-                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                onClick={() => {
+                  const nextTheme = theme === "dark" ? "light" : "dark"
+                  trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "navbar" })
+                  setTheme(nextTheme)
+                }}
                 className="p-2 rounded-full hover:bg-blue-700"
                 aria-label="Toggle theme"
               >

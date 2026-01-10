@@ -70,6 +70,7 @@ import { RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX, ALLOW_OVERFLOW_UNITS, PRI
 import NonCpeNotice from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
 import { cn } from "@/lib/utils"
+import { trackAnalyticsEvent } from "@/lib/analytics-client"
 
 // Course status types
 type CourseStatus = "passed" | "active" | "pending" | "failed"
@@ -506,6 +507,10 @@ const QuickNavigation = ({
 export default function AcademicPlanner() {
   const { theme, setTheme } = useTheme()
   const router = useRouter()
+
+  useEffect(() => {
+    trackAnalyticsEvent("academic_planner.page_view")
+  }, [])
 
   const [courses, setCourses] = useState<Course[]>(initialCourses as unknown as Course[])
   const [coursesHydrated, setCoursesHydrated] = useState(false)
@@ -1360,6 +1365,7 @@ export default function AcademicPlanner() {
   ])
 
   const openRegeneratePlanDialog = useCallback(() => {
+    trackAnalyticsEvent("academic_planner.open_regenerate_dialog")
     setPlanLocked(false)
     setPendingRegenerateStrategy(plannerStrategy)
     setPendingStrictGuardrails(strictGuardrailsEnabled)
@@ -1370,6 +1376,7 @@ export default function AcademicPlanner() {
   }, [plannerStrategy, strictGuardrailsEnabled, minCreditsPerTerm, maxCreditsPerTerm])
 
   const handleRegenerateImportClick = () => {
+    trackAnalyticsEvent("academic_planner.regenerate_dialog_import_click")
     setRegenerateDialogOpen(false)
     const openImport = () => setImportDialogOpen(true)
     if (typeof window !== "undefined") {
@@ -1817,7 +1824,9 @@ export default function AcademicPlanner() {
   }, [buildSavedPlanSnapshot])
 
   const handleManualSavePlan = useCallback(() => {
+    trackAnalyticsEvent("academic_planner.save_plan_click")
     const saved = saveCurrentPlan("manual")
+    trackAnalyticsEvent("academic_planner.save_plan_result", { result: saved ? "success" : "fail" })
     if (!saved) {
       setManualSaveMessage("Could not save plan. Please try again.")
       if (typeof window !== "undefined") {
@@ -3467,8 +3476,16 @@ export default function AcademicPlanner() {
   }
 
   const handleConfirmRegeneratePlan = () => {
+    trackAnalyticsEvent("academic_planner.apply_profile_click", {
+      strategy: pendingRegenerateStrategy,
+      strict: pendingStrictGuardrails,
+      min: pendingRegenerateMin,
+      max: pendingRegenerateMax,
+    })
+
     const validationMessage = getCreditLimitValidationMessage(pendingRegenerateMin, pendingRegenerateMax)
     if (validationMessage) {
+      trackAnalyticsEvent("academic_planner.apply_profile_failed", { reason: "credit_validation", message: validationMessage })
       setRegenerateCreditError(validationMessage)
       return
     }
@@ -3500,6 +3517,13 @@ export default function AcademicPlanner() {
       strictCredits: pendingStrictGuardrails,
       minCredits: nextMin,
       maxCredits: nextMax,
+    })
+
+    trackAnalyticsEvent("academic_planner.apply_profile_success", {
+      strategy: pendingRegenerateStrategy,
+      strict: pendingStrictGuardrails,
+      min: nextMin,
+      max: nextMax,
     })
     setPlannerStrategy(pendingRegenerateStrategy)
     setStrictGuardrailsEnabled(pendingStrictGuardrails)
@@ -3798,6 +3822,10 @@ export default function AcademicPlanner() {
 
   // Export graduation plan
   const exportPlan = (format: "json" | "csv" | "txt") => {
+    const semesterCount = graduationPlan.length
+    const courseCount = graduationPlan.reduce((sum, semester) => sum + semester.courses.length, 0)
+    trackAnalyticsEvent("academic_planner.export_plan_click", { format, semesterCount, courseCount })
+
     const planData = graduationPlan.map((semester) => {
       const semesterIsCurrent = isCurrentSemester(semester.year, semester.term)
 
@@ -3909,6 +3937,8 @@ export default function AcademicPlanner() {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+
+    trackAnalyticsEvent("academic_planner.export_plan_success", { format, semesterCount, courseCount })
   }
 
   // Parse imported plan data
@@ -4207,6 +4237,7 @@ export default function AcademicPlanner() {
   const importPlan = async (file: File) => {
     try {
       setImportError(null)
+      trackAnalyticsEvent("academic_planner.import_plan_file", { filename: file.name })
       const content = await file.text()
       const extension = file.name.split(".").pop()?.toLowerCase()
 
@@ -4311,6 +4342,12 @@ export default function AcademicPlanner() {
       const totalCourses = finalPlan.reduce((sum, s) => sum + s.courses.length, 0)
       setImportSuccessInfo({ semesters: finalPlan.length, courses: totalCourses })
 
+      trackAnalyticsEvent("academic_planner.import_plan_success", {
+        format,
+        semesters: finalPlan.length,
+        courses: totalCourses,
+      })
+
       if (importedCreditPrefs) {
         const hasImportedMin = typeof importedCreditPrefs.minCreditsPerTerm === "number"
         const hasImportedMax = typeof importedCreditPrefs.maxCreditsPerTerm === "number"
@@ -4347,6 +4384,7 @@ export default function AcademicPlanner() {
       setCoursePriorities(importedPriorities ?? {})
       setLockedPlacements(normalizeLockPairsWithLinkedCourses(importedLocks))
     } catch (error: any) {
+      trackAnalyticsEvent("academic_planner.import_plan_failed", { message: error?.message || "unknown" })
       setImportError(error.message)
     }
   }
@@ -6041,7 +6079,11 @@ export default function AcademicPlanner() {
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                onClick={() => {
+                  const nextTheme = theme === "dark" ? "light" : "dark"
+                  trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "academic_planner" })
+                  setTheme(nextTheme)
+                }}
                 aria-label="Toggle theme"
                 className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
               >
@@ -6326,7 +6368,10 @@ export default function AcademicPlanner() {
                   <button
                     key={strategy}
                     type="button"
-                    onClick={() => setPendingRegenerateStrategy(strategy)}
+                    onClick={() => {
+                      trackAnalyticsEvent("academic_planner.profile_select", { strategy })
+                      setPendingRegenerateStrategy(strategy)
+                    }}
                     className={cn(
                       "rounded-xl border p-4 text-left transition focus:outline-none",
                       isActive

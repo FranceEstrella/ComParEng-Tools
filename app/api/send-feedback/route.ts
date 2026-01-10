@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { recordAnalyticsEvent } from '@/lib/analytics-storage'
 
 type Payload = {
   name?: string
@@ -30,6 +31,12 @@ export async function POST(request: Request) {
     if (!mailgunKey || !mailgunDomain) {
       // No Mailgun config — log and return a helpful response
       console.warn('[send-feedback] MAILGUN_API_KEY or MAILGUN_DOMAIN not configured. Feedback payload:', { name, subject, message })
+      recordAnalyticsEvent({
+        name: 'feedback.send_failed',
+        at: Date.now(),
+        path: '/api/send-feedback',
+        meta: { reason: 'mailgun_not_configured' },
+      })
       return NextResponse.json({ success: false, error: 'Mailgun not configured on server. Feedback logged.' }, { status: 200 })
     }
 
@@ -57,12 +64,30 @@ export async function POST(request: Request) {
     if (!sendRes.ok) {
       const text = await sendRes.text()
       console.error('[send-feedback] Mailgun error', sendRes.status, text)
+      recordAnalyticsEvent({
+        name: 'feedback.send_failed',
+        at: Date.now(),
+        path: '/api/send-feedback',
+        meta: { reason: 'mailgun_error', status: sendRes.status },
+      })
       return NextResponse.json({ success: false, error: 'Mailgun send failed', details: text }, { status: 500 })
     }
+
+    recordAnalyticsEvent({
+      name: 'feedback.send_success',
+      at: Date.now(),
+      path: '/api/send-feedback',
+    })
 
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error('[send-feedback] unexpected error', err)
+    recordAnalyticsEvent({
+      name: 'feedback.send_failed',
+      at: Date.now(),
+      path: '/api/send-feedback',
+      meta: { reason: 'unexpected_error' },
+    })
     return NextResponse.json({ success: false, error: 'unexpected error' }, { status: 500 })
   }
 }
