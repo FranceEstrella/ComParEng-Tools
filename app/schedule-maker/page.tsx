@@ -71,6 +71,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Calendar as CalendarPicker } from "@/components/ui/calendar"
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { HexColorPicker } from "react-colorful"
@@ -85,6 +86,13 @@ import { trackAnalyticsEvent } from "@/lib/analytics-client"
 // Time slot constants
 const DAYS = ["M", "Tu", "W", "Th", "F", "S"] as const;
 type DayToken = typeof DAYS[number];
+
+// Export (PNG) typography: tweak BASE to fine-tune how Term/Year renders in the image.
+// Term is right-aligned so it visually sits closer to the year (less empty gap) while still reserving width.
+const EXPORT_TERM_YEAR_BASE_TEXT_CLASS =
+  "inline-block min-w-[120px] whitespace-nowrap text-base font-semibold leading-snug text-slate-900 dark:text-white"
+const EXPORT_TERM_TEXT_CLASS = `${EXPORT_TERM_YEAR_BASE_TEXT_CLASS} text-right pr-2`
+const EXPORT_YEAR_TEXT_CLASS = `${EXPORT_TERM_YEAR_BASE_TEXT_CLASS} text-left`
 
 const DAY_FILTER_OPTIONS: { value: DayToken; label: string; longLabel: string }[] = [
   { value: "M", label: "Mon", longLabel: "Monday" },
@@ -740,6 +748,7 @@ export default function ScheduleMaker() {
   const [dragPreviewSections, setDragPreviewSections] = useState<SectionPreview[]>([])
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
   const scheduleRef = useRef<HTMLDivElement>(null)
+  const [icsCalendarOpen, setIcsCalendarOpen] = useState(false)
   const lastAvailableHashRef = useRef<string>("")
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
   const pendingImportFollowUpRef = useRef<(() => void) | null>(null)
@@ -947,6 +956,7 @@ export default function ScheduleMaker() {
   const [hideActivateHover, setHideActivateHover] = useState<boolean>(false)
   const [errorDialogOpen, setErrorDialogOpen] = useState(false)
   const [zoomLevel, setZoomLevel] = useState<number>(0)
+  const [isCapturingImage, setIsCapturingImage] = useState(false)
   const [searchPanelVisible, setSearchPanelVisible] = useState<boolean>(false)
   const [scheduleTitle, setScheduleTitle] = useState(DEFAULT_SCHEDULE_TITLE)
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -3048,15 +3058,28 @@ export default function ScheduleMaker() {
     setIcsDialogError(null)
   }
 
+  const isValidIsoDateInput = (value: string) => {
+    const trimmed = value.trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return false
+    const parsed = new Date(trimmed)
+    return !Number.isNaN(parsed.getTime())
+  }
+
   const handleConfirmIcsDownload = () => {
     trackAnalyticsEvent("schedule_maker.download_ics_click")
-    if (!icsDialogStartDate) {
+    if (!icsDialogStartDate || icsDialogStartDate.trim().length === 0) {
       setIcsDialogError('Please pick a start date.')
       trackAnalyticsEvent("schedule_maker.download_ics_failed", { reason: "missing_start_date" })
       return
     }
 
-    const chosenDate = new Date(icsDialogStartDate)
+    if (!isValidIsoDateInput(icsDialogStartDate)) {
+      setIcsDialogError('Use YYYY-MM-DD (e.g. 2026-01-11).')
+      trackAnalyticsEvent("schedule_maker.download_ics_failed", { reason: "invalid_start_date" })
+      return
+    }
+
+    const chosenDate = new Date(icsDialogStartDate.trim())
     if (Number.isNaN(chosenDate.getTime())) {
       setIcsDialogError('Invalid start date.')
       trackAnalyticsEvent("schedule_maker.download_ics_failed", { reason: "invalid_start_date" })
@@ -3769,6 +3792,8 @@ export default function ScheduleMaker() {
 const downloadScheduleImage = async () => {
   trackAnalyticsEvent("schedule_maker.download_image_click", { selectedCount: selectedCourses.length })
   if (!scheduleRef.current) return;
+
+  setIsCapturingImage(true)
   
   // Capture at max zoom for clarity
   const prevZoom = zoomLevel
@@ -4175,6 +4200,7 @@ const downloadScheduleImage = async () => {
     }
     // Restore user zoom
     setZoomLevel(prevZoom)
+    setIsCapturingImage(false)
   }
 };
 
@@ -4901,7 +4927,7 @@ const renderScheduleView = () => {
         </DialogContent>
       </Dialog>
       <Dialog open={icsDialogOpen} onOpenChange={(nextOpen) => { if (!nextOpen) handleCloseIcsDialog() }}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent className="sm:max-w-sm overflow-x-hidden">
           <DialogHeader>
             <DialogTitle>Export schedule as ICS</DialogTitle>
             <DialogDescription>
@@ -4909,24 +4935,64 @@ const renderScheduleView = () => {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label htmlFor="ics-start-date">Start date</Label>
-            <Input
-              id="ics-start-date"
-              type="date"
-              value={icsDialogStartDate}
-              onChange={(event) => {
-                setIcsDialogStartDate(event.target.value)
-                setIcsDialogError(null)
-              }}
-            />
+            <div className="flex items-center gap-2">
+              <Label htmlFor="ics-start-date" className="shrink-0 whitespace-nowrap leading-none">
+                Start date
+              </Label>
+              <Input
+                id="ics-start-date"
+                type="text"
+                inputMode="numeric"
+                placeholder="YYYY-MM-DD"
+                value={icsDialogStartDate}
+                className="flex-1 min-w-0"
+                onChange={(event) => {
+                  const next = event.target.value
+                  // Allow only strict-ish ISO typing (partial allowed), e.g. 2026-01-11.
+                  const allowed = /^\d{0,4}(-\d{0,2}(-\d{0,2})?)?$/.test(next)
+                  if (!allowed) return
+                  setIcsDialogStartDate(next)
+                  // Clear any previous errors while editing; we'll validate on confirm.
+                  setIcsDialogError(null)
+                }}
+              />
+              <Popover open={icsCalendarOpen} onOpenChange={setIcsCalendarOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-10 w-10 shrink-0"
+                    aria-label="Open calendar"
+                  >
+                    <Calendar className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent side="bottom" align="end" className="w-auto p-0" sideOffset={8}>
+                  <CalendarPicker
+                    mode="single"
+                    selected={(() => {
+                      const v = icsDialogStartDate.trim()
+                      if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined
+                      const date = new Date(`${v}T00:00:00`)
+                      return Number.isNaN(date.getTime()) ? undefined : date
+                    })()}
+                    onSelect={(date) => {
+                      if (!date) return
+                      setIcsDialogStartDate(format(date, "yyyy-MM-dd"))
+                      setIcsDialogError(null)
+                      setIcsCalendarOpen(false)
+                    }}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
             {icsDialogError && <p className="text-sm text-red-500">{icsDialogError}</p>}
           </div>
-          <DialogFooter className="flex-col gap-2 sm:flex-row">
-            <Button variant="outline" className="w-full sm:w-auto" onClick={handleCloseIcsDialog}>
-              Cancel
-            </Button>
-            <Button className="w-full sm:w-auto" onClick={handleConfirmIcsDownload} disabled={!icsDialogStartDate}>
-              Download ICS file &amp; open Calendar
+          <DialogFooter className="flex-row justify-end">
+            <Button className="w-full" onClick={handleConfirmIcsDownload} disabled={!icsDialogStartDate}>
+              Download ICS &amp; open Calendar
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -5733,35 +5799,45 @@ const renderScheduleView = () => {
                   )}
                 </div>
                 <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
-                  <Select value={currentTerm} onValueChange={(value) => setCurrentTerm(value as TermName)}>
-                    <SelectTrigger
-                      className="h-9 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium leading-tight shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400"
-                      style={{ paddingTop: 6, paddingBottom: 6, lineHeight: "1.25" }}
-                    >
-                      <SelectValue placeholder="Term" />
-                    </SelectTrigger>
-                    <SelectContent align="end" className="w-36">
-                      <SelectItem value="Term 1">1st Term</SelectItem>
-                      <SelectItem value="Term 2">2nd Term</SelectItem>
-                      <SelectItem value="Term 3">3rd Term</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <span className="text-slate-300 dark:text-slate-600">•</span>
-                  <Select value={academicYearLabel} onValueChange={setAcademicYearLabel}>
-                    <SelectTrigger
-                      className="h-9 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium leading-tight shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400"
-                      style={{ paddingTop: 6, paddingBottom: 6, lineHeight: "1.25" }}
-                    >
-                      <SelectValue placeholder="Academic Year" />
-                    </SelectTrigger>
-                    <SelectContent align="end" className="w-40">
-                      {academicYearOptions.map((option) => (
-                        <SelectItem key={option} value={option}>
-                          {option}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {isCapturingImage ? (
+                    <div className="flex items-center gap-4">
+                      <span className={EXPORT_TERM_TEXT_CLASS}>{currentTerm}</span>
+                      <span className="text-slate-300 dark:text-slate-600">•</span>
+                      <span className={EXPORT_YEAR_TEXT_CLASS}>{academicYearLabel}</span>
+                    </div>
+                  ) : (
+                    <>
+                      <Select value={currentTerm} onValueChange={(value) => setCurrentTerm(value as TermName)}>
+                        <SelectTrigger
+                          className="h-9 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium leading-tight shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400 sm:text-base"
+                          style={{ paddingTop: 6, paddingBottom: 6, lineHeight: "1.25" }}
+                        >
+                          <SelectValue placeholder="Term" />
+                        </SelectTrigger>
+                        <SelectContent align="end" className="w-36">
+                          <SelectItem value="Term 1">1st Term</SelectItem>
+                          <SelectItem value="Term 2">2nd Term</SelectItem>
+                          <SelectItem value="Term 3">3rd Term</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <span className="text-slate-300 dark:text-slate-600">•</span>
+                      <Select value={academicYearLabel} onValueChange={setAcademicYearLabel}>
+                        <SelectTrigger
+                          className="h-9 min-w-[120px] border-0 bg-transparent px-0 text-left text-sm font-medium leading-tight shadow-none focus:ring-0 focus:ring-offset-0 data-[placeholder]:text-slate-400 sm:text-base"
+                          style={{ paddingTop: 6, paddingBottom: 6, lineHeight: "1.25" }}
+                        >
+                          <SelectValue placeholder="Academic Year" />
+                        </SelectTrigger>
+                        <SelectContent align="end" className="w-40">
+                          {academicYearOptions.map((option) => (
+                            <SelectItem key={option} value={option}>
+                              {option}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
