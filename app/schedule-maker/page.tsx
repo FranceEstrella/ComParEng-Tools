@@ -164,6 +164,7 @@ type TermName = "Term 1" | "Term 2" | "Term 3"
 const TERM_ORDER: TermName[] = ["Term 1", "Term 2", "Term 3"]
 
 const SCHEDULE_MAKER_PREFS_KEY = "scheduleMaker.preferences.v1"
+const SCHEDULE_MAKER_NEXT_STEPS_SEEN_KEY = "scheduleMaker.nextStepsSeen.v1"
 
 const TERM_WINDOWS: { term: TermName; months: number[] }[] = [
   { term: "Term 1", months: [8, 9, 10, 11] },
@@ -748,6 +749,8 @@ export default function ScheduleMaker() {
   const [noActiveDialogOpen, setNoActiveDialogOpen] = useState(false)
   const [hideNoActiveDialog, setHideNoActiveDialog] = useState(false)
   const [noActiveDialogDismissed, setNoActiveDialogDismissed] = useState(false)
+  const [nextStepsDialogOpen, setNextStepsDialogOpen] = useState(false)
+  const [nextStepsDialogDismissed, setNextStepsDialogDismissed] = useState(false)
   const [dragCourseCode, setDragCourseCode] = useState<string | null>(null)
   const [dragPreviewSections, setDragPreviewSections] = useState<SectionPreview[]>([])
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
@@ -759,6 +762,7 @@ export default function ScheduleMaker() {
   const loadingVersionRef = useRef<boolean>(false)
   const hasHydratedVersionRef = useRef<boolean>(false)
   const departmentColorCache = useRef<Map<string, string>>(new Map())
+  const hasSeenNoDataSequenceRef = useRef(false)
   const [startDate, setStartDate] = useState<Date>(new Date())
   const [searchTerm, setSearchTerm] = useState("")
   const [showLockedCourses, setShowLockedCourses] = useState(false)
@@ -1235,11 +1239,17 @@ export default function ScheduleMaker() {
     if (typeof window === "undefined") return
     setHideNoDataDialog(localStorage.getItem("scheduleMaker.hideNoDataDialog") === "true")
     setHideNoActiveDialog(localStorage.getItem("scheduleMaker.hideNoActiveDialog") === "true")
+    setNextStepsDialogDismissed(localStorage.getItem(SCHEDULE_MAKER_NEXT_STEPS_SEEN_KEY) === "true")
     const storedNotice = localStorage.getItem(STALE_IMPORT_NOTICE_STORAGE_KEY)
     if (storedNotice) {
       setStaleImportNotice(storedNotice)
     }
   }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    localStorage.setItem(SCHEDULE_MAKER_NEXT_STEPS_SEEN_KEY, nextStepsDialogDismissed ? "true" : "false")
+  }, [nextStepsDialogDismissed])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -1269,6 +1279,12 @@ export default function ScheduleMaker() {
   }, [hasFetchedOnce, hideNoDataDialog, noDataDialogPaused, hasRealCourseData, noDataDialogDismissed])
 
   useEffect(() => {
+    if (noDataDialogOpen) {
+      hasSeenNoDataSequenceRef.current = true
+    }
+  }, [noDataDialogOpen])
+
+  useEffect(() => {
     const shouldShowNoActive =
       hasFetchedOnce &&
       hasRealCourseData &&
@@ -1282,6 +1298,14 @@ export default function ScheduleMaker() {
       setNoActiveDialogDismissed(false)
     }
   }, [hasFetchedOnce, hasRealCourseData, noActiveCourses, hideNoActiveDialog, noActiveDialogDismissed])
+
+  useEffect(() => {
+    if (nextStepsDialogDismissed) return
+    if (!hasSeenNoDataSequenceRef.current) return
+    if (noDataDialogOpen || awaitingDataDialogOpen || noActiveDialogOpen) return
+    if (nextStepsDialogOpen) return
+    setNextStepsDialogOpen(true)
+  }, [awaitingDataDialogOpen, nextStepsDialogDismissed, nextStepsDialogOpen, noActiveDialogOpen, noDataDialogOpen])
 
   useEffect(() => {
     if (!awaitingDataDialogOpen) {
@@ -3570,6 +3594,19 @@ export default function ScheduleMaker() {
     setNoActiveDialogDismissed(true)
   }
 
+  const handleScheduleNextStepsClose = () => {
+    setNextStepsDialogOpen(false)
+    setNextStepsDialogDismissed(true)
+  }
+
+  const handleScheduleNextStepsOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setNextStepsDialogOpen(true)
+      return
+    }
+    handleScheduleNextStepsClose()
+  }
+
   // Check if a time slot falls within a course's time range
   const isTimeInRange = (timeSlot: string, course: SelectedCourse): boolean => {
     const [slotHour, slotMinute] = timeSlot.split(":").map(Number)
@@ -5258,6 +5295,116 @@ const renderScheduleView = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog open={nextStepsDialogOpen} onOpenChange={handleScheduleNextStepsOpenChange}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Next steps to build your schedule</DialogTitle>
+            <DialogDescription>
+              Follow this quick path once the no-data prompts are out of the way so your calendar is ready to export.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="inline-flex items-center gap-2 rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-100">
+              Schedule maker jumpstart
+            </div>
+
+            <ol className="relative space-y-4 border-l border-slate-200 pl-4 text-sm text-muted-foreground dark:border-slate-800">
+              <li className="flex gap-3">
+                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-emerald-500 bg-white ring-4 ring-emerald-100 dark:bg-slate-900 dark:ring-emerald-500/25" aria-hidden="true" />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
+                    <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-100">0</Badge>
+                    <span className="font-semibold">Import saved courses</span>
+                  </div>
+                  <p>Already exported selections before? Upload them to restore your picks instantly.</p>
+                </div>
+              </li>
+
+              <li className="flex gap-3">
+                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-sky-500 bg-white ring-4 ring-sky-100 dark:bg-slate-900 dark:ring-sky-500/25" aria-hidden="true" />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
+                    <Badge variant="secondary" className="bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-100">1</Badge>
+                    <span className="font-semibold">Open Search Courses</span>
+                  </div>
+                  <p>Use the search panel to browse what was captured or refresh after the portal import finishes.</p>
+                </div>
+              </li>
+
+              <li className="flex gap-3">
+                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-blue-500 bg-white ring-4 ring-blue-100 dark:bg-slate-900 dark:ring-blue-500/25" aria-hidden="true" />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
+                    <Badge variant="secondary" className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-100">2</Badge>
+                    <span className="font-semibold">Review suggested courses</span>
+                  </div>
+                  <p>Start with the suggested Active courses, or search manually to add anything else you plan to enroll in.</p>
+                </div>
+              </li>
+
+              <li className="flex gap-3">
+                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-indigo-500 bg-white ring-4 ring-indigo-100 dark:bg-slate-900 dark:ring-indigo-500/25" aria-hidden="true" />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
+                    <Badge variant="secondary" className="bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-100">3</Badge>
+                    <span className="font-semibold">Add courses to the grid</span>
+                  </div>
+                  <p>Click to add a section to your list or drag it onto the calendar at the exact time slot you want.</p>
+                </div>
+              </li>
+
+              <li className="flex gap-3">
+                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-violet-500 bg-white ring-4 ring-violet-100 dark:bg-slate-900 dark:ring-violet-500/25" aria-hidden="true" />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
+                    <Badge variant="secondary" className="bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-100">4</Badge>
+                    <span className="font-semibold">Fill out the week</span>
+                  </div>
+                  <p>Repeat for every subject until your schedule covers all the courses you intend to take.</p>
+                </div>
+              </li>
+
+              <li className="flex gap-3">
+                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-amber-500 bg-white ring-4 ring-amber-100 dark:bg-slate-900 dark:ring-amber-500/25" aria-hidden="true" />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
+                    <Badge variant="secondary" className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-100">5</Badge>
+                    <span className="font-semibold">Optional: make a backup version</span>
+                  </div>
+                  <p>Duplicate your schedule or start a new version for petition-only sections or overflow contingencies.</p>
+                </div>
+              </li>
+
+              <li className="flex gap-3">
+                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-rose-500 bg-white ring-4 ring-rose-100 dark:bg-slate-900 dark:ring-rose-500/25" aria-hidden="true" />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
+                    <Badge variant="secondary" className="bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-100">6</Badge>
+                    <span className="font-semibold">Export and share</span>
+                  </div>
+                  <p>Save the current version as an image and an .ics file so you can import it into your calendar app.</p>
+                </div>
+              </li>
+            </ol>
+          </div>
+
+          <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between">
+            <Button
+              variant="outline"
+              className="w-full sm:w-auto gap-2"
+              onClick={triggerImportSelectedCourses}
+            >
+              <Upload className="h-4 w-4" />
+              Import courses
+            </Button>
+            <Button className="w-full sm:w-auto" onClick={handleScheduleNextStepsClose}>
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={Boolean(error) && errorDialogOpen}
         onOpenChange={(nextOpen) => setErrorDialogOpen(nextOpen)}
@@ -6041,7 +6188,74 @@ const renderScheduleView = () => {
                   <AnimatePresence initial={false}>
                     {selectedCourseCodes.map((code) => {
                       const course = courseCatalog.find((c) => c.code === code)
-                      if (!course) return null
+                      if (!course) {
+                        const collapsed = Boolean(collapsedCourses[code])
+
+                        return (
+                          <motion.div
+                            key={code}
+                            layout="position"
+                            initial={{ opacity: 0, y: -6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -8 }}
+                            transition={{ duration: 0.16, ease: "easeInOut" }}
+                          >
+                            <CourseDragWrapper
+                              canonicalCode={code}
+                              source="selected"
+                              className="group relative space-y-1.5 border-l border-slate-200 pl-2 dark:border-slate-700"
+                            >
+                              <div className="flex items-start gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleCourseCollapse(code)}
+                                  className="flex flex-1 items-start justify-between gap-3 rounded px-1 py-1 text-left transition hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 dark:hover:bg-slate-800/30"
+                                  aria-expanded={!collapsed}
+                                >
+                                  <div className="flex items-start gap-2">
+                                    <ChevronDown
+                                      className={`mt-0.5 h-4 w-4 text-slate-400 transition-transform ${collapsed ? "-rotate-90" : "rotate-0"}`}
+                                    />
+                                    <div>
+                                      <p className="text-[13px] font-semibold leading-tight">{code}</p>
+                                      <p className="text-[11px] text-slate-500 leading-snug">Unknown course (not in current list)</p>
+                                    </div>
+                                  </div>
+                                </button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    toggleCourseSelection(code)
+                                  }}
+                                  className="h-7 w-7 rounded-full p-0 text-slate-500 hover:text-red-600 hover:bg-red-50"
+                                  title="Remove course from selected list"
+                                  aria-label={`Remove ${code} from selected courses`}
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                              <AnimatePresence initial={false}>
+                                {!collapsed && (
+                                  <motion.div
+                                    key="unknown-sections"
+                                    className="space-y-1.5"
+                                    initial={{ opacity: 0, y: -6 }}
+                                    animate={{ opacity: 1, y: 0, transition: { duration: 0.16, ease: "easeOut" } }}
+                                    exit={{ opacity: 0, y: -6, transition: { duration: 0.12, ease: "easeIn" } }}
+                                    layout="position"
+                                  >
+                                    <p className="text-[11px] text-amber-600 dark:text-amber-300">
+                                      This course was selected earlier but is not in the current catalog.
+                                    </p>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </CourseDragWrapper>
+                          </motion.div>
+                        )
+                      }
                       const activeSections = selectedCourses.filter(
                         (section) => getSelectedCourseCanonicalCode(section) === code,
                       )
@@ -6109,55 +6323,58 @@ const renderScheduleView = () => {
                                 <X className="h-3.5 w-3.5" />
                               </Button>
                             </div>
-                            {!collapsed && (
-                              <motion.div
-                                className="space-y-1.5"
-                                initial={sectionInitial as any}
-                                animate={sectionAnimate as any}
-                                exit={{ opacity: 0, y: -6, transition: { duration: 0.12, ease: "easeIn" } }}
-                                layout="position"
-                              >
-                                {sectionsCount === 0 && (
-                                  <p className="text-[11px] text-amber-600 dark:text-amber-300">No extracted sections yet.</p>
-                                )}
-                                {course.sections.map((section) => {
-                                  const isSelectedSection = activeSections.some(
-                                    (selected) => selected.section === section.section,
-                                  )
-                                  const selectedInstance = isSelectedSection
-                                    ? activeSections.find((selected) => selected.section === section.section)
-                                    : null
-                                  return (
-                                    <div
-                                      key={`${section.courseCode}-${section.section}`}
-                                      className="flex items-start gap-2 rounded-sm px-1.5 py-1.5"
-                                      onContextMenu={(event) => {
-                                        if (!selectedInstance) return
-                                        event.preventDefault()
-                                        openCustomization(selectedInstance)
-                                      }}
-                                    >
-                                      <Checkbox
-                                        id={`${section.courseCode}-${section.section}`}
-                                        checked={isSelectedSection}
-                                        onCheckedChange={(checked) => toggleSectionSelection(section, Boolean(checked))}
-                                      />
-                                      <div className="flex-1 text-[12px] leading-snug">
-                                        <div className="flex items-center justify-between">
-                                          <span className="font-semibold text-[12px]">{section.section}</span>
-                                          <Badge variant={section.hasSlots ? "secondary" : "destructive"} className="text-[10px] px-2">
-                                            {section.hasSlots ? `${section.remainingSlots}/${section.classSize}` : "Full"}
-                                          </Badge>
+                            <AnimatePresence initial={false}>
+                              {!collapsed && (
+                                <motion.div
+                                  key="course-sections"
+                                  className="space-y-1.5"
+                                  initial={sectionInitial as any}
+                                  animate={sectionAnimate as any}
+                                  exit={{ opacity: 0, y: -6, transition: { duration: 0.12, ease: "easeIn" } }}
+                                  layout="position"
+                                >
+                                  {sectionsCount === 0 && (
+                                    <p className="text-[11px] text-amber-600 dark:text-amber-300">No extracted sections yet.</p>
+                                  )}
+                                  {course.sections.map((section) => {
+                                    const isSelectedSection = activeSections.some(
+                                      (selected) => selected.section === section.section,
+                                    )
+                                    const selectedInstance = isSelectedSection
+                                      ? activeSections.find((selected) => selected.section === section.section)
+                                      : null
+                                    return (
+                                      <div
+                                        key={`${section.courseCode}-${section.section}`}
+                                        className="flex items-start gap-2 rounded-sm px-1.5 py-1.5"
+                                        onContextMenu={(event) => {
+                                          if (!selectedInstance) return
+                                          event.preventDefault()
+                                          openCustomization(selectedInstance)
+                                        }}
+                                      >
+                                        <Checkbox
+                                          id={`${section.courseCode}-${section.section}`}
+                                          checked={isSelectedSection}
+                                          onCheckedChange={(checked) => toggleSectionSelection(section, Boolean(checked))}
+                                        />
+                                        <div className="flex-1 text-[12px] leading-snug">
+                                          <div className="flex items-center justify-between">
+                                            <span className="font-semibold text-[12px]">{section.section}</span>
+                                            <Badge variant={section.hasSlots ? "secondary" : "destructive"} className="text-[10px] px-2">
+                                              {section.hasSlots ? `${section.remainingSlots}/${section.classSize}` : "Full"}
+                                            </Badge>
+                                          </div>
+                                          <p className="text-[11px] text-slate-500">{formatMeetingDays(section.meetingDays)}</p>
+                                          <p className="text-[11px] text-slate-500">{cleanTimeString(section.meetingTime)}</p>
+                                          <p className="text-[11px] text-slate-500">{cleanRoomString(section.room)}</p>
                                         </div>
-                                        <p className="text-[11px] text-slate-500">{formatMeetingDays(section.meetingDays)}</p>
-                                        <p className="text-[11px] text-slate-500">{cleanTimeString(section.meetingTime)}</p>
-                                        <p className="text-[11px] text-slate-500">{cleanRoomString(section.room)}</p>
                                       </div>
-                                    </div>
-                                  )
-                                })}
-                              </motion.div>
-                            )}
+                                    )
+                                  })}
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
                           </CourseDragWrapper>
                         </motion.div>
                       )

@@ -2212,6 +2212,8 @@ export default function CourseTracker() {
   const [setupTerm, setSetupTerm] = useState<TermName>("Term 1")
   const [setupError, setSetupError] = useState<string | null>(null)
   const [hasSeenSetupDialog, setHasSeenSetupDialog] = useState(false)
+  const [hasSeenNextStepsDialog, setHasSeenNextStepsDialog] = useState(false)
+  const [nextStepsDialogOpen, setNextStepsDialogOpen] = useState(false)
   const [noProgressDismissed, setNoProgressDismissed] = useState(false)
   const [coursesHydrated, setCoursesHydrated] = useState(false)
   const [preferencesHydrated, setPreferencesHydrated] = useState(false)
@@ -2566,6 +2568,12 @@ export default function CourseTracker() {
 
   useEffect(() => {
     if (typeof window === "undefined") return
+    const hasSeen = localStorage.getItem("courseTracker.nextStepsSeen") === "true"
+    setHasSeenNextStepsDialog(hasSeen)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
     setDependencyNoticeDismissed(localStorage.getItem("courseTracker.dependencyNoticeDismissed") === "true")
   }, [])
 
@@ -2728,6 +2736,17 @@ export default function CourseTracker() {
     setHasSeenSetupDialog(true)
   }
 
+  const markNextStepsSeen = () => {
+    if (typeof window === "undefined") return
+    localStorage.setItem("courseTracker.nextStepsSeen", "true")
+    setHasSeenNextStepsDialog(true)
+  }
+
+  const handleNextStepsClose = () => {
+    markNextStepsSeen()
+    setNextStepsDialogOpen(false)
+  }
+
   const handleTrackerSetupClose = () => {
     markTrackerSetupSeen()
     setTrackerSetupDialogOpen(false)
@@ -2758,6 +2777,9 @@ export default function CourseTracker() {
     saveTrackerPreferences({ startYear: parsedStartYear, currentYearLevel: sanitizedYearLevel, currentTerm: sanitizedTerm })
     markTrackerSetupSeen()
     setTrackerSetupDialogOpen(false)
+    if (!hasSeenNextStepsDialog) {
+      setNextStepsDialogOpen(true)
+    }
     if (markedCourseCount === 0) {
       setNoProgressDismissed(true)
     }
@@ -5012,6 +5034,76 @@ export default function CourseTracker() {
               </Button>
               <Button className="w-full sm:w-auto" onClick={handleSetupSubmit}>
                 Save timeline
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={nextStepsDialogOpen}
+          onOpenChange={(nextOpen) => {
+            if (nextOpen) {
+              setNextStepsDialogOpen(true)
+            } else {
+              handleNextStepsClose()
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Next steps to get started</DialogTitle>
+              <DialogDescription>
+                Shape the tracker so prerequisites, progress, and exports stay accurate.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                Kickoff checklist
+              </div>
+
+              <ol className="relative space-y-4 border-l border-slate-200 pl-4 text-sm text-muted-foreground dark:border-slate-800">
+                <li className="flex gap-3">
+                  <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-emerald-500 bg-white ring-4 ring-emerald-100 dark:bg-slate-900 dark:ring-emerald-500/25" aria-hidden="true" />
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Set current courses to Active</p>
+                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Set your in-progress subjects to Active to light up progress and planner views.</p>
+                  </div>
+                </li>
+
+                <li className="flex gap-3">
+                  <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-sky-500 bg-white ring-4 ring-sky-100 dark:bg-slate-900 dark:ring-sky-500/25" aria-hidden="true" />
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Set remaining courses as Passed</p>
+                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Mark no-prerequisite courses (COE0001, MATH0001, CHEM0001, HUM0001, PHYS0001, HIST0001, PE0) as Passed so future checks stay unlocked.</p>
+                  </div>
+                </li>
+
+                <li className="flex gap-3">
+                  <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-indigo-500 bg-white ring-4 ring-indigo-100 dark:bg-slate-900 dark:ring-indigo-500/25" aria-hidden="true" />
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-200">Optional</span>
+                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Record grades in Table view</p>
+                    </div>
+                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Add grades and the term you last took each course for accurate transcripts and retake checks.</p>
+                  </div>
+                </li>
+
+                <li className="flex gap-3">
+                  <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-amber-500 bg-white ring-4 ring-amber-100 dark:bg-slate-900 dark:ring-amber-500/25" aria-hidden="true" />
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-900/60 dark:text-amber-200">Optional</span>
+                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Export transcript as PDF</p>
+                    </div>
+                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Export your transcript once grades are in—handy for sharing quick progress updates.</p>
+                  </div>
+                </li>
+              </ol>
+            </div>
+            <DialogFooter>
+              <Button className="w-full sm:w-auto" onClick={handleNextStepsClose}>
+                Got it
               </Button>
             </DialogFooter>
           </DialogContent>
