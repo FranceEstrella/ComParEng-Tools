@@ -161,6 +161,10 @@ const GROUP_LABELS: Record<GroupByOption, string> = {
 
 type TermName = "Term 1" | "Term 2" | "Term 3"
 
+const TERM_ORDER: TermName[] = ["Term 1", "Term 2", "Term 3"]
+
+const SCHEDULE_MAKER_PREFS_KEY = "scheduleMaker.preferences.v1"
+
 const TERM_WINDOWS: { term: TermName; months: number[] }[] = [
   { term: "Term 1", months: [8, 9, 10, 11] },
   { term: "Term 2", months: [12, 1, 2, 3] },
@@ -925,6 +929,9 @@ export default function ScheduleMaker() {
   const [dayFilters, setDayFilters] = useState<DayToken[]>([])
   const [isClient, setIsClient] = useState(false)
   const [editingCourse, setEditingCourse] = useState<SelectedCourse | null>(null)
+  const [customizationDialogOpen, setCustomizationDialogOpen] = useState(false)
+  const customizationReopenGuardUntilRef = useRef<number>(0)
+  const customizationClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [tempCustomTitle, setTempCustomTitle] = useState("")
   const [tempCustomColor, setTempCustomColor] = useState(DEFAULT_CUSTOM_COLOR)
   const [applyCustomizationToCourse, setApplyCustomizationToCourse] = useState(false)
@@ -947,6 +954,22 @@ export default function ScheduleMaker() {
   const [rememberPairingAddToggle, setRememberPairingAddToggle] = useState(false)
   const [rememberPairingRemoveDecision, setRememberPairingRemoveDecision] = useState<"confirm" | null>(null)
   const [rememberPairingRemoveToggle, setRememberPairingRemoveToggle] = useState(false)
+
+  const [regularStudentDetected, setRegularStudentDetected] = useState(false)
+  const [regularStudentNoticeOpen, setRegularStudentNoticeOpen] = useState(false)
+  const [regularStudentNoticeDontShowAgain, setRegularStudentNoticeDontShowAgain] = useState(false)
+
+  const [sameSectionFeatureEnabled, setSameSectionFeatureEnabled] = useState(true)
+  const [rememberSameSectionAddDecision, setRememberSameSectionAddDecision] = useState<"confirm" | null>(null)
+  const [rememberSameSectionAddToggle, setRememberSameSectionAddToggle] = useState(false)
+  const [sameSectionPrompt, setSameSectionPrompt] = useState<
+    | null
+    | {
+        open: true
+        primary: CourseSection
+        matches: CourseSection[]
+      }
+  >(null)
   const [preferencesDialogOpen, setPreferencesDialogOpen] = useState(false)
   const [versionStore, setVersionStore] = useState<Record<string, TermYearVersionState>>({})
   const [addVersionMenuOpen, setAddVersionMenuOpen] = useState(false)
@@ -1051,6 +1074,23 @@ export default function ScheduleMaker() {
   const pushHistory = useCallback((label: string) => {
     pendingHistoryLabelRef.current = label
   }, [])
+
+  const closeCustomizationDialog = useCallback(() => {
+    customizationReopenGuardUntilRef.current = Date.now() + 350
+    setCustomizationDialogOpen(false)
+
+    if (customizationClearTimerRef.current) {
+      clearTimeout(customizationClearTimerRef.current)
+      customizationClearTimerRef.current = null
+    }
+
+    // Let the Radix Dialog close animation finish before clearing the course,
+    // otherwise the content disappears first and the header briefly "flashes".
+    customizationClearTimerRef.current = setTimeout(() => {
+      setEditingCourse(null)
+      customizationClearTimerRef.current = null
+    }, 220)
+  }, [])
   const [importErrorDialog, setImportErrorDialog] = useState<ImportDialogConfig | null>(null)
   const [staleImportNotice, setStaleImportNotice] = useState<string | null>(null)
   const [icsDialogOpen, setIcsDialogOpen] = useState(false)
@@ -1079,6 +1119,82 @@ export default function ScheduleMaker() {
     } catch (err) {
       console.error("Failed to persist version store", err)
     }
+  }, [])
+
+  const [scheduleMakerPrefsLoaded, setScheduleMakerPrefsLoaded] = useState(false)
+
+  const loadScheduleMakerPreferences = useCallback(() => {
+    if (typeof window === "undefined") return null
+    try {
+      const raw = window.localStorage.getItem(SCHEDULE_MAKER_PREFS_KEY)
+      if (!raw) return null
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed !== "object") return null
+      return parsed as Record<string, unknown>
+    } catch {
+      return null
+    }
+  }, [])
+
+  const persistScheduleMakerPreferences = useCallback(
+    (overrides?: Partial<{ sameSectionFeatureEnabled: boolean; rememberSameSectionAddDecision: "confirm" | null; regularStudentNoticeDismissed: boolean }>) => {
+      if (typeof window === "undefined") return
+      try {
+        const next = {
+          sameSectionFeatureEnabled,
+          rememberSameSectionAddDecision,
+          regularStudentNoticeDismissed: regularStudentNoticeDontShowAgain,
+          ...(overrides || {}),
+        }
+        window.localStorage.setItem(SCHEDULE_MAKER_PREFS_KEY, JSON.stringify(next))
+      } catch {
+        // ignore
+      }
+    },
+    [rememberSameSectionAddDecision, regularStudentNoticeDontShowAgain, sameSectionFeatureEnabled],
+  )
+
+  const getTermIndex = useCallback((term: string | undefined | null) => {
+    const normalized = (term || "").trim() as TermName
+    const idx = TERM_ORDER.indexOf(normalized)
+    return idx === -1 ? 0 : idx
+  }, [])
+
+  const detectRegularStudent = useCallback(() => {
+    const passed = trackerCourses.filter((c) => c.status === "passed" && typeof c.year === "number" && typeof c.term === "string")
+    if (passed.length === 0) return false
+
+    let latestYear = -Infinity
+    let latestTermIndex = -1
+
+    passed.forEach((c) => {
+      const year = c.year as number
+      const termIndex = getTermIndex(c.term)
+      if (year > latestYear || (year === latestYear && termIndex > latestTermIndex)) {
+        latestYear = year
+        latestTermIndex = termIndex
+      }
+    })
+
+    if (latestYear === -Infinity) return false
+    const latestTerm = TERM_ORDER[latestTermIndex] || "Term 1"
+    const curriculumCourses = (initialCourses as any[]).filter((c: any) => c.year === latestYear && c.term === latestTerm)
+    if (curriculumCourses.length === 0) return false
+
+    const passedIds = new Set(passed.map((c) => c.id))
+    return curriculumCourses.every((c: any) => passedIds.has(c.id))
+  }, [getTermIndex, trackerCourses])
+
+  const closeRegularStudentNotice = useCallback(() => {
+    setRegularStudentNoticeOpen(false)
+    if (regularStudentNoticeDontShowAgain) {
+      persistScheduleMakerPreferences({ regularStudentNoticeDismissed: true })
+    }
+  }, [persistScheduleMakerPreferences, regularStudentNoticeDontShowAgain])
+
+  const closeSameSectionPrompt = useCallback(() => {
+    setSameSectionPrompt(null)
+    setRememberSameSectionAddToggle(false)
   }, [])
 
 
@@ -1188,6 +1304,41 @@ export default function ScheduleMaker() {
   useEffect(() => {
     setIsClient(true)
   }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const prefs = loadScheduleMakerPreferences()
+    if (prefs) {
+      const sameSectionEnabled = (prefs as any).sameSectionFeatureEnabled
+      if (typeof sameSectionEnabled === "boolean") setSameSectionFeatureEnabled(sameSectionEnabled)
+
+      const remembered = (prefs as any).rememberSameSectionAddDecision
+      if (remembered === "confirm" || remembered === null) setRememberSameSectionAddDecision(remembered)
+
+      const dismissed = (prefs as any).regularStudentNoticeDismissed
+      if (typeof dismissed === "boolean") setRegularStudentNoticeDontShowAgain(dismissed)
+    }
+
+    setScheduleMakerPrefsLoaded(true)
+  }, [loadScheduleMakerPreferences])
+
+  useEffect(() => {
+    // Keep prefs in sync when toggled from the Preferences dialog.
+    if (!scheduleMakerPrefsLoaded) return
+    persistScheduleMakerPreferences()
+  }, [persistScheduleMakerPreferences, scheduleMakerPrefsLoaded])
+
+  useEffect(() => {
+    if (!hasTrackerProgress) return
+    const isRegular = detectRegularStudent()
+    setRegularStudentDetected(isRegular)
+
+    if (!isRegular) return
+    if (regularStudentNoticeDontShowAgain) return
+    if (regularStudentNoticeOpen) return
+
+    setRegularStudentNoticeOpen(true)
+  }, [detectRegularStudent, hasTrackerProgress, regularStudentNoticeDontShowAgain, regularStudentNoticeOpen])
 
   useEffect(() => {
     if (suppressHistoryRef.current) {
@@ -2147,6 +2298,92 @@ export default function ScheduleMaker() {
     }
   }
 
+  const normalizeSection = useCallback((value: string) => (value || "").trim().toUpperCase(), [])
+
+  const buildSameSectionMatches = useCallback(
+    (primary: CourseSection) => {
+      const normalized = normalizeSection(primary.section)
+      if (!normalized) return [] as CourseSection[]
+
+      const pool: CourseSection[] = [...availableCourses]
+      const seen = new Set<string>()
+      const matches: CourseSection[] = []
+
+      pool.forEach((candidate) => {
+        if (!candidate) return
+        if (normalizeSection(candidate.section) !== normalized) return
+
+        const key = `${getCanonicalCourseCode(candidate.courseCode)}__${normalizeSection(candidate.section)}`
+        if (seen.has(key)) return
+        seen.add(key)
+
+        if (
+          getCanonicalCourseCode(candidate.courseCode) === getCanonicalCourseCode(primary.courseCode) &&
+          normalizeSection(candidate.section) === normalizeSection(primary.section)
+        ) {
+          return
+        }
+
+        const alreadySelected = selectedCourses.some(
+          (course) =>
+            getCanonicalCourseCode(course.courseCode) === getCanonicalCourseCode(candidate.courseCode) &&
+            normalizeSection(course.section) === normalizeSection(candidate.section),
+        )
+        if (alreadySelected) return
+
+        matches.push(candidate)
+      })
+
+      return matches
+    },
+    [availableCourses, normalizeSection, selectedCourses],
+  )
+
+  const confirmSameSectionAdd = useCallback(() => {
+    if (!sameSectionPrompt?.open) return
+    const { matches } = sameSectionPrompt
+
+    if (rememberSameSectionAddToggle) {
+      setRememberSameSectionAddDecision("confirm")
+      persistScheduleMakerPreferences({ rememberSameSectionAddDecision: "confirm" })
+    }
+
+    if (matches.length > 0) {
+      matches.forEach((section) => addCourse(section))
+      setSelectedCourseCodes((prev) => {
+        const next = new Set(prev)
+        matches.forEach((section) => next.add(getCanonicalCourseCode(section.courseCode)))
+        return Array.from(next)
+      })
+    }
+
+    closeSameSectionPrompt()
+  }, [addCourse, closeSameSectionPrompt, getCanonicalCourseCode, persistScheduleMakerPreferences, rememberSameSectionAddToggle, sameSectionPrompt])
+
+  const maybeHandleSameSectionPrompt = useCallback(
+    (primary: CourseSection) => {
+      if (!regularStudentDetected) return
+      if (!sameSectionFeatureEnabled) return
+
+      const matches = buildSameSectionMatches(primary)
+      if (matches.length === 0) return
+
+      if (rememberSameSectionAddDecision === "confirm") {
+        matches.forEach((section) => addCourse(section))
+        setSelectedCourseCodes((prev) => {
+          const next = new Set(prev)
+          matches.forEach((section) => next.add(getCanonicalCourseCode(section.courseCode)))
+          return Array.from(next)
+        })
+        return
+      }
+
+      setRememberSameSectionAddToggle(false)
+      setSameSectionPrompt({ open: true, primary, matches })
+    },
+    [addCourse, buildSameSectionMatches, getCanonicalCourseCode, regularStudentDetected, rememberSameSectionAddDecision, sameSectionFeatureEnabled],
+  )
+
   const courseCatalog = React.useMemo(() => {
     const map = new Map<
       string,
@@ -2209,6 +2446,14 @@ export default function ScheduleMaker() {
     return map
   }, [courseCatalog])
 
+  const availableCanonicalSet = useMemo(() => {
+    const set = new Set<string>()
+    availableCourses.forEach((section) => {
+      set.add(getCanonicalCourseCode(section.courseCode))
+    })
+    return set
+  }, [availableCourses])
+
   const isLabCourse = useCallback((course?: CatalogCourse | null) => {
     if (!course) return false
     const name = course.name || ""
@@ -2257,9 +2502,13 @@ export default function ScheduleMaker() {
         return null
       }
 
+      if (!availableCanonicalSet.has(canonical) || !availableCanonicalSet.has(pair)) {
+        return null
+      }
+
       return pair
     },
-    [pairableCourses],
+    [availableCanonicalSet, pairableCourses],
   )
 
   const closePairingPrompt = () => setPairingPrompt({ open: false })
@@ -2357,6 +2606,7 @@ export default function ScheduleMaker() {
       setSelectedCourseCodes((prev) =>
         Array.from(new Set([...prev, getCanonicalCourseCode(primarySection.courseCode)])),
       )
+      maybeHandleSameSectionPrompt(primarySection)
       if (rememberAdd && rememberPairingAddToggle) {
         setRememberPairingAddDecision("confirm")
       }
@@ -2381,11 +2631,55 @@ export default function ScheduleMaker() {
 
   const toggleCourseSelection = (courseCode: string) => {
     const canonical = getCanonicalCourseCode(courseCode)
-    const pairCanonical = findPairedCanonical(canonical)
+    const pairCandidate = findPairedCanonical(canonical)
+    const pairCanonical =
+      pairCandidate && pairableCourses.has(canonical) && pairableCourses.has(pairCandidate)
+        ? pairCandidate
+        : null
     const isSelected = selectedCourseCodes.includes(canonical)
     const pairSelected = pairCanonical ? selectedCourseCodes.includes(pairCanonical) : false
 
     if (isSelected) {
+      // If there is no valid paired course, remove immediately without prompting.
+      if (!pairCanonical) {
+        setSelectedCourseCodes((prev) => prev.filter((code) => code !== canonical))
+        setCollapsedCourses((prev) => {
+          const next = { ...prev }
+          delete next[canonical]
+          return next
+        })
+        setSelectedCourses((prevCourses) => {
+          const removed: SelectedCourse[] = []
+          const remaining = prevCourses.filter((course) => {
+            const code = getSelectedCourseCanonicalCode(course)
+            const keep = code !== canonical
+            if (!keep) removed.push(course)
+            return keep
+          })
+
+          if (removed.length > 0) {
+            setCustomizations((prev) => {
+              const next = { ...prev }
+              removed.forEach((course) => {
+                delete next[`${course.courseCode}-${course.section}`]
+              })
+              return next
+            })
+
+            setCustomColorInputs((prev) => {
+              const next = { ...prev }
+              removed.forEach((course) => {
+                delete next[`${course.courseCode}-${course.section}`]
+              })
+              return next
+            })
+          }
+
+          return remaining
+        })
+        return
+      }
+
       if (pairCanonical && pairSelected && rememberPairingRemoveDecision === "confirm") {
         const removals = [canonical, pairCanonical]
         setSelectedCourseCodes((prev) => {
@@ -2466,14 +2760,21 @@ export default function ScheduleMaker() {
     (section: CourseSection): CourseSection | null => {
       const canonical = getCanonicalCourseCode(section.courseCode)
       if (!canonical) return null
+
+      // Only suggest pairing when this course is actually considered pairable (per `pairableCourses`).
+      const pairCandidate = findPairedCanonical(canonical)
+      const pairCanonical =
+        pairCandidate && pairableCourses.has(canonical) && pairableCourses.has(pairCandidate)
+          ? pairCandidate
+          : null
+      if (!pairCanonical) return null
+
       const normalizeSection = (value: string) => (value || "").trim().toUpperCase()
       const normalizedSection = normalizeSection(section.section)
-      const isLab = canonical.endsWith("L")
-      const base = isLab ? canonical.slice(0, -1) : canonical
-      const pairCanonical = isLab ? base : `${base}L`
-      if (!pairCanonical || pairCanonical === canonical) return null
 
-      const sameSectionMatch = [...availableCourses, ...courseCatalog.flatMap((c) => c.sections)].find(
+      const pool = [...availableCourses, ...courseCatalog.flatMap((c) => c.sections)]
+
+      const sameSectionMatch = pool.find(
         (candidate: CourseSection) =>
           getCanonicalCourseCode(candidate.courseCode) === pairCanonical &&
           normalizeSection(candidate.section) === normalizedSection,
@@ -2481,13 +2782,13 @@ export default function ScheduleMaker() {
 
       if (sameSectionMatch) return sameSectionMatch
 
-      const anyMatch = [...availableCourses, ...courseCatalog.flatMap((c) => c.sections)].find(
+      const anyMatch = pool.find(
         (candidate: CourseSection) => getCanonicalCourseCode(candidate.courseCode) === pairCanonical,
       )
 
       return anyMatch || null
     },
-    [availableCourses, courseCatalog],
+    [availableCourses, courseCatalog, findPairedCanonical],
   )
 
   const toggleSectionSelection = (section: CourseSection, checked: boolean) => {
@@ -2512,6 +2813,7 @@ export default function ScheduleMaker() {
           addCourse(section)
           const canonical = getCanonicalCourseCode(section.courseCode)
           setSelectedCourseCodes((prev) => Array.from(new Set([...prev, canonical])))
+          maybeHandleSameSectionPrompt(section)
           return
         }
 
@@ -2529,6 +2831,7 @@ export default function ScheduleMaker() {
       addCourse(section)
       const canonical = getCanonicalCourseCode(section.courseCode)
       setSelectedCourseCodes((prev) => Array.from(new Set([...prev, canonical])))
+      maybeHandleSameSectionPrompt(section)
     } else {
       const pairSection = findLabPairSection(section)
       const normalizeSection = (value: string) => (value || "").trim().toUpperCase()
@@ -4235,14 +4538,20 @@ const downloadScheduleImage = async () => {
     }
 
     pushHistory(`Customized ${editingCourse.courseCode} ${editingCourse.section}${applyCustomizationToCourse ? ' (all sections)' : ''}`)
-    setEditingCourse(null)
+    closeCustomizationDialog()
   }
 
   const openCustomization = useCallback(
     (course: SelectedCourse) => {
+      if (Date.now() < customizationReopenGuardUntilRef.current) return
+      if (customizationClearTimerRef.current) {
+        clearTimeout(customizationClearTimerRef.current)
+        customizationClearTimerRef.current = null
+      }
       const key = `${course.courseCode}-${course.section}`
       const custom = customizations[key]
       setEditingCourse(course)
+      setCustomizationDialogOpen(true)
       setTempCustomTitle(custom?.customTitle ?? getDefaultSelectedCourseTitle(course, getDisplayCode))
       const fallbackColor = courseDefaults[getSelectedCourseCanonicalCode(course)]?.color
       setTempCustomColor(custom?.color ?? fallbackColor ?? getAutoColorForCourse(course.courseCode))
@@ -4735,6 +5044,7 @@ const renderScheduleView = () => {
                         blockPadding={blockPadding}
                         textColor={textColor}
                         onContextMenu={(event) => {
+                          event.preventDefault()
                           event.stopPropagation()
                           openCustomization(course)
                         }}
@@ -5050,7 +5360,106 @@ const renderScheduleView = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={Boolean(editingCourse)} onOpenChange={(open) => { if (!open) setEditingCourse(null) }}>
+      <Dialog open={regularStudentNoticeOpen} onOpenChange={(open) => { if (!open) closeRegularStudentNotice() }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Regular student detected</DialogTitle>
+            <DialogDescription>
+              You can select just one course + section, then quickly add the other courses in the same section.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-slate-700 dark:text-slate-200">
+            <p>
+              Tip: If you&apos;re in a regular block section, most of your subjects share the same section label.
+              After you pick one section, we&apos;ll offer to add the rest.
+            </p>
+            <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-800/60">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Don&apos;t show again</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  You can re-enable this anytime in Preferences.
+                </p>
+              </div>
+              <Switch
+                checked={regularStudentNoticeDontShowAgain}
+                onCheckedChange={(value) => setRegularStudentNoticeDontShowAgain(Boolean(value))}
+                aria-label="Toggle regular student notice"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button onClick={closeRegularStudentNotice} className="w-full sm:w-auto">
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(sameSectionPrompt?.open)} onOpenChange={(open) => { if (!open) closeSameSectionPrompt() }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Add other courses in section {sameSectionPrompt?.primary ? normalizeSection(sameSectionPrompt.primary.section) : ""}?
+            </DialogTitle>
+            <DialogDescription>
+              We found {sameSectionPrompt?.matches?.length ?? 0} more course(s) with the same section label.
+            </DialogDescription>
+          </DialogHeader>
+          {sameSectionPrompt?.primary && (
+            <div className="space-y-3">
+              <div className="rounded-md border border-slate-200/80 bg-slate-50/80 p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-200">
+                <p className="font-medium">Selected</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {getDisplayCode(sameSectionPrompt.primary.courseCode)} {sameSectionPrompt.primary.section}
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-100">Matches</p>
+                <div className="max-h-[220px] space-y-1 overflow-y-auto rounded-md border border-slate-200/80 bg-white p-2 text-sm dark:border-slate-700 dark:bg-slate-900">
+                  {(sameSectionPrompt.matches || []).slice(0, 12).map((match) => (
+                    <div key={`${match.courseCode}-${match.section}`} className="flex items-center justify-between gap-2 rounded px-2 py-1">
+                      <div className="min-w-0">
+                        <p className="truncate text-[13px] font-semibold">{getDisplayCode(match.courseCode)}</p>
+                        <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+                          {cleanTimeString(match.meetingTime)} • {formatMeetingDays(match.meetingDays)} • {cleanRoomString(match.room)}
+                        </p>
+                      </div>
+                      <Badge variant={match.hasSlots ? "secondary" : "destructive"} className="text-[10px]">
+                        {match.hasSlots ? "Open" : "Full"}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 text-[12px] dark:border-slate-700 dark:bg-slate-800/60">
+                <Checkbox
+                  id="remember-same-section"
+                  checked={rememberSameSectionAddToggle}
+                  onCheckedChange={(value) => setRememberSameSectionAddToggle(Boolean(value))}
+                />
+                <Label htmlFor="remember-same-section" className="text-[12px] text-slate-700 dark:text-slate-200">
+                  Remember this choice (auto-add same section next time)
+                </Label>
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={closeSameSectionPrompt} className="w-full sm:w-auto">
+              Not now
+            </Button>
+            <Button onClick={confirmSameSectionAdd} className="w-full sm:w-auto">
+              Add matching
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={customizationDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) closeCustomizationDialog()
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Customize course</DialogTitle>
@@ -5099,7 +5508,7 @@ const renderScheduleView = () => {
             </div>
           )}
           <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => setEditingCourse(null)} className="w-full sm:w-auto">
+            <Button variant="outline" onClick={closeCustomizationDialog} className="w-full sm:w-auto">
               Cancel
             </Button>
             <Button onClick={saveCustomization} className="w-full sm:w-auto">
@@ -5166,7 +5575,7 @@ const renderScheduleView = () => {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Preferences</DialogTitle>
-            <DialogDescription>Adjust how paired lecture/lab courses are handled.</DialogDescription>
+            <DialogDescription>Adjust how section helpers and pairing prompts behave.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-slate-700 dark:text-slate-200">
             <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-800/60">
@@ -5209,6 +5618,40 @@ const renderScheduleView = () => {
                   }
                 }}
                 aria-label="Toggle auto-remove paired lecture/lab"
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-800/60">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Suggest same-section courses</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  For regular students, offer to add other courses that share the same section label.
+                </p>
+              </div>
+              <Switch
+                checked={sameSectionFeatureEnabled}
+                onCheckedChange={(value) => setSameSectionFeatureEnabled(Boolean(value))}
+                aria-label="Toggle same-section suggestions"
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-800/60">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Auto-add same-section courses</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  When enabled, matching courses are added automatically without asking.
+                </p>
+              </div>
+              <Switch
+                checked={rememberSameSectionAddDecision === "confirm"}
+                onCheckedChange={(value) => {
+                  if (value) {
+                    setRememberSameSectionAddDecision("confirm")
+                  } else {
+                    setRememberSameSectionAddDecision(null)
+                  }
+                }}
+                aria-label="Toggle auto-add same-section courses"
               />
             </div>
           </div>
