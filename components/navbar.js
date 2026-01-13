@@ -113,7 +113,7 @@ export default function Navbar() {
 
   return (
     <motion.nav
-      className="relative z-50 bg-blue-600 text-white shadow-md"
+      className="relative z-[20000] bg-blue-600 text-white shadow-md"
       variants={navVariants}
       initial="rest"
       animate={isMobile && navPulse ? "pulse" : "rest"}
@@ -220,7 +220,7 @@ export default function Navbar() {
 
         {/* Mobile menu */}
         {isMenuOpen && (
-          <div className="md:hidden mt-3 pt-3 border-t border-blue-500">
+          <div className="md:hidden fixed inset-0 top-0 z-[20010] pt-[68px] border-t border-blue-500 bg-blue-800/95 backdrop-blur-xl shadow-2xl overflow-y-auto">
             <div className="flex flex-col space-y-3">
               {profileOpen && (
                 <button

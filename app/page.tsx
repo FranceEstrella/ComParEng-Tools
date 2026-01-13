@@ -1073,13 +1073,14 @@ export default function Home() {
                               role="dialog"
                               aria-modal="true"
                               aria-labelledby="full-profile-title"
-                              className="relative flex h-screen flex-col overflow-hidden rounded-none border-0 bg-white text-slate-900 shadow-2xl ring-0 outline-none dark:bg-slate-900 dark:text-white sm:h-auto sm:max-h-[85vh] sm:w-full sm:max-w-3xl sm:rounded-3xl sm:border sm:border-slate-200/80 sm:ring-1 sm:ring-black/10 dark:sm:border-slate-800 dark:sm:ring-white/10"
+                              className="relative flex h-screen max-h-[calc(100vh-16px)] flex-col overflow-y-auto rounded-none border-0 bg-white text-slate-900 shadow-2xl ring-0 outline-none dark:bg-slate-900 dark:text-white sm:h-auto sm:max-h-[85vh] sm:w-full sm:max-w-3xl sm:overflow-hidden sm:rounded-3xl sm:border sm:border-slate-200/80 sm:ring-1 sm:ring-black/10 dark:sm:border-slate-800 dark:sm:ring-white/10"
+                              style={{ background: rankTier.gradient }}
                               tabIndex={-1}
                             >
                               <div className="sticky top-0 z-10 h-1 w-full bg-gradient-to-r from-transparent via-white/60 to-transparent dark:via-slate-900/60" />
-                              <div className="absolute inset-0" style={{ background: rankTier.gradient }} />
-                              <div className="absolute inset-0 bg-gradient-to-br from-black/35 via-black/25 to-white/10" />
-                              <div className="absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-white/5" />
+                              <div className="pointer-events-none absolute inset-0" style={{ background: rankTier.gradient }} />
+                              <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-black/35 via-black/25 to-white/10" />
+                              <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-white/5" />
                               <motion.div
                                 className="relative flex flex-col gap-4 p-4 sm:p-6"
                                 initial={{ opacity: 0 }}
@@ -1093,7 +1094,7 @@ export default function Home() {
                                   animate={{ x: profileEditorVisible ? "-100%" : "0%" }}
                                   transition={{ duration: 0.32, ease: [0.4, 0, 0.2, 1] }}
                                 >
-                                  <div className="w-full shrink-0 flex flex-col gap-4 max-h-[calc(100vh-120px)] sm:max-h-none min-h-0 max-w-3xl mx-auto">
+                                  <div className="w-full shrink-0 flex flex-col gap-4 min-h-0 max-w-3xl mx-auto">
                                     <div className="flex items-start justify-between gap-4">
                                       <div className="flex items-start gap-4">
                                         <div
