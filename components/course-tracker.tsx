@@ -3,6 +3,7 @@
 import React from "react"
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react"
+import { createPortal } from "react-dom"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card"
@@ -29,6 +30,10 @@ import {
   GraduationCap,
   RefreshCw,
   Plus,
+  Compass,
+  Shield,
+  Sparkles,
+  Crown,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -68,6 +73,84 @@ import { orderedPatchNotes } from "@/lib/patch-notes"
 import { trackAnalyticsEvent } from "@/lib/analytics-client"
 
 const APP_VERSION = orderedPatchNotes[0]?.version ?? "Dev"
+const GAMIFICATION_STORAGE_KEY = "courseTracker.gamification.v1"
+const PROFILE_STORAGE_KEY = "courseTracker.profile.v1"
+const TERM_BADGE_XP_BY_YEAR: Record<number, number> = {
+  1: 600,
+  2: 900,
+  3: 1200,
+  4: 1700,
+}
+
+const YEAR_BADGE_XP_BY_YEAR: Record<number, number> = {
+  1: 1800,
+  2: 2000,
+  3: 2300,
+  4: 3200,
+}
+const LEVEL_THRESHOLDS = [0, 1000, 2500, 5000, 8000, 11000]
+const LEVEL_STEP = 2500
+const DEFAULT_PROFILE_CARD_COLOR = "linear-gradient(135deg, #0f172a 0%, #312e81 50%, #7c3aed 100%)"
+
+interface RankTier {
+  name: string
+  range: [number, number]
+  gradient: string
+  accent: string
+  text: string
+}
+
+const RANK_TIERS: RankTier[] = [
+  {
+    name: "Pathfinder",
+    range: [1, 2],
+    gradient: "linear-gradient(135deg, #0f172a 0%, #0ea5e9 50%, #22c55e 100%)",
+    accent: "#22c55e",
+    text: "#e0f2fe",
+  },
+  {
+    name: "Vanguard",
+    range: [3, 4],
+    gradient: "linear-gradient(135deg, #1e1b4b 0%, #6366f1 45%, #c084fc 100%)",
+    accent: "#a78bfa",
+    text: "#ede9fe",
+  },
+  {
+    name: "Luminary",
+    range: [5, 6],
+    gradient: "linear-gradient(135deg, #451a03 0%, #f59e0b 40%, #f97316 100%)",
+    accent: "#fbbf24",
+    text: "#fff7ed",
+  },
+  {
+    name: "Legend",
+    range: [7, Number.POSITIVE_INFINITY],
+    gradient: "linear-gradient(135deg, #2d1b69 0%, #fb7185 40%, #facc15 100%)",
+    accent: "#fcd34d",
+    text: "#fff7ed",
+  },
+]
+
+const getRankTier = (level: number): RankTier => {
+  const match = RANK_TIERS.find((tier) => level >= tier.range[0] && level <= tier.range[1])
+  return match ?? RANK_TIERS[RANK_TIERS.length - 1]
+}
+
+const renderRankIcon = (tier: RankTier | null, className = "h-7 w-7") => {
+  const color = "#f6d47a"
+  switch (tier?.name) {
+    case "Pathfinder":
+      return <Compass className={className} stroke={color} />
+    case "Vanguard":
+      return <Shield className={className} stroke={color} />
+    case "Luminary":
+      return <Sparkles className={className} stroke={color} />
+    case "Legend":
+      return <Crown className={className} stroke={color} />
+    default:
+      return <Sparkles className={className} stroke={color} />
+  }
+}
 
 const fireConfetti = async (preset: "term" | "year") => {
   if (typeof window === "undefined") return
@@ -240,6 +323,74 @@ interface AcademicYear {
   term1: string
   term2: string
   term3: string
+}
+
+type BadgeKind = "term" | "year"
+
+interface BadgeMeta {
+  id: string
+  kind: BadgeKind
+  year: number
+  term?: TermName
+  label: string
+  xp: number
+}
+
+interface LevelInfo {
+  level: number
+  current: number
+  currentStart: number
+  next: number
+  progress: number
+}
+
+interface GamificationState {
+  xp: number
+  unlockedBadges: string[]
+}
+
+interface RewardOverlayState {
+  open: boolean
+  badges: BadgeMeta[]
+  xpBefore: number
+  xpAfter: number
+  levelBefore: LevelInfo
+  levelAfter: LevelInfo
+  cascade: boolean
+}
+
+interface LevelStage {
+  fromLevel: number
+  toLevel: number
+  xpStart: number
+  xpEnd: number
+  fromBounds: { start: number; end: number }
+  toBounds: { start: number; end: number }
+}
+
+interface RewardStep {
+  badge: BadgeMeta
+  xpBefore: number
+  xpAfter: number
+  levelBefore: LevelInfo
+  levelAfter: LevelInfo
+}
+
+interface LevelStage {
+  fromLevel: number
+  toLevel: number
+  xpStart: number
+  xpEnd: number
+  fromBounds: { start: number; end: number }
+  toBounds: { start: number; end: number }
+}
+
+interface ProfileState {
+  name: string
+  program: string
+  year: number
+  expectedGraduation: string | null
+  cardColor: string
 }
 
 // --- Subcomponent Prop Types ---
@@ -953,6 +1104,112 @@ const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean })
       )}
     </div>
   )
+}
+
+// Gamification helpers
+const makeBadgeId = (kind: BadgeKind, year: number, term?: TermName) =>
+  kind === "year" ? `year-${year}` : `term-${year}-${term}`
+
+const getBadgeFromId = (id: string): BadgeMeta | null => {
+  if (id.startsWith("year-")) {
+    const year = Number.parseInt(id.replace("year-", ""), 10)
+    if (!Number.isFinite(year)) return null
+    return { id, kind: "year", year, label: `Year ${year} Complete`, xp: getBadgeXp("year", year) }
+  }
+
+  if (id.startsWith("term-")) {
+    const [, yearStr, ...rest] = id.split("-")
+    const term = rest.join("-") as TermName
+    const year = Number.parseInt(yearStr, 10)
+    if (!Number.isFinite(year) || !term) return null
+    return { id, kind: "term", year, term, label: `${term} Complete`, xp: getBadgeXp("term", year) }
+  }
+
+  return null
+}
+
+const calculateLevelInfo = (xp: number): LevelInfo => {
+  const safeXp = Math.max(0, xp)
+  let level = 1
+  let currentStart = LEVEL_THRESHOLDS[0]
+  let next = LEVEL_THRESHOLDS[1] ?? LEVEL_STEP
+
+  for (let i = 0; i < LEVEL_THRESHOLDS.length; i += 1) {
+    const start = LEVEL_THRESHOLDS[i]
+    const end = LEVEL_THRESHOLDS[i + 1]
+    if (safeXp < (end ?? Number.POSITIVE_INFINITY)) {
+      level = i + 1
+      currentStart = start
+      next = end ?? start + LEVEL_STEP
+      break
+    }
+    // Beyond last explicit threshold
+    if (i === LEVEL_THRESHOLDS.length - 1) {
+      const offset = safeXp - start
+      const extraLevels = Math.floor(offset / LEVEL_STEP)
+      level = LEVEL_THRESHOLDS.length + extraLevels
+      currentStart = start + extraLevels * LEVEL_STEP
+      next = currentStart + LEVEL_STEP
+    }
+  }
+
+  const current = safeXp - currentStart
+  const span = Math.max(1, next - currentStart)
+
+  return {
+    level,
+    current,
+    currentStart,
+    next,
+    progress: Math.min(1, Math.max(0, current / span)),
+  }
+}
+
+const getBadgeXp = (kind: BadgeKind, year?: number) => {
+  if (!year || !Number.isFinite(year)) return 0
+  if (kind === "term") {
+    return TERM_BADGE_XP_BY_YEAR[year] ?? TERM_BADGE_XP_BY_YEAR[4]
+  }
+  return YEAR_BADGE_XP_BY_YEAR[year] ?? YEAR_BADGE_XP_BY_YEAR[4]
+}
+
+const getLevelBounds = (level: number) => {
+  const idx = Math.max(0, level - 1)
+  const start =
+    idx < LEVEL_THRESHOLDS.length
+      ? LEVEL_THRESHOLDS[idx]
+      : (LEVEL_THRESHOLDS[LEVEL_THRESHOLDS.length - 1] ?? 0) + LEVEL_STEP * (idx - (LEVEL_THRESHOLDS.length - 1))
+  const end = idx + 1 < LEVEL_THRESHOLDS.length ? LEVEL_THRESHOLDS[idx + 1] : start + LEVEL_STEP
+  return { start, end }
+}
+
+const buildLevelStages = (xpStart: number, xpEnd: number): LevelStage[] => {
+  const stages: LevelStage[] = []
+  const startInfo = calculateLevelInfo(xpStart)
+  const endInfo = calculateLevelInfo(xpEnd)
+
+  if (endInfo.level <= startInfo.level) return stages
+
+  let currentXp = xpStart
+  for (let lvl = startInfo.level; lvl < endInfo.level; lvl += 1) {
+    const fromBounds = getLevelBounds(lvl)
+    const toBounds = getLevelBounds(lvl + 1)
+    const isFinalStage = lvl + 1 === endInfo.level
+    const stageEndXp = isFinalStage ? xpEnd : fromBounds.end
+
+    stages.push({
+      fromLevel: lvl,
+      toLevel: lvl + 1,
+      xpStart: currentXp,
+      xpEnd: stageEndXp,
+      fromBounds,
+      toBounds,
+    })
+
+    currentXp = fromBounds.end
+  }
+
+  return stages
 }
 
 // --- Helper Functions ---
@@ -2175,6 +2432,20 @@ export default function CourseTracker() {
   const [showDetailedProgress, setShowDetailedProgress] = useState(false)
   const [startYear, setStartYear] = useState<number>(new Date().getFullYear())
   const [expectedGraduationLabel, setExpectedGraduationLabel] = useState<string>("N/A")
+  const [gamificationState, setGamificationState] = useState<GamificationState>({ xp: 0, unlockedBadges: [] })
+  const [rewardOverlay, setRewardOverlay] = useState<RewardOverlayState | null>(null)
+  const [rewardStage, setRewardStage] = useState<"old" | "unlock" | "new">("new")
+  const [levelStages, setLevelStages] = useState<LevelStage[]>([])
+  const [levelStageIndex, setLevelStageIndex] = useState(0)
+  const [rewardQueue, setRewardQueue] = useState<RewardStep[]>([])
+  const [rewardStepIndex, setRewardStepIndex] = useState(0)
+  const [profileState, setProfileState] = useState<ProfileState>({
+    name: "",
+    program: "",
+    year: 1,
+    expectedGraduation: null,
+    cardColor: DEFAULT_PROFILE_CARD_COLOR,
+  })
   const [currentYearLevel, setCurrentYearLevel] = useState(1)
   const [currentTerm, setCurrentTerm] = useState<TermName>("Term 1")
   const [maxYearLevelOption, setMaxYearLevelOption] = useState(4)
@@ -2232,6 +2503,67 @@ export default function CourseTracker() {
   const overallCompletedRef = useRef(false)
   const overallRainActiveRef = useRef(false)
 
+  // Hydrate gamification + profile data from localStorage
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = window.localStorage.getItem(GAMIFICATION_STORAGE_KEY)
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        if (typeof parsed?.xp === "number" && Array.isArray(parsed?.unlockedBadges)) {
+          setGamificationState({ xp: Math.max(0, parsed.xp), unlockedBadges: parsed.unlockedBadges })
+        }
+      }
+
+      const storedProfile = window.localStorage.getItem(PROFILE_STORAGE_KEY)
+      if (storedProfile) {
+        const parsed = JSON.parse(storedProfile)
+        setProfileState((prev) => ({
+          ...prev,
+          name: typeof parsed?.name === "string" ? parsed.name : prev.name,
+          program: typeof parsed?.program === "string" ? parsed.program : prev.program,
+          year: Number.isFinite(parsed?.year) ? parsed.year : prev.year,
+          expectedGraduation:
+            typeof parsed?.expectedGraduation === "string" || parsed?.expectedGraduation === null
+              ? parsed.expectedGraduation
+              : prev.expectedGraduation,
+          cardColor:
+            typeof parsed?.cardColor === "string" && parsed.cardColor.trim().length > 0
+              ? parsed.cardColor
+              : prev.cardColor,
+        }))
+      }
+    } catch (error) {
+      console.error("Failed to load gamification/profile state", error)
+    }
+  }, [])
+
+  // Persist gamification state
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(GAMIFICATION_STORAGE_KEY, JSON.stringify(gamificationState))
+    } catch (error) {
+      console.error("Failed to save gamification state", error)
+    }
+  }, [gamificationState])
+
+  // Persist profile state
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profileState))
+    } catch (error) {
+      console.error("Failed to save profile state", error)
+    }
+  }, [profileState])
+
+  useEffect(() => {
+    const hasValue = expectedGraduationLabel && expectedGraduationLabel !== "N/A"
+    if (!hasValue) return
+    setProfileState((prev) => ({ ...prev, expectedGraduation: expectedGraduationLabel }))
+  }, [expectedGraduationLabel])
+
   useEffect(() => {
     if (!coursesHydrated) return
 
@@ -2288,26 +2620,107 @@ export default function CourseTracker() {
       })
     }
 
-    const previouslyCompletedYears = completedYearsRef.current
-    const previouslyCompletedTerms = completedTermsRef.current
+    // Badge + XP bookkeeping
+    const targetBadgeIds = new Set<string>()
 
-    const newlyCompletedYears = Array.from(currentCompletedYears).filter((y) => !previouslyCompletedYears.has(y))
+    currentCompletedTerms.forEach((key) => {
+      const [yearStr, term] = key.split("::")
+      const year = Number.parseInt(yearStr || "", 10)
+      if (!Number.isFinite(year) || !term) return
+      targetBadgeIds.add(makeBadgeId("term", year, term as TermName))
+    })
 
-    if (newlyCompletedYears.length) {
-      newlyCompletedYears.forEach(() => {
-        void fireConfetti("year")
+    currentCompletedYears.forEach((year) => {
+      targetBadgeIds.add(makeBadgeId("year", year))
+      TERM_SEQUENCE.forEach((term) => {
+        if (courses.some((c) => c.year === year && c.term === term)) {
+          targetBadgeIds.add(makeBadgeId("term", year, term))
+        }
       })
+    })
+
+    const unlockedSet = new Set(gamificationState.unlockedBadges)
+    const revokedIds = Array.from(unlockedSet).filter((id) => !targetBadgeIds.has(id))
+    const newBadgeIds = Array.from(targetBadgeIds).filter((id) => !unlockedSet.has(id))
+
+    let xpAfterRevocation = gamificationState.xp
+    revokedIds.forEach((id) => {
+      const meta = getBadgeFromId(id)
+      if (!meta) return
+      xpAfterRevocation = Math.max(0, xpAfterRevocation - meta.xp)
+      unlockedSet.delete(id)
+    })
+
+    const xpBase = xpAfterRevocation
+    const awards: BadgeMeta[] = []
+    let xpAfterAwards = xpBase
+
+    newBadgeIds.forEach((id) => {
+      const meta = getBadgeFromId(id)
+      if (!meta) return
+      awards.push(meta)
+      xpAfterAwards += meta.xp
+      unlockedSet.add(id)
+    })
+
+    const didChange = revokedIds.length > 0 || awards.length > 0
+    if (didChange) {
+      setGamificationState({ xp: xpAfterAwards, unlockedBadges: Array.from(unlockedSet) })
     }
 
-    const newlyCompletedTerms = Array.from(currentCompletedTerms).filter((k) => !previouslyCompletedTerms.has(k))
-    const suppressTerms = new Set<number>(newlyCompletedYears)
+    if (awards.length) {
+      const includesYear = awards.some((award) => award.kind === "year")
+      const includesTerm = awards.some((award) => award.kind === "term")
+      const cascade = includesYear && includesTerm
 
-    if (newlyCompletedTerms.length) {
-      newlyCompletedTerms.forEach((key) => {
-        const year = Number.parseInt(key.split("::")[0] || "", 10)
-        if (Number.isFinite(year) && suppressTerms.has(year)) return
-        void fireConfetti("term")
+      const termOrder = (term?: TermName) => (term ? TERM_SEQUENCE.indexOf(term) : 0)
+      const sortedAwards = [...awards].sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === "term" ? -1 : 1
+        if (a.kind === "term" && b.kind === "term") {
+          if (a.year !== b.year) return a.year - b.year
+          return termOrder(a.term) - termOrder(b.term)
+        }
+        return a.year - b.year
       })
+
+      let runningXp = xpBase
+      const steps: RewardStep[] = []
+      sortedAwards.forEach((badge) => {
+        const stepXpAfter = runningXp + badge.xp
+        steps.push({
+          badge,
+          xpBefore: runningXp,
+          xpAfter: stepXpAfter,
+          levelBefore: calculateLevelInfo(runningXp),
+          levelAfter: calculateLevelInfo(stepXpAfter),
+        })
+        runningXp = stepXpAfter
+      })
+
+      setRewardQueue(steps)
+      setRewardStepIndex(0)
+
+      if (includesYear) {
+        void fireConfetti("year")
+      } else if (includesTerm) {
+        void fireConfetti("term")
+      }
+
+      const firstStep = steps[0]
+      if (firstStep) {
+        setLevelStages(buildLevelStages(firstStep.xpBefore, firstStep.xpAfter))
+        setLevelStageIndex(0)
+
+        setRewardOverlay({
+          open: true,
+          badges: [firstStep.badge],
+          xpBefore: firstStep.xpBefore,
+          xpAfter: firstStep.xpAfter,
+          levelBefore: firstStep.levelBefore,
+          levelAfter: firstStep.levelAfter,
+          cascade,
+        })
+      }
     }
 
     completedYearsRef.current = currentCompletedYears
@@ -2950,6 +3363,188 @@ export default function CourseTracker() {
     return termStats
   }, [courses])
 
+  const levelInfo = useMemo(() => calculateLevelInfo(gamificationState.xp), [gamificationState.xp])
+  const unlockedBadgeMetas = useMemo(
+    () => gamificationState.unlockedBadges.map(getBadgeFromId).filter((b): b is BadgeMeta => Boolean(b)),
+    [gamificationState.unlockedBadges],
+  )
+  const rewardRankTier = useMemo(
+    () => (rewardOverlay ? getRankTier(rewardOverlay.levelAfter.level) : null),
+    [rewardOverlay?.levelAfter.level],
+  )
+
+  const rewardOverlayProgress = useMemo(() => {
+    if (!rewardOverlay?.open) return null
+
+    const activeStage = levelStages[levelStageIndex]
+    if (activeStage) {
+      const stageEndProgress = Math.max(
+        0,
+        Math.min(1, (activeStage.xpEnd - activeStage.toBounds.start) / Math.max(1, activeStage.toBounds.end - activeStage.toBounds.start)),
+      )
+
+      return {
+        frames: ["0%", `${Math.round(stageEndProgress * 100)}%`],
+        times: undefined,
+        duration: 0.9,
+      }
+    }
+
+    const start = Math.round(rewardOverlay.levelBefore.progress * 100)
+    const end = Math.round(rewardOverlay.levelAfter.progress * 100)
+    const leveledUp = rewardOverlay.levelAfter.level > rewardOverlay.levelBefore.level
+
+    return {
+      frames: leveledUp ? ["0%", `${end}%`] : [`${start}%`, `${end}%`],
+      times: undefined,
+      duration: leveledUp ? 0.9 : 0.85,
+    }
+  }, [levelStages, levelStageIndex, rewardOverlay])
+
+  const showContinueHint = useMemo(() => {
+    if (!rewardOverlay?.open) return false
+    const isFinalStep = rewardQueue.length === 0 || rewardStepIndex >= rewardQueue.length - 1
+    const levelStageComplete = levelStages.length === 0 || levelStageIndex >= levelStages.length - 1
+    return rewardStage === "new" && isFinalStep && levelStageComplete
+  }, [rewardOverlay?.open, rewardStage, rewardStepIndex, rewardQueue.length, levelStageIndex, levelStages.length])
+
+  useEffect(() => {
+    if (!rewardOverlay?.open) return
+    const step = rewardQueue[rewardStepIndex]
+    if (!step) return
+
+    setLevelStages(buildLevelStages(step.xpBefore, step.xpAfter))
+    setLevelStageIndex(0)
+    setRewardStage("old")
+
+    const isYearStep = step.badge.kind === "year"
+    const badgesForStep = isYearStep
+      ? rewardQueue.filter((s) => s.badge.year === step.badge.year).map((s) => s.badge)
+      : [step.badge]
+
+    setRewardOverlay((prev) =>
+      prev
+        ? {
+            ...prev,
+            badges: badgesForStep,
+            xpBefore: step.xpBefore,
+            xpAfter: step.xpAfter,
+            levelBefore: step.levelBefore,
+            levelAfter: step.levelAfter,
+          }
+        : {
+            open: true,
+            badges: badgesForStep,
+            xpBefore: step.xpBefore,
+            xpAfter: step.xpAfter,
+            levelBefore: step.levelBefore,
+            levelAfter: step.levelAfter,
+            cascade: false,
+          },
+    )
+  }, [rewardOverlay?.open, rewardQueue, rewardStepIndex])
+
+  useEffect(() => {
+    if (!rewardOverlay?.open) {
+      setRewardStage("new")
+      setLevelStageIndex(0)
+      return
+    }
+
+    const activeStage = levelStages[levelStageIndex]
+    const leveledUp = Boolean(activeStage) || rewardOverlay.levelAfter.level > rewardOverlay.levelBefore.level
+    if (!leveledUp) {
+      setRewardStage("new")
+      return
+    }
+
+    setRewardStage("old")
+    const unlockTimer = window.setTimeout(() => setRewardStage("unlock"), 1100)
+    const newTimer = window.setTimeout(() => setRewardStage("new"), 2400)
+
+    return () => {
+      window.clearTimeout(unlockTimer)
+      window.clearTimeout(newTimer)
+    }
+  }, [rewardOverlay?.open, levelStageIndex, levelStages, rewardOverlay?.levelAfter.level, rewardOverlay?.levelBefore.level])
+
+  useEffect(() => {
+    if (!rewardOverlay?.open) return
+    if (rewardStage !== "new") return
+    if (levelStageIndex >= levelStages.length - 1) return
+
+    const nextTimer = window.setTimeout(() => {
+      setLevelStageIndex((idx) => Math.min(idx + 1, levelStages.length - 1))
+      setRewardStage("old")
+    }, 900)
+
+    return () => window.clearTimeout(nextTimer)
+  }, [rewardOverlay?.open, rewardStage, levelStageIndex, levelStages.length])
+
+  useEffect(() => {
+    if (!rewardOverlay?.open) return
+    const hasMoreSteps = rewardQueue.length > 0 && rewardStepIndex < rewardQueue.length - 1
+    const stageDone = rewardStage === "new" && (levelStages.length === 0 || levelStageIndex >= levelStages.length - 1)
+    if (!hasMoreSteps || !stageDone) return
+
+    const advanceTimer = window.setTimeout(() => {
+      setRewardStepIndex((idx) => Math.min(idx + 1, rewardQueue.length - 1))
+      setRewardStage("old")
+    }, 1200)
+
+    return () => window.clearTimeout(advanceTimer)
+  }, [rewardOverlay?.open, rewardStage, levelStageIndex, levelStages.length, rewardQueue.length, rewardStepIndex])
+
+  useEffect(() => {
+    if (!rewardOverlay?.open) return
+    if (rewardStage !== "new") return
+    const stage = levelStages[levelStageIndex]
+    if (!stage) return
+    const isLastStage = levelStageIndex >= levelStages.length - 1
+    const toProgressEnd = (stage.xpEnd - stage.toBounds.start) / Math.max(1, stage.toBounds.end - stage.toBounds.start)
+    if (!isLastStage && toProgressEnd <= 0) {
+      const t = window.setTimeout(() => {
+        setLevelStageIndex((idx) => Math.min(idx + 1, levelStages.length - 1))
+        setRewardStage("old")
+      }, 10)
+      return () => window.clearTimeout(t)
+    }
+  }, [rewardOverlay?.open, rewardStage, levelStageIndex, levelStages])
+
+  const dismissRewardOverlay = useCallback(() => {
+    if (rewardQueue.length > 0 && rewardStepIndex < rewardQueue.length - 1) {
+      setRewardStepIndex((idx) => Math.min(idx + 1, rewardQueue.length - 1))
+      setRewardStage("old")
+      return
+    }
+
+    setRewardOverlay(null)
+    setRewardQueue([])
+    setRewardStepIndex(0)
+    setLevelStages([])
+    setLevelStageIndex(0)
+    setRewardStage("new")
+  }, [rewardQueue, rewardStepIndex])
+
+  useEffect(() => {
+    if (typeof document === "undefined" || typeof window === "undefined") return
+    if (!rewardOverlay?.open) return
+
+    const previousOverflow = document.body.style.overflow
+    const previousPaddingRight = document.body.style.paddingRight
+    const scrollbarGap = window.innerWidth - document.documentElement.clientWidth
+
+    document.body.style.overflow = "hidden"
+    if (scrollbarGap > 0) {
+      document.body.style.paddingRight = `${scrollbarGap}px`
+    }
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.body.style.paddingRight = previousPaddingRight
+    }
+  }, [rewardOverlay?.open])
+
   const transcriptEntries = useMemo<TranscriptEntry[]>(() => {
     const entries: TranscriptEntry[] = []
     courses.forEach((course) => {
@@ -3546,20 +4141,19 @@ export default function CourseTracker() {
               color: #475569;
             }
             table {
-              width: 100%;
-              border-collapse: separate;
-              border-spacing: 0;
-              margin-top: 16px;
-              font-size: 13px;
-              background: #fff;
-              border-radius: 12px;
-              box-shadow: 0 2px 8px #0001;
-              overflow: hidden;
-            }
-            th,
-            td {
+            style={{
+              width: "104px",
+              height: "104px",
+              padding: "12px",
+              borderRadius: "9999px",
+              backgroundImage:
+                "linear-gradient(135deg, rgba(255, 193, 94, 0.6), rgba(255, 166, 43, 0.4), rgba(255, 215, 128, 0.55))",
+              boxShadow:
+                "0 12px 28px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -6px 18px rgba(0,0,0,0.18)",
+              filter: "drop-shadow(0 12px 24px rgba(0,0,0,0.32))",
+            }}
               border-bottom: 1px solid #e2e8f0;
-              padding: 10px 8px;
+            {renderRankIcon(rewardRankTier, "h-16 w-16", false)}
               text-align: left;
             }
             th {
@@ -4069,13 +4663,260 @@ export default function CourseTracker() {
         className="sr-only"
       />
       <TooltipProvider delayDuration={250} skipDelayDuration={0}>
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+        {typeof document !== "undefined" &&
+          createPortal(
+            <AnimatePresence>
+              {rewardOverlay?.open && (
+                <motion.div
+                  className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/75 backdrop-blur-sm"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.25, ease: "easeOut" }}
+                  onClick={dismissRewardOverlay}
+                >
+                  <motion.div
+                    className="relative mx-4 w-full max-w-4xl overflow-hidden rounded-3xl border border-amber-200/20 bg-gradient-to-br from-amber-900/80 via-neutral-900 to-black px-6 py-10 text-center text-amber-50 shadow-[0_20px_120px_rgba(0,0,0,0.45)]"
+                    initial={{ scale: 0.94, opacity: 0, y: 18 }}
+                    animate={{ scale: 1, opacity: 1, y: 0 }}
+                    exit={{ scale: 0.96, opacity: 0, y: 12 }}
+                    transition={{ duration: 0.28, ease: "easeOut" }}
+                  >
+                    <div className="pointer-events-none absolute inset-0 opacity-20" style={{ backgroundImage: "radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.08), transparent 30%), radial-gradient(circle at 80% 0%, rgba(255, 185, 51, 0.12), transparent 26%)" }} />
+
+                    <div className="relative flex flex-col items-center gap-6">
+                      <div className="relative flex items-center justify-center">
+                        <motion.div
+                          className="absolute h-52 w-52 rounded-[32%] bg-gradient-to-br from-amber-500/60 via-orange-500/40 to-yellow-400/50 blur-3xl"
+                          animate={{ scale: [1, 1.04, 1] }}
+                          transition={{ repeat: Infinity, duration: 3.6, ease: "easeInOut" }}
+                        />
+                        <motion.div
+                          className="relative h-40 w-40 rounded-2xl bg-gradient-to-br from-[#ffb347] via-[#ff6a00] to-[#b31217] p-3 shadow-[0_10px_50px_rgba(255,140,0,0.45)]"
+                          animate={{ rotate: [0, 1.5, -1.5, 0] }}
+                          transition={{ duration: 2.8, repeat: Infinity, ease: "easeInOut" }}
+                        >
+                          <div className="h-full w-full rounded-xl border border-amber-200/50 bg-gradient-to-br from-[#2b0c0c] via-[#3d0f0f] to-[#1f0a0a] shadow-inner" />
+                          <div className="absolute inset-3 rounded-xl border border-white/15" />
+                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                            <motion.div
+                              key={`${rewardRankTier?.name ?? "rank-icon"}-icon`}
+                              initial={{ scale: 0.85, opacity: 0, rotate: -4 }}
+                              animate={{ scale: 1, opacity: 1, rotate: 0 }}
+                              exit={{ scale: 0.9, opacity: 0, rotate: 4 }}
+                              transition={{ type: "spring", stiffness: 280, damping: 18 }}
+                              className="flex items-center justify-center"
+                              style={{ filter: "drop-shadow(0 12px 28px rgba(0,0,0,0.35))" }}
+                            >
+                              {renderRankIcon(rewardRankTier, "h-16 w-16")}
+                            </motion.div>
+                            {rewardRankTier && (
+                              <motion.span
+                                key={`${rewardRankTier.name}-label`}
+                                initial={{ opacity: 0, y: 8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -6 }}
+                                transition={{ duration: 0.35, ease: "easeOut" }}
+                                className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-100"
+                                style={{ color: rewardRankTier.text }}
+                              >
+                                {rewardRankTier.name}
+                              </motion.span>
+                            )}
+                          </div>
+                        </motion.div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <p className="text-sm uppercase tracking-[0.3em] text-amber-200/80">
+                          {rewardOverlay.badges.some((b) => b.kind === "year") ? "Year Mastered" : "Term Completed"}
+                        </p>
+                        <h2 className="text-3xl font-bold leading-tight text-amber-50">
+                          {rewardOverlay.badges.length > 1
+                            ? `${rewardOverlay.badges.length} badges unlocked`
+                            : rewardOverlay.badges[0]?.label ?? "Badge unlocked"}
+                        </h2>
+                        <p className="text-sm text-amber-100/80">
+                          XP +{rewardOverlay.xpAfter - rewardOverlay.xpBefore}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-center gap-3">
+                        {rewardOverlay.badges.map((badge) => (
+                          <motion.div
+                            key={badge.id}
+                            className="flex items-center gap-2 rounded-full border border-amber-200/30 bg-amber-50/5 px-3 py-2 shadow-inner"
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.25, ease: "easeOut" }}
+                          >
+                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-600 text-sm font-bold text-amber-950 shadow-[0_0_0_2px_rgba(255,255,255,0.15)]">
+                              {badge.kind === "year" ? badge.year : badge.term?.replace("Term ", "T")}
+                            </span>
+                            <div className="text-left">
+                              <p className="text-xs font-semibold text-amber-50">{badge.label}</p>
+                              <p className="text-[11px] text-amber-100/80">+{badge.xp} XP</p>
+                            </div>
+                          </motion.div>
+                        ))}
+                      </div>
+
+                      <div className="w-full max-w-2xl space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4 text-left shadow-inner">
+                        {levelStages.length > 0 ? (
+                          <AnimatePresence mode="wait">
+                            {rewardStage === "old" && levelStages[levelStageIndex] && (
+                              <motion.div
+                                key={`old-level-card-${rewardStepIndex}-${levelStageIndex}`}
+                                initial={{ opacity: 1, y: 0 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -12, scale: 0.98 }}
+                                transition={{ duration: 0.38, ease: "easeInOut" }}
+                                className="space-y-2"
+                              >
+                                {(() => {
+                                  const stage = levelStages[levelStageIndex]
+                                  const fromProgressStart = Math.max(
+                                    0,
+                                    Math.min(
+                                      1,
+                                      (stage.xpStart - stage.fromBounds.start) /
+                                        Math.max(1, stage.fromBounds.end - stage.fromBounds.start),
+                                    ),
+                                  )
+
+                                  return (
+                                    <>
+                                      <div className="flex items-center justify-between text-xs text-amber-100/80">
+                                        <span>Level {stage.fromLevel}</span>
+                                        <span>{stage.xpStart} XP</span>
+                                        <span>Next: {stage.fromBounds.end} XP</span>
+                                      </div>
+                                      <div className="h-3 overflow-hidden rounded-full bg-white/10">
+                                        <motion.div
+                                          className="h-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-500"
+                                          initial={{ width: `${Math.round(fromProgressStart * 100)}%` }}
+                                          animate={{ width: "100%" }}
+                                          transition={{ duration: 0.9, ease: "linear" }}
+                                        />
+                                      </div>
+                                    </>
+                                  )
+                                })()}
+                              </motion.div>
+                            )}
+
+                            {rewardStage === "unlock" && (
+                              <motion.div
+                                key={`unlock-chip-${rewardStepIndex}-${levelStageIndex}`}
+                                initial={{ opacity: 0, y: 12, scale: 0.95 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: -10, scale: 0.98 }}
+                                transition={{ duration: 0.46, ease: "easeOut" }}
+                                className="flex items-center justify-center gap-2 text-xs font-semibold text-amber-100"
+                              >
+                                <span className="inline-flex items-center gap-2 rounded-full bg-amber-500/15 px-3 py-2 text-amber-50 shadow-inner">
+                                  <motion.span
+                                    initial={{ rotate: -6, scale: 0.85 }}
+                                    animate={{ rotate: 0, scale: 1 }}
+                                    transition={{ type: "spring", stiffness: 320, damping: 18 }}
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-600 text-sm font-bold text-amber-950 shadow-[0_0_0_2px_rgba(255,255,255,0.15)]"
+                                  >
+                                    {renderRankIcon(rewardRankTier, "h-5 w-5")}
+                                  </motion.span>
+                                  <span>New level unlocked</span>
+                                </span>
+                              </motion.div>
+                            )}
+
+                            {rewardStage === "new" && levelStages[levelStageIndex] && (
+                              <motion.div
+                                key={`new-level-card-${rewardStepIndex}-${levelStageIndex}`}
+                                initial={{ opacity: 0, y: 14 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: 10 }}
+                                transition={{ duration: 0.48, ease: "easeOut" }}
+                                className="space-y-2"
+                              >
+                                {(() => {
+                                  const stage = levelStages[levelStageIndex]
+                                  const toProgressEnd = Math.max(
+                                    0,
+                                    Math.min(
+                                      1,
+                                      (stage.xpEnd - stage.toBounds.start) /
+                                        Math.max(1, stage.toBounds.end - stage.toBounds.start),
+                                    ),
+                                  )
+
+                                  return (
+                                    <>
+                                      <div className="flex items-center justify-between text-xs text-amber-100/80">
+                                        <span>Level {stage.toLevel}</span>
+                                        <span>{stage.xpEnd} XP</span>
+                                        <span>Next: {stage.toBounds.end} XP</span>
+                                      </div>
+                                      <div className="h-3 overflow-hidden rounded-full bg-white/10">
+                                        <motion.div
+                                          className="h-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-500"
+                                          initial={{ width: "0%" }}
+                                          animate={{ width: `${Math.round(toProgressEnd * 100)}%` }}
+                                          transition={{ duration: rewardOverlayProgress?.duration ?? 0.5, ease: "linear" }}
+                                        />
+                                      </div>
+                                    </>
+                                  )
+                                })()}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between text-xs text-amber-100/80">
+                              <span>Level {rewardOverlay.levelAfter.level}</span>
+                              <span>
+                                {rewardOverlay.xpBefore} XP → {rewardOverlay.xpAfter} XP
+                              </span>
+                              <span>Next: {rewardOverlay.levelAfter.next} XP</span>
+                            </div>
+                            <div className="h-3 overflow-hidden rounded-full bg-white/10">
+                              <motion.div
+                                className="h-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-500"
+                                initial={{ width: rewardOverlayProgress?.frames?.[0] ?? "0%" }}
+                                animate={{ width: rewardOverlayProgress?.frames ?? ["0%", "0%"] }}
+                                transition={{
+                                  duration: rewardOverlayProgress?.duration ?? 0.5,
+                                  ease: "linear",
+                                  times: rewardOverlayProgress?.times,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {showContinueHint && (
+                        <motion.p
+                          className="text-xs uppercase tracking-[0.25em] text-amber-200/70"
+                          animate={{ opacity: [0.35, 1, 0.35] }}
+                          transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                        >
+                          Click anywhere to continue
+                        </motion.p>
+                      )}
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>,
+            document.body,
+          )}
+        <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
         <div className="mb-6 mt-4">
           <QuickNavigation />
         </div>
 
         <div className="p-4 md:p-6 lg:p-8 w-full max-w-[95rem] mx-auto font-sans">
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <h1 className="text-2xl md:text-3xl font-bold text-center">Course Tracker</h1>
           <ThemeToggle />
         </div>

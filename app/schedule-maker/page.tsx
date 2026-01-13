@@ -962,6 +962,7 @@ export default function ScheduleMaker() {
   const [regularStudentDetected, setRegularStudentDetected] = useState(false)
   const [regularStudentNoticeOpen, setRegularStudentNoticeOpen] = useState(false)
   const [regularStudentNoticeDontShowAgain, setRegularStudentNoticeDontShowAgain] = useState(false)
+  const [regularStudentNoticeDismissedSession, setRegularStudentNoticeDismissedSession] = useState(false)
 
   const [sameSectionFeatureEnabled, setSameSectionFeatureEnabled] = useState(true)
   const [rememberSameSectionAddDecision, setRememberSameSectionAddDecision] = useState<"confirm" | null>(null)
@@ -1191,6 +1192,7 @@ export default function ScheduleMaker() {
 
   const closeRegularStudentNotice = useCallback(() => {
     setRegularStudentNoticeOpen(false)
+    setRegularStudentNoticeDismissedSession(true)
     if (regularStudentNoticeDontShowAgain) {
       persistScheduleMakerPreferences({ regularStudentNoticeDismissed: true })
     }
@@ -1353,16 +1355,25 @@ export default function ScheduleMaker() {
   }, [persistScheduleMakerPreferences, scheduleMakerPrefsLoaded])
 
   useEffect(() => {
+    if (!scheduleMakerPrefsLoaded) return
     if (!hasTrackerProgress) return
     const isRegular = detectRegularStudent()
     setRegularStudentDetected(isRegular)
 
     if (!isRegular) return
     if (regularStudentNoticeDontShowAgain) return
+    if (regularStudentNoticeDismissedSession) return
     if (regularStudentNoticeOpen) return
 
     setRegularStudentNoticeOpen(true)
-  }, [detectRegularStudent, hasTrackerProgress, regularStudentNoticeDontShowAgain, regularStudentNoticeOpen])
+  }, [
+    detectRegularStudent,
+    hasTrackerProgress,
+    regularStudentNoticeDismissedSession,
+    regularStudentNoticeDontShowAgain,
+    regularStudentNoticeOpen,
+    scheduleMakerPrefsLoaded,
+  ])
 
   useEffect(() => {
     if (suppressHistoryRef.current) {

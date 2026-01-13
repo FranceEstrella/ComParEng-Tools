@@ -1,8 +1,8 @@
 "use client"
 
 import Link from "next/link"
-import { useState, useEffect, useRef } from "react"
-import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X, ArrowUp } from "lucide-react"
+import { useState, useEffect, useRef, useMemo, useCallback } from "react"
+import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X, ArrowUp, Palette, Sparkles, Trophy, Medal, Award, Pencil, ArrowLeft, Check } from "lucide-react"
 import PatchNotesButton from "@/components/patch-notes"
 import { ThemeProvider } from "@/components/theme-provider"
 import { useTheme } from "next-themes"
@@ -12,7 +12,10 @@ import { AnimatePresence, motion } from "framer-motion"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import Spinner from "@/components/ui/spinner"
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -22,6 +25,8 @@ import NonCpeNotice, { markNonCpeNoticeDismissed } from "@/components/non-cpe-no
 import FeedbackDialog from "@/components/feedback-dialog"
 import OnboardingDialog from "@/components/onboarding-dialog"
 import { trackAnalyticsEvent } from "@/lib/analytics-client"
+import { loadCourseStatuses } from "@/lib/course-storage"
+import { Progress } from "@/components/ui/progress"
 
 const PROGRAMS = [
   "Computer Engineering",
@@ -34,9 +39,211 @@ const PROGRAMS = [
   "Multimedia & Arts",
 ]
 
+type TermName = "Term 1" | "Term 2" | "Term 3"
+
+interface ProfileCardState {
+  name: string
+  program: string
+  year: number
+  expectedGraduation: string | null
+  cardColor: string
+}
+
+type BadgeKind = "term" | "year"
+
+interface BadgeMeta {
+  id: string
+  kind: BadgeKind
+  year: number
+  term?: TermName
+  label: string
+  xp: number
+}
+
+interface ProgressOverview {
+  total: number
+  passed: number
+  active: number
+  pending: number
+  percentage: number
+}
+
+interface LevelInfo {
+  level: number
+  current: number
+  currentStart: number
+  next: number
+  progress: number
+}
+
+interface RankTier {
+  name: string
+  range: [number, number]
+  gradient: string
+  accent: string
+  text: string
+}
+
+const PROFILE_STORAGE_KEY = "courseTracker.profile.v1"
+const GAMIFICATION_STORAGE_KEY = "courseTracker.gamification.v1"
+const TERM_SEQUENCE: TermName[] = ["Term 1", "Term 2", "Term 3"]
+
+const TERM_BADGE_XP_BY_YEAR: Record<number, number> = {
+  1: 600,
+  2: 900,
+  3: 1200,
+  4: 1700,
+}
+
+const YEAR_BADGE_XP_BY_YEAR: Record<number, number> = {
+  1: 1800,
+  2: 2000,
+  3: 2300,
+  4: 3200,
+}
+
+const LEVEL_THRESHOLDS = [0, 1000, 2500, 5000, 8000, 11000]
+const LEVEL_STEP = 2500
+
+const RANK_TIERS: RankTier[] = [
+  {
+    name: "Pathfinder",
+    range: [1, 2],
+    gradient: "linear-gradient(135deg, #0f172a 0%, #0ea5e9 50%, #22c55e 100%)",
+    accent: "#22c55e",
+    text: "#e0f2fe",
+  },
+  {
+    name: "Vanguard",
+    range: [3, 4],
+    gradient: "linear-gradient(135deg, #1e1b4b 0%, #6366f1 45%, #c084fc 100%)",
+    accent: "#a78bfa",
+    text: "#ede9fe",
+  },
+  {
+    name: "Luminary",
+    range: [5, 6],
+    gradient: "linear-gradient(135deg, #451a03 0%, #f59e0b 40%, #f97316 100%)",
+    accent: "#fbbf24",
+    text: "#fff7ed",
+  },
+  {
+    name: "Legend",
+    range: [7, Number.POSITIVE_INFINITY],
+    gradient: "linear-gradient(135deg, #2d1b69 0%, #fb7185 40%, #facc15 100%)",
+    accent: "#fcd34d",
+    text: "#fff7ed",
+  },
+]
+
+const PROFILE_COLOR_OPTIONS: { id: string; label: string; value: string }[] = [
+  { id: "midnight", label: "Midnight Pulse", value: "linear-gradient(135deg, #0f172a 0%, #312e81 50%, #7c3aed 100%)" },
+  { id: "ember", label: "Ember Fade", value: "linear-gradient(135deg, #2d1b69 0%, #7c2d12 45%, #f97316 100%)" },
+  { id: "aurora", label: "Aurora Mint", value: "linear-gradient(135deg, #0f172a 0%, #0ea5e9 45%, #22c55e 100%)" },
+  { id: "rose", label: "Rose Velvet", value: "linear-gradient(135deg, #2d1b69 0%, #be185d 45%, #ec4899 100%)" },
+  { id: "slate", label: "Slate Frost", value: "linear-gradient(135deg, #0f172a 0%, #1f2937 45%, #9ca3af 100%)" },
+]
+
+const DEFAULT_PROFILE_CARD: ProfileCardState = {
+  name: "",
+  program: "",
+  year: 1,
+  expectedGraduation: null,
+  cardColor: PROFILE_COLOR_OPTIONS[0].value,
+}
+
+const getBadgeXp = (kind: BadgeKind, year?: number) => {
+  if (!year || !Number.isFinite(year)) return 0
+  return kind === "year" ? YEAR_BADGE_XP_BY_YEAR[year] ?? 0 : TERM_BADGE_XP_BY_YEAR[year] ?? 0
+}
+
+const getBadgeFromId = (id: string): BadgeMeta | null => {
+  if (id.startsWith("year-")) {
+    const year = Number.parseInt(id.replace("year-", ""), 10)
+    if (!Number.isFinite(year)) return null
+    return { id, kind: "year", year, label: `Year ${year} Complete`, xp: getBadgeXp("year", year) }
+  }
+
+  if (id.startsWith("term-")) {
+    const [, yearStr, ...rest] = id.split("-")
+    const term = rest.join("-") as TermName
+    const year = Number.parseInt(yearStr, 10)
+    if (!Number.isFinite(year) || !term) return null
+    return { id, kind: "term", year, term, label: `${term} Complete`, xp: getBadgeXp("term", year) }
+  }
+
+  return null
+}
+
+const calculateLevelInfo = (xp: number): LevelInfo => {
+  const safeXp = Math.max(0, xp)
+  let level = 1
+  let currentStart = LEVEL_THRESHOLDS[0]
+  let next = LEVEL_THRESHOLDS[1] ?? LEVEL_STEP
+
+  for (let i = 0; i < LEVEL_THRESHOLDS.length; i += 1) {
+    const start = LEVEL_THRESHOLDS[i]
+    const end = LEVEL_THRESHOLDS[i + 1]
+    if (safeXp < (end ?? Number.POSITIVE_INFINITY)) {
+      level = i + 1
+      currentStart = start
+      next = end ?? start + LEVEL_STEP
+      break
+    }
+    if (i === LEVEL_THRESHOLDS.length - 1) {
+      const offset = safeXp - start
+      const extraLevels = Math.floor(offset / LEVEL_STEP)
+      level = LEVEL_THRESHOLDS.length + extraLevels
+      currentStart = start + extraLevels * LEVEL_STEP
+      next = currentStart + LEVEL_STEP
+    }
+  }
+
+  const current = safeXp - currentStart
+  const span = Math.max(1, next - currentStart)
+
+  return {
+    level,
+    current,
+    currentStart,
+    next,
+    progress: Math.min(1, Math.max(0, current / span)),
+  }
+}
+
+const getRankTier = (level: number): RankTier => {
+  const match = RANK_TIERS.find((tier) => level >= tier.range[0] && level <= tier.range[1])
+  return match ?? RANK_TIERS[RANK_TIERS.length - 1]
+}
+
+const summarizeProgress = (courses: any[]): ProgressOverview => {
+  const total = Array.isArray(courses) ? courses.length : 0
+  const passed = Array.isArray(courses) ? courses.filter((c) => c?.status === "passed").length : 0
+  const active = Array.isArray(courses) ? courses.filter((c) => c?.status === "active").length : 0
+  const pending = Array.isArray(courses) ? courses.filter((c) => c?.status === "pending").length : 0
+  const percentage = total > 0 ? Math.round((passed / total) * 100) : 0
+
+  return { total, passed, active, pending, percentage }
+}
+
+const areProfilesEqual = (a: ProfileCardState, b: ProfileCardState) =>
+  a.name === b.name &&
+  a.program === b.program &&
+  a.year === b.year &&
+  a.expectedGraduation === b.expectedGraduation &&
+  a.cardColor === b.cardColor
+
 export default function Home() {
   const { theme, setTheme } = useTheme()
   // Feedback state (popup in Patch Notes)
+  const [profileCard, setProfileCard] = useState<ProfileCardState>(DEFAULT_PROFILE_CARD)
+  const [fullProfileDialogOpen, setFullProfileDialogOpen] = useState(false)
+  const [profileEditorVisible, setProfileEditorVisible] = useState(false)
+  const [profileDraft, setProfileDraft] = useState<ProfileCardState>(DEFAULT_PROFILE_CARD)
+  const profileBaselineRef = useRef<ProfileCardState | null>(null)
+  const [profileDirty, setProfileDirty] = useState(false)
+  const [profileBackHover, setProfileBackHover] = useState(false)
+  const [profilePreviewOpen, setProfilePreviewOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [feedbackHistory, setFeedbackHistory] = useState<any[]>([])
   const [toastMessage, setToastMessage] = useState("")
@@ -57,11 +264,47 @@ export default function Home() {
   const [programIndex, setProgramIndex] = useState(0)
   const [isDeleting, setIsDeleting] = useState(false)
   const [showJumpButton, setShowJumpButton] = useState(false)
+  const [gamificationSnapshot, setGamificationSnapshot] = useState<{ xp: number; unlockedBadges: string[] }>(
+    () => ({ xp: 0, unlockedBadges: [] }),
+  )
+  const [progressOverview, setProgressOverview] = useState<ProgressOverview | null>(null)
+  const profileHoverOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const profileHoverCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fullProfileCardRef = useRef<HTMLDivElement | null>(null)
 
   const scrollToPageTop = () => {
     if (typeof window === "undefined") return
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
+
+  const refreshGamificationSnapshot = useCallback(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = window.localStorage.getItem(GAMIFICATION_STORAGE_KEY)
+      if (!stored) {
+        setGamificationSnapshot({ xp: 0, unlockedBadges: [] })
+        return
+      }
+      const parsed = JSON.parse(stored)
+      const xp = Number.isFinite(parsed?.xp) ? Math.max(0, parsed.xp) : 0
+      const unlockedBadges = Array.isArray(parsed?.unlockedBadges)
+        ? parsed.unlockedBadges.filter((id: unknown) => typeof id === "string")
+        : []
+      setGamificationSnapshot({ xp, unlockedBadges })
+    } catch {
+      setGamificationSnapshot({ xp: 0, unlockedBadges: [] })
+    }
+  }, [])
+
+  const refreshProgressOverview = useCallback(() => {
+    if (typeof window === "undefined") return
+    const stored = loadCourseStatuses()
+    if (Array.isArray(stored)) {
+      setProgressOverview(summarizeProgress(stored))
+    } else {
+      setProgressOverview(null)
+    }
+  }, [])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -108,6 +351,99 @@ export default function Home() {
   }, [])
 
   useEffect(() => {
+    refreshGamificationSnapshot()
+    refreshProgressOverview()
+  }, [refreshGamificationSnapshot, refreshProgressOverview])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = localStorage.getItem(PROFILE_STORAGE_KEY)
+      if (!stored) return
+      const parsed = JSON.parse(stored)
+      setProfileCard((prev) => ({
+        ...prev,
+        name: typeof parsed?.name === "string" ? parsed.name : prev.name,
+        program: typeof parsed?.program === "string" ? parsed.program : prev.program,
+        year: Number.isFinite(parsed?.year) ? parsed.year : prev.year,
+        expectedGraduation:
+          typeof parsed?.expectedGraduation === "string" || parsed?.expectedGraduation === null
+            ? parsed.expectedGraduation
+            : prev.expectedGraduation,
+        cardColor:
+          typeof parsed?.cardColor === "string" && parsed.cardColor.trim().length > 0
+            ? parsed.cardColor
+            : prev.cardColor,
+      }))
+    } catch {
+      // ignore profile hydration errors
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profileCard))
+    } catch {
+      // ignore profile persistence errors
+    }
+  }, [profileCard])
+
+  useEffect(() => {
+    const handleProfileStorage = (event: StorageEvent) => {
+      if (event.key !== PROFILE_STORAGE_KEY || !event.newValue) return
+      try {
+        const parsed = JSON.parse(event.newValue)
+        setProfileCard((prev) => ({
+          ...prev,
+          name: typeof parsed?.name === "string" ? parsed.name : prev.name,
+          program: typeof parsed?.program === "string" ? parsed.program : prev.program,
+          year: Number.isFinite(parsed?.year) ? parsed.year : prev.year,
+          expectedGraduation:
+            typeof parsed?.expectedGraduation === "string" || parsed?.expectedGraduation === null
+              ? parsed.expectedGraduation
+              : prev.expectedGraduation,
+          cardColor:
+            typeof parsed?.cardColor === "string" && parsed.cardColor.trim().length > 0
+              ? parsed.cardColor
+              : prev.cardColor,
+        }))
+      } catch {
+        // ignore
+      }
+    }
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("storage", handleProfileStorage)
+      return () => window.removeEventListener("storage", handleProfileStorage)
+    }
+
+    return () => undefined
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === GAMIFICATION_STORAGE_KEY) {
+        refreshGamificationSnapshot()
+      }
+      if (event.key === "courseStatuses") {
+        refreshProgressOverview()
+      }
+    }
+
+    window.addEventListener("storage", handleStorage)
+    return () => window.removeEventListener("storage", handleStorage)
+  }, [refreshGamificationSnapshot, refreshProgressOverview])
+
+  useEffect(() => {
+    if (profileEditorVisible) return
+    setProfileDraft(profileCard)
+    profileBaselineRef.current = profileCard
+    setProfileDirty(false)
+  }, [profileCard, profileEditorVisible])
+
+  useEffect(() => {
     if (!toastMessage) return
     const t = setTimeout(() => {
       setToastMessage("")
@@ -115,6 +451,38 @@ export default function Home() {
     }, 3000)
     return () => clearTimeout(t)
   }, [toastMessage])
+
+  useEffect(() => {
+    if (!fullProfileDialogOpen) return
+    refreshGamificationSnapshot()
+    refreshProgressOverview()
+    if (typeof document !== "undefined") {
+      const previousOverflow = document.body.style.overflow
+      document.body.style.overflow = "hidden"
+
+      const handleKeyDown = (event: KeyboardEvent) => {
+        if (event.key === "Escape") {
+          setFullProfileDialogOpen(false)
+        }
+      }
+
+      const focusTarget = fullProfileCardRef.current
+      if (focusTarget) {
+        focusTarget.focus()
+      }
+
+      window.addEventListener("keydown", handleKeyDown)
+      return () => {
+        document.body.style.overflow = previousOverflow
+        window.removeEventListener("keydown", handleKeyDown)
+      }
+    }
+  }, [fullProfileDialogOpen, refreshGamificationSnapshot, refreshProgressOverview])
+
+  useEffect(() => {
+    if (fullProfileDialogOpen) return
+    setProfileEditorVisible(false)
+  }, [fullProfileDialogOpen])
 
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout> | null = null
@@ -198,6 +566,8 @@ export default function Home() {
   useEffect(() => {
     return () => {
       if (extensionHideTimer.current) clearTimeout(extensionHideTimer.current)
+      if (profileHoverOpenTimer.current) clearTimeout(profileHoverOpenTimer.current)
+      if (profileHoverCloseTimer.current) clearTimeout(profileHoverCloseTimer.current)
     }
   }, [])
 
@@ -252,6 +622,105 @@ export default function Home() {
     }
   }
 
+  const profileName = profileCard.name.trim() || "Set your profile"
+  const profileProgram = profileCard.program.trim() || "Add your program"
+  const profileInitials = (profileCard.name || "").trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "CT"
+  const profileAccent = profileCard.cardColor || DEFAULT_PROFILE_CARD.cardColor
+  const profileAccentDraft = profileDraft.cardColor || DEFAULT_PROFILE_CARD.cardColor
+  const profileDraftName = profileDraft.name.trim() || profileName
+  const profileDraftProgram = profileDraft.program.trim() || profileProgram
+  const profileDraftInitials = (profileDraft.name || "").trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || profileInitials
+
+  const markProfileDirty = useCallback(
+    (next: ProfileCardState) => {
+      const baseline = profileBaselineRef.current ?? profileCard
+      setProfileDirty(!areProfilesEqual(next, baseline))
+    },
+    [profileCard],
+  )
+
+  const handleSaveProfile = useCallback(() => {
+    const next: ProfileCardState = {
+      ...profileDraft,
+      name: profileDraft.name.trim() || DEFAULT_PROFILE_CARD.name,
+      program: profileDraft.program.trim() || DEFAULT_PROFILE_CARD.program,
+    }
+    setProfileDraft(next)
+    setProfileCard(next)
+    profileBaselineRef.current = next
+    setProfileDirty(false)
+  }, [profileDraft])
+
+  const openProfileEditor = useCallback(() => {
+    profileBaselineRef.current = profileCard
+    setProfileDraft(profileCard)
+    setProfileDirty(false)
+    setProfileEditorVisible(true)
+  }, [profileCard])
+
+  const handleBackFromEditor = useCallback(() => {
+    if (profileDirty) {
+      handleSaveProfile()
+    }
+    setProfileEditorVisible(false)
+  }, [handleSaveProfile, profileDirty])
+
+  const levelInfo = useMemo(() => calculateLevelInfo(gamificationSnapshot.xp), [gamificationSnapshot.xp])
+  const rankTier = useMemo(() => getRankTier(levelInfo.level), [levelInfo.level])
+  const unlockedBadges = useMemo(() => {
+    const termOrder = (term?: TermName) => (term ? TERM_SEQUENCE.indexOf(term) : 0)
+    return gamificationSnapshot.unlockedBadges
+      .map(getBadgeFromId)
+      .filter((badge): badge is BadgeMeta => Boolean(badge))
+      .sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === "term" ? -1 : 1
+        if (a.kind === "term" && b.kind === "term") {
+          if (a.year !== b.year) return a.year - b.year
+          return termOrder(a.term) - termOrder(b.term)
+        }
+        return a.year - b.year
+      })
+  }, [gamificationSnapshot.unlockedBadges])
+  const completionPercent = progressOverview?.percentage ?? 0
+  const xpToNextLevel = Math.max(0, levelInfo.next - gamificationSnapshot.xp)
+  const expectedGradLabel = profileCard.expectedGraduation ?? "Not set (auto from Academic Planner)"
+  const progressTotals = {
+    total: progressOverview?.total ?? 0,
+    passed: progressOverview?.passed ?? 0,
+    active: progressOverview?.active ?? 0,
+    pending: progressOverview?.pending ?? 0,
+  }
+
+  const scheduleProfileOpen = () => {
+    if (profileHoverCloseTimer.current) clearTimeout(profileHoverCloseTimer.current)
+    if (profileHoverOpenTimer.current) clearTimeout(profileHoverOpenTimer.current)
+    profileHoverOpenTimer.current = setTimeout(() => setProfilePreviewOpen(true), 40)
+  }
+
+  const scheduleProfileClose = () => {
+    if (profileHoverOpenTimer.current) clearTimeout(profileHoverOpenTimer.current)
+    if (profileHoverCloseTimer.current) clearTimeout(profileHoverCloseTimer.current)
+    profileHoverCloseTimer.current = setTimeout(() => setProfilePreviewOpen(false), 140)
+  }
+
+  const handleProfileClick = () => {
+    if (profileHoverOpenTimer.current) clearTimeout(profileHoverOpenTimer.current)
+    if (profileHoverCloseTimer.current) clearTimeout(profileHoverCloseTimer.current)
+    setProfilePreviewOpen(false)
+    setFullProfileDialogOpen(true)
+    setProfileEditorVisible(false)
+  }
+
   // Feedback logic moved to FeedbackDialog component; keep toast helpers intact for other uses
 
   return (
@@ -293,33 +762,492 @@ export default function Home() {
           <div className="max-w-5xl mx-auto">
             {/* Header with Dark Mode Toggle */}
             <div className="relative mb-8 text-center md:pt-12">
-              {/* Keep actions above the title and prevent overlap on small screens */}
-              <div className="flex justify-center md:justify-end items-center gap-2 mb-4 md:mb-0 md:absolute md:right-0 md:top-0">
-                <Button
-                  variant="outline"
-                  className="bg-white/80 text-slate-900 border-slate-300 hover:bg-white dark:bg-white/10 dark:text-white dark:border-white/40 dark:hover:bg-white/20"
-                  onClick={() => {
-                    trackAnalyticsEvent("onboarding.open", { source: "button" })
-                    setOnboardingOpen(true)
-                  }}
-                >
-                  Start Onboarding
-                </Button>
-                <PatchNotesButton autoOpenOnce={shouldAutoOpenWhatsNew} buttonLabel="What's New" />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => {
-                    const nextTheme = theme === "dark" ? "light" : "dark"
-                    trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "home" })
-                    setTheme(nextTheme)
-                  }}
-                  aria-label="Toggle theme"
-                  className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
-                >
-                  <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-                  <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
-                </Button>
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div className="flex items-start gap-3">
+                  <Popover open={profilePreviewOpen} onOpenChange={setProfilePreviewOpen}>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="relative flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-white/30 bg-slate-900/70 text-sm font-semibold uppercase text-white shadow-lg ring-2 ring-white/40 transition hover:-translate-y-[1px] hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/80 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+                        style={{ textShadow: "0 0 6px rgba(0,0,0,0.55)" }}
+                        style={{ background: profileAccent }}
+                        aria-label={`Open profile preview for ${profileName}`}
+                        onMouseEnter={scheduleProfileOpen}
+                        onMouseLeave={scheduleProfileClose}
+                        onFocus={scheduleProfileOpen}
+                        onBlur={scheduleProfileClose}
+                        onClick={handleProfileClick}
+                      >
+                        <span className="pointer-events-none absolute inset-0 bg-gradient-to-br from-black/25 via-black/0 to-white/10 opacity-80" />
+                        <span className="relative drop-shadow-sm">{profileInitials}</span>
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="start"
+                      side="bottom"
+                      className="w-72 border-0 bg-transparent shadow-none p-0"
+                      onMouseEnter={scheduleProfileOpen}
+                      onMouseLeave={scheduleProfileClose}
+                      onClick={() => {
+                        setProfilePreviewOpen(false)
+                        setFullProfileDialogOpen(true)
+                        setProfileEditorVisible(false)
+                      }}
+                    >
+                      <div
+                        className="rounded-2xl border border-white/15 p-4 text-white shadow-xl ring-1 ring-white/15"
+                        style={{ background: profileAccent }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/15 text-base font-semibold uppercase tracking-wide ring-2 ring-white/50 shadow-inner">
+                            {profileInitials}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] uppercase tracking-[0.22em] text-white/70">Profile</p>
+                            <p className="truncate text-lg font-semibold leading-tight">{profileName}</p>
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-white/85">
+                              <span className="truncate">{profileProgram}</span>
+                              <span className="opacity-70">•</span>
+                              <span>Year {profileCard.year}</span>
+                              {profileCard.expectedGraduation && (
+                                <Badge variant="secondary" className="bg-white/25 text-white hover:bg-white/30">
+                                  Grad {profileCard.expectedGraduation}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+
+                    <AnimatePresence>
+                      {fullProfileDialogOpen && (
+                        <motion.div
+                          className="fixed inset-0 z-[12000]"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.18, ease: "easeOut" }}
+                        >
+                          <div
+                            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+                            onClick={() => {
+                              setFullProfileDialogOpen(false)
+                              setProfileEditorVisible(false)
+                            }}
+                            aria-hidden
+                          />
+                          <motion.div
+                            className="absolute left-1/2 top-1/2 w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 px-4 sm:px-0"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.18, ease: "easeOut" }}
+                          >
+                            <div
+                              ref={fullProfileCardRef}
+                              role="dialog"
+                              aria-modal="true"
+                              aria-labelledby="full-profile-title"
+                              className="relative max-h-[85vh] overflow-y-auto overflow-x-visible rounded-3xl border border-slate-200/80 bg-white text-slate-900 shadow-2xl ring-1 ring-black/10 outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-white dark:ring-white/10"
+                              tabIndex={-1}
+                            >
+                              <div className="sticky top-0 z-10 h-1 w-full bg-gradient-to-r from-transparent via-white/60 to-transparent dark:via-slate-900/60" />
+                              <div className="absolute inset-0" style={{ background: rankTier.gradient }} />
+                              <div className="absolute inset-0 bg-gradient-to-br from-black/35 via-black/25 to-white/10" />
+                              <motion.div
+                                className="relative flex flex-col gap-4 p-5 sm:p-6"
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                transition={{ duration: 0.18, ease: "easeOut" }}
+                              >
+                              <div className="relative overflow-hidden">
+                                <motion.div
+                                  className="flex w-full"
+                                  animate={{ x: profileEditorVisible ? "-100%" : "0%" }}
+                                  transition={{ duration: 0.32, ease: [0.4, 0, 0.2, 1] }}
+                                >
+                                  <div className="w-full shrink-0 space-y-4">
+                                    <div className="flex items-start justify-between gap-4">
+                                      <div className="flex items-start gap-4">
+                                        <div
+                                          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-base font-semibold uppercase tracking-wide ring-2 ring-white/60 shadow-inner ml-1 mt-1 text-white"
+                                          style={{ background: profileAccent, textShadow: "0 0 6px rgba(0,0,0,0.55)" }}
+                                        >
+                                          {profileInitials}
+                                        </div>
+                                        <div className="min-w-0 space-y-1 text-left">
+                                          <p className="text-[11px] uppercase tracking-[0.22em] text-white/80">Profile overview</p>
+                                          <p id="full-profile-title" className="truncate text-xl font-semibold leading-tight text-white">
+                                            {profileName}
+                                          </p>
+                                          <p className="truncate text-sm text-white/90">{profileProgram}</p>
+                                          <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-white/85">
+                                            <Badge variant="secondary" className="bg-white/20 text-white hover:bg-white/25">
+                                              Year {profileCard.year}
+                                            </Badge>
+                                            <Badge variant="secondary" className="bg-white/20 text-white hover:bg-white/25">
+                                              Rank: {rankTier.name}
+                                            </Badge>
+                                            {profileCard.expectedGraduation && (
+                                              <Badge variant="secondary" className="bg-white/20 text-white hover:bg-white/25">
+                                                Grad {profileCard.expectedGraduation}
+                                              </Badge>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <Button
+                                          type="button"
+                                          size="icon"
+                                          variant="secondary"
+                                          className="h-9 w-9 rounded-full bg-white text-slate-900 shadow hover:bg-white/90 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                                          onClick={openProfileEditor}
+                                          aria-label="Edit profile"
+                                        >
+                                          <motion.div
+                                            animate={{ rotate: profileEditorVisible ? 20 : 0, scale: profileEditorVisible ? 0.92 : 1 }}
+                                            transition={{ duration: 0.2, ease: "easeInOut" }}
+                                          >
+                                            <Pencil className="h-4 w-4" />
+                                          </motion.div>
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-9 w-9 rounded-full bg-black/10 text-white hover:bg-black/20"
+                                          onClick={() => {
+                                            setFullProfileDialogOpen(false)
+                                            setProfileEditorVisible(false)
+                                          }}
+                                          aria-label="Close"
+                                        >
+                                          <X className="h-4 w-4" />
+                                        </Button>
+                                      </div>
+                                    </div>
+
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                      <Card className="shadow-sm">
+                                        <CardHeader className="pb-2 text-left">
+                                          <CardTitle className="flex items-center gap-2 text-base">
+                                            <Trophy className="h-4 w-4 text-amber-500" />
+                                            Progress & rank
+                                          </CardTitle>
+                                          <CardDescription>Current XP and level</CardDescription>
+                                        </CardHeader>
+                                        <CardContent className="space-y-3 text-left">
+                                          <div className="flex items-center justify-between text-sm font-medium">
+                                            <span>Level {levelInfo.level}</span>
+                                            <span className="text-muted-foreground">{Math.round(levelInfo.progress * 100)}%</span>
+                                          </div>
+                                          <Progress value={Math.round(levelInfo.progress * 100)} className="bg-slate-200 dark:bg-slate-800">
+                                            <div
+                                              className="h-full w-full flex-1 rounded-full"
+                                              style={{
+                                                transform: `translateX(-${100 - Math.round(levelInfo.progress * 100)}%)`,
+                                                background: rankTier.accent,
+                                              }}
+                                            />
+                                          </Progress>
+                                          <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                            <span>{gamificationSnapshot.xp.toLocaleString()} XP</span>
+                                            <span>{xpToNextLevel.toLocaleString()} XP to next</span>
+                                          </div>
+                                        </CardContent>
+                                      </Card>
+
+                                      <Card className="shadow-sm">
+                                        <CardHeader className="pb-2 text-left">
+                                          <CardTitle className="flex items-center gap-2 text-base">
+                                            <Medal className="h-4 w-4 text-emerald-500" />
+                                            Academic progress
+                                          </CardTitle>
+                                          <CardDescription>Syncs from Course Tracker</CardDescription>
+                                        </CardHeader>
+                                        <CardContent className="space-y-3 text-left">
+                                          <div className="flex items-center justify-between text-sm font-medium">
+                                            <span>Overall completion</span>
+                                            <span>{completionPercent}%</span>
+                                          </div>
+                                          <Progress value={completionPercent} className="bg-slate-200 dark:bg-slate-800">
+                                            <div
+                                              className="h-full w-full flex-1 rounded-full"
+                                              style={{
+                                                transform: `translateX(-${100 - completionPercent}%)`,
+                                                background: profileAccent,
+                                              }}
+                                            />
+                                          </Progress>
+                                          <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                                            <div className="rounded-md bg-slate-100 px-2 py-1 dark:bg-slate-900/60">
+                                              <p className="font-semibold text-slate-900 dark:text-white">{progressTotals.passed}</p>
+                                              <p className="text-[11px]">Passed</p>
+                                            </div>
+                                            <div className="rounded-md bg-slate-100 px-2 py-1 dark:bg-slate-900/60">
+                                              <p className="font-semibold text-slate-900 dark:text-white">{progressTotals.active}</p>
+                                              <p className="text-[11px]">Active</p>
+                                            </div>
+                                            <div className="rounded-md bg-slate-100 px-2 py-1 dark:bg-slate-900/60">
+                                              <p className="font-semibold text-slate-900 dark:text-white">{progressTotals.pending}</p>
+                                              <p className="text-[11px]">Pending</p>
+                                            </div>
+                                          </div>
+                                          <div className="text-sm font-medium text-slate-900 dark:text-white">
+                                            Estimated graduation: <span className="font-semibold">{expectedGradLabel}</span>
+                                          </div>
+                                        </CardContent>
+                                      </Card>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-200 bg-white/80 p-4 shadow-sm text-left dark:border-slate-800 dark:bg-slate-900/60">
+                                      <div className="flex items-center gap-2 pb-3">
+                                        <Award className="h-4 w-4 text-indigo-500" />
+                                        <div className="flex items-baseline gap-2">
+                                          <p className="text-base font-semibold">Badges earned</p>
+                                          <span className="text-xs text-muted-foreground">{unlockedBadges.length} total</span>
+                                        </div>
+                                      </div>
+                                      {unlockedBadges.length > 0 ? (
+                                        <div className="grid gap-2 sm:grid-cols-2">
+                                          {unlockedBadges.map((badge) => (
+                                            <div
+                                              key={badge.id}
+                                              className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm transition hover:-translate-y-[1px] hover:shadow-sm dark:border-slate-800 dark:bg-slate-900/60"
+                                            >
+                                              <div className="min-w-0">
+                                                <p className="truncate font-semibold text-slate-900 dark:text-white">{badge.label}</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                  Year {badge.year}
+                                                  {badge.term ? ` • ${badge.term}` : ""}
+                                                </p>
+                                              </div>
+                                              <Badge variant="secondary" className="bg-slate-900 text-white shadow-sm dark:bg-white/15 dark:text-white">
+                                                +{badge.xp} XP
+                                              </Badge>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <p className="text-sm text-muted-foreground">
+                                          Earn badges by completing terms and years inside Course Tracker. Your badges and XP sync here automatically.
+                                        </p>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="w-full shrink-0 space-y-4">
+                                    <div className="flex items-start justify-between gap-4">
+                                      <div className="space-y-1 text-left">
+                                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/80">Profile settings</p>
+                                        <p className="truncate text-xl font-semibold leading-tight text-white">{profileName}</p>
+                                        <p className="text-sm text-white/90">Update your badge identity without leaving this view.</p>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <Button
+                                          type="button"
+                                          size="icon"
+                                          variant="secondary"
+                                          className="h-9 w-9 rounded-full bg-white text-slate-900 shadow hover:bg-white/90 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                                          onMouseEnter={() => setProfileBackHover(true)}
+                                          onMouseLeave={() => setProfileBackHover(false)}
+                                          onClick={handleBackFromEditor}
+                                          aria-label={profileDirty ? "Save and go back" : "Back to profile overview"}
+                                        >
+                                          <motion.div
+                                            animate={{ rotate: profileDirty && profileBackHover ? 180 : 0, scale: profileDirty && profileBackHover ? 0.96 : 1 }}
+                                            transition={{ duration: 0.2, ease: "easeInOut" }}
+                                          >
+                                            {profileDirty && profileBackHover ? <Check className="h-4 w-4" /> : <ArrowLeft className="h-4 w-4" />}
+                                          </motion.div>
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="icon"
+                                          variant="ghost"
+                                          className="h-9 w-9 rounded-full bg-black/10 text-white hover:bg-black/20"
+                                          onClick={() => {
+                                            setFullProfileDialogOpen(false)
+                                            setProfileEditorVisible(false)
+                                          }}
+                                          aria-label="Close"
+                                        >
+                                          <X className="h-4 w-4" />
+                                        </Button>
+                                      </div>
+                                    </div>
+
+                                    <div
+                                      className="rounded-2xl border border-slate-200/50 bg-slate-900/80 p-4 text-white shadow-inner ring-1 ring-white/10 dark:border-slate-700/60 text-left"
+                                      style={{ background: profileAccentDraft }}
+                                    >
+                                      <div className="flex items-center gap-3">
+                                        <div
+                                          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/10 text-base font-semibold uppercase tracking-wide ring-2 ring-white/50 shadow-inner ml-1 mt-1 text-white"
+                                          style={{ textShadow: "0 0 6px rgba(0,0,0,0.55)" }}
+                                        >
+                                          {profileDraftInitials}
+                                        </div>
+                                        <div className="flex-1 min-w-0 text-left">
+                                          <p className="text-[11px] uppercase tracking-[0.22em] text-white/70">Preview</p>
+                                          <p className="truncate text-lg font-semibold leading-tight text-left">{profileDraftName}</p>
+                                          <div className="flex flex-wrap items-center gap-2 text-xs text-white/80">
+                                            <span className="truncate">{profileDraftProgram}</span>
+                                            <span className="opacity-70">•</span>
+                                            <span>Year {profileDraft.year}</span>
+                                            {profileDraft.expectedGraduation && (
+                                              <Badge variant="secondary" className="bg-white/25 text-white hover:bg-white/30">
+                                                Grad {profileDraft.expectedGraduation}
+                                              </Badge>
+                                            )}
+                                          </div>
+                                        </div>
+                                        <Sparkles className="h-5 w-5 text-white/80" />
+                                      </div>
+                                    </div>
+
+                                    <div className="grid gap-4 sm:grid-cols-2 text-left">
+                                      <div className="space-y-1.5">
+                                        <Label className="text-xs text-white/80 text-left">Display name</Label>
+                                        <Input
+                                          value={profileDraft.name}
+                                          onChange={(e) =>
+                                            setProfileDraft((prev) => {
+                                              const next = { ...prev, name: e.target.value }
+                                              markProfileDirty(next)
+                                              return next
+                                            })
+                                          }
+                                          placeholder="Penguin"
+                                        />
+                                      </div>
+                                      <div className="space-y-1.5">
+                                        <Label className="text-xs text-white/80 text-left">Program</Label>
+                                        <Input
+                                          value={profileDraft.program}
+                                          onChange={(e) =>
+                                            setProfileDraft((prev) => {
+                                              const next = { ...prev, program: e.target.value }
+                                              markProfileDirty(next)
+                                              return next
+                                            })
+                                          }
+                                          placeholder="Computer Engineering"
+                                        />
+                                      </div>
+                                      <div className="space-y-1.5">
+                                        <Label className="text-xs text-white/80 text-left">Year level</Label>
+                                        <Select
+                                          value={String(profileDraft.year)}
+                                          onValueChange={(value) =>
+                                            setProfileDraft((prev) => {
+                                              const next = { ...prev, year: Number(value) }
+                                              markProfileDirty(next)
+                                              return next
+                                            })
+                                          }
+                                        >
+                                          <SelectTrigger className="bg-white/80 text-slate-900">
+                                            <SelectValue placeholder="Year" />
+                                          </SelectTrigger>
+                                          <SelectContent className="z-[13050]" position="popper">
+                                            {[1, 2, 3, 4, 5, 6].map((year) => (
+                                              <SelectItem key={year} value={String(year)}>
+                                                Year {year}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                      </div>
+                                      <div className="space-y-1.5">
+                                        <Label className="text-xs text-white/80 text-left">Graduation target</Label>
+                                        <div className="flex items-center justify-between rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-sm text-white">
+                                          <span className="truncate">{profileDraft.expectedGraduation ?? "Auto-filled from Academic Planner"}</span>
+                                          <Badge variant="outline" className="text-[11px] text-white/90 border-white/40">Auto</Badge>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div className="space-y-2">
+                                      <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                                        <Palette className="h-4 w-4" />
+                                        <span>Card accent</span>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                        {PROFILE_COLOR_OPTIONS.map((option) => (
+                                          <button
+                                            key={option.id}
+                                            type="button"
+                                            onClick={() =>
+                                              setProfileDraft((prev) => {
+                                                const next = { ...prev, cardColor: option.value }
+                                                markProfileDirty(next)
+                                                return next
+                                              })
+                                            }
+                                            className={`relative flex h-12 items-center justify-center overflow-hidden rounded-lg border text-xs font-semibold text-white shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/80 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
+                                                profileDraft.cardColor === option.value
+                                                ? "border-white/80 ring-2 ring-white/60"
+                                                : "border-white/15 hover:border-white/40"
+                                            }`}
+                                            style={{ background: option.value }}
+                                          >
+                                            <span className="drop-shadow-sm">{option.label}</span>
+                                            {profileDraft.cardColor === option.value && (
+                                              <span className="absolute right-2 top-2 rounded-full bg-white/85 px-2 text-[10px] font-bold text-slate-900 shadow">Active</span>
+                                            )}
+                                          </button>
+                                        ))}
+                                      </div>
+                                      <p className="text-xs text-white/80">Hit save to apply these updates across Course Tracker badges.</p>
+                                      <div className="pt-1">
+                                        <Button className="w-full" onClick={handleSaveProfile} disabled={!profileDirty}>
+                                          Save changes
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </motion.div>
+                              </div>
+                            </motion.div>
+                          </div>
+                        </motion.div>
+                      </motion.div>
+                    )}
+                    </AnimatePresence>
+
+                </div>
+
+                <div className="flex flex-wrap justify-center items-center gap-2 md:justify-end">
+                  <Button
+                    variant="outline"
+                    className="bg-white/80 text-slate-900 border-slate-300 hover:bg-white dark:bg-white/10 dark:text-white dark:border-white/40 dark:hover:bg-white/20"
+                    onClick={() => {
+                      trackAnalyticsEvent("onboarding.open", { source: "button" })
+                      setOnboardingOpen(true)
+                    }}
+                  >
+                    Start Onboarding
+                  </Button>
+                  <PatchNotesButton autoOpenOnce={shouldAutoOpenWhatsNew} buttonLabel="What's New" />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => {
+                      const nextTheme = theme === "dark" ? "light" : "dark"
+                      trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "home" })
+                      setTheme(nextTheme)
+                    }}
+                    aria-label="Toggle theme"
+                    className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                  >
+                    <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+                    <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+                  </Button>
+                </div>
               </div>
               <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold text-center mx-auto max-w-3xl">
                 FEU Tech ComParEng Tools
