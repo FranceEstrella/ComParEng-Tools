@@ -2936,7 +2936,7 @@ export default function ScheduleMaker() {
 
       setDragPreviewSections(previews)
     },
-    [buildSectionPreview, courseCatalog],
+    [buildSectionPreview, courseCatalog, searchPanelVisible],
   )
 
   const handleDragEndEvent = useCallback(
@@ -4694,6 +4694,10 @@ const downloadScheduleImage = async () => {
     const titleContainerRef = useRef<HTMLDivElement | null>(null)
     const titleTextRef = useRef<HTMLDivElement | null>(null)
     const [titleFontPx, setTitleFontPx] = useState(() => (compactTitle ? 11 : 12))
+    const timeRef = useRef<HTMLDivElement | null>(null)
+    const roomRef = useRef<HTMLDivElement | null>(null)
+    const [timeFontPx, setTimeFontPx] = useState(11)
+    const [roomFontPx, setRoomFontPx] = useState(10)
 
     const canonicalCode = getSelectedCourseCanonicalCode(course)
     const draggableId = `calendar-${canonicalCode}-${course.section}-${day}`
@@ -4708,23 +4712,22 @@ const downloadScheduleImage = async () => {
       },
     })
 
+    // Shared text-fitting helper for title to respect container box.
     useLayoutEffect(() => {
       const container = titleContainerRef.current
       const textEl = titleTextRef.current
       if (!container || !textEl) return
 
-      // If the title has effectively no room (very short blocks), keep a readable minimum.
-      // We'll still set a tooltip so the full text is accessible.
       const minFont = 9
       const maxFont = compactTitle ? 11 : 12
 
-      // Reset to max before measuring.
       let next = maxFont
       textEl.style.fontSize = `${next}px`
 
-      // Iteratively shrink until it fits (bounded iterations).
       for (let i = 0; i < 6; i += 1) {
-        const fits = textEl.scrollHeight <= container.clientHeight + 0.5
+        const fits =
+          textEl.scrollHeight <= container.clientHeight + 0.5 &&
+          textEl.scrollWidth <= container.clientWidth + 0.5
         if (fits) break
         next -= 1
         if (next <= minFont) {
@@ -4736,15 +4739,47 @@ const downloadScheduleImage = async () => {
       }
 
       setTitleFontPx(next)
-      // Re-run when the block's size or visible rows change.
-    }, [displayTitle, compactTitle, showTime, showRoom, style.height])
+    }, [displayTitle, compactTitle, showTime, showRoom, style.height, style.width])
+
+    // Fit time and room text so they shrink instead of clipping on short blocks.
+    useLayoutEffect(() => {
+      const fitSelf = (
+        el: HTMLDivElement | null,
+        { max, min }: { max: number; min: number },
+      ) => {
+        if (!el) return min
+        let next = max
+        el.style.fontSize = `${next}px`
+        for (let i = 0; i < 5; i += 1) {
+          const fits =
+            el.scrollHeight <= el.clientHeight + 0.5 &&
+            el.scrollWidth <= el.clientWidth + 0.5
+          if (fits) break
+          next -= 1
+          if (next <= min) {
+            next = min
+            el.style.fontSize = `${next}px`
+            break
+          }
+          el.style.fontSize = `${next}px`
+        }
+        return next
+      }
+
+      if (showTime) {
+        setTimeFontPx(fitSelf(timeRef.current, { max: 11, min: 9 }))
+      }
+      if (showRoom) {
+        setRoomFontPx(fitSelf(roomRef.current, { max: 10, min: 9 }))
+      }
+    }, [showTime, showRoom, displayTime, displayRoom, style.height, style.width])
 
     return (
       <div
         ref={setNodeRef}
         {...attributes}
         {...listeners}
-        className="absolute rounded p-1 cursor-grab active:cursor-grabbing"
+        className="absolute flex flex-col gap-0.5 rounded p-1 cursor-grab active:cursor-grabbing"
         onContextMenu={(event) => {
           event.preventDefault()
           onContextMenu?.(event, course)
@@ -4768,12 +4803,20 @@ const downloadScheduleImage = async () => {
           </div>
         </div>
         {showTime && (
-          <div className="shrink-0 text-[11px] leading-tight break-words">
+          <div
+            ref={timeRef}
+            className="shrink-0 leading-tight break-words whitespace-normal"
+            style={{ fontSize: `${timeFontPx}px` }}
+          >
             {displayTime}
           </div>
         )}
         {showRoom && (
-          <div className="shrink-0 text-[11px] leading-tight break-words">
+          <div
+            ref={roomRef}
+            className="shrink-0 leading-tight break-words whitespace-normal"
+            style={{ fontSize: `${roomFontPx}px` }}
+          >
             {displayRoom}
           </div>
         )}
