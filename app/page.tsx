@@ -1466,7 +1466,12 @@ export default function Home() {
                                           </button>
                                         ))}
                                       </div>
+                                    </div>
+                                    <div className="hidden md:flex flex-col gap-2 pt-4 mt-auto">
                                       <p className="text-xs text-white/80">Hit save to apply these updates across Course Tracker badges.</p>
+                                      <Button className="w-full" onClick={handleSaveProfile} disabled={!profileDirty}>
+                                        Save changes
+                                      </Button>
                                     </div>
                                   </div>
                                 </motion.div>
