@@ -5065,15 +5065,15 @@ export default function CourseTracker() {
                 <li className="flex gap-3">
                   <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-emerald-500 bg-white ring-4 ring-emerald-100 dark:bg-slate-900 dark:ring-emerald-500/25" aria-hidden="true" />
                   <div className="space-y-1">
-                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Mark what you are taking</p>
-                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Set your in-progress subjects to Active to light up progress and planner views.</p>
+                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Mark in-progress courses Active</p>
+                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Set your current subjects to Active to light up progress and planner views.</p>
                   </div>
                 </li>
 
                 <li className="flex gap-3">
                   <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-sky-500 bg-white ring-4 ring-sky-100 dark:bg-slate-900 dark:ring-sky-500/25" aria-hidden="true" />
                   <div className="space-y-1">
-                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Clear the prerequisites</p>
+                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Set remaining courses as Passed</p>
                     <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Mark no-prerequisite courses (COE0001, MATH0001, CHEM0001, HUM0001, PHYS0001, HIST0001, PE0) as Passed so future checks stay unlocked.</p>
                   </div>
                 </li>
@@ -5083,7 +5083,7 @@ export default function CourseTracker() {
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-200">Optional</span>
-                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Switch to Table view</p>
+                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Record grades in Table view</p>
                     </div>
                     <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Add grades and the term you last took each course for accurate transcripts and retake checks.</p>
                   </div>
@@ -5094,7 +5094,7 @@ export default function CourseTracker() {
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-900/60 dark:text-amber-200">Optional</span>
-                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Download a PDF snapshot</p>
+                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Export a transcript of your grades in PDF</p>
                     </div>
                     <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Export your transcript once grades are in—handy for sharing quick progress updates.</p>
                   </div>
