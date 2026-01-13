@@ -2,9 +2,8 @@
 
 import Link from "next/link"
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
-import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X, ArrowUp, Palette, Sparkles, Trophy, Medal, Award, Pencil, ArrowLeft, Check } from "lucide-react"
+import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X, ArrowUp, Palette, Sparkles, Trophy, Medal, Award, Pencil, ArrowLeft, Check, Menu } from "lucide-react"
 import PatchNotesButton from "@/components/patch-notes"
-import { ThemeProvider } from "@/components/theme-provider"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 import { Moon, Sun } from "lucide-react"
@@ -25,7 +24,7 @@ import NonCpeNotice, { markNonCpeNoticeDismissed } from "@/components/non-cpe-no
 import FeedbackDialog from "@/components/feedback-dialog"
 import OnboardingDialog from "@/components/onboarding-dialog"
 import { trackAnalyticsEvent } from "@/lib/analytics-client"
-import { loadCourseStatuses } from "@/lib/course-storage"
+import { loadCourseStatuses, loadTrackerPreferences, TRACKER_PREFERENCES_KEY } from "@/lib/course-storage"
 import { Progress } from "@/components/ui/progress"
 
 const PROGRAMS = [
@@ -60,15 +59,15 @@ interface BadgeMeta {
   xp: number
 }
 
-interface ProgressOverview {
-  total: number
-  passed: number
-  active: number
-  pending: number
-  percentage: number
+type RankTier = {
+  name: string
+  range: [number, number]
+  gradient: string
+  accent: string
+  text: string
 }
 
-interface LevelInfo {
+type LevelInfo = {
   level: number
   current: number
   currentStart: number
@@ -76,12 +75,12 @@ interface LevelInfo {
   progress: number
 }
 
-interface RankTier {
-  name: string
-  range: [number, number]
-  gradient: string
-  accent: string
-  text: string
+type ProgressOverview = {
+  total: number
+  passed: number
+  active: number
+  pending: number
+  percentage: number
 }
 
 const PROFILE_STORAGE_KEY = "courseTracker.profile.v1"
@@ -175,6 +174,53 @@ const getBadgeFromId = (id: string): BadgeMeta | null => {
   return null
 }
 
+const makeBadgeId = (kind: BadgeKind, year: number, term?: TermName) =>
+  kind === "year" ? `year-${year}` : `term-${year}-${term ?? ""}`
+
+const deriveGamificationFromCourses = (courses: any[]): { xp: number; unlockedBadges: string[] } => {
+  if (!Array.isArray(courses) || courses.length === 0) return { xp: 0, unlockedBadges: [] }
+
+  const years = Array.from(new Set(courses.map((course) => course?.year).filter((y): y is number => Number.isFinite(y)))).sort(
+    (a, b) => a - b,
+  )
+
+  const isYearComplete = (year: number) => {
+    const yearCourses = courses.filter((course) => course?.year === year)
+    return yearCourses.length > 0 && yearCourses.every((course) => course?.status === "passed")
+  }
+
+  const isTermComplete = (year: number, term: TermName) => {
+    const termCourses = courses.filter((course) => course?.year === year && course?.term === term)
+    return termCourses.length > 0 && termCourses.every((course) => course?.status === "passed")
+  }
+
+  const targetBadgeIds = new Set<string>()
+
+  years.forEach((year) => {
+    const yearComplete = isYearComplete(year)
+
+    TERM_SEQUENCE.forEach((term) => {
+      const hasCourses = courses.some((course) => course?.year === year && course?.term === term)
+      if (!hasCourses) return
+      if (yearComplete || isTermComplete(year, term)) {
+        targetBadgeIds.add(makeBadgeId("term", year, term))
+      }
+    })
+
+    if (yearComplete) {
+      targetBadgeIds.add(makeBadgeId("year", year))
+    }
+  })
+
+  const unlockedBadges = Array.from(targetBadgeIds)
+  const xp = unlockedBadges.reduce((total, id) => {
+    const badge = getBadgeFromId(id)
+    return badge ? total + badge.xp : total
+  }, 0)
+
+  return { xp, unlockedBadges }
+}
+
 const calculateLevelInfo = (xp: number): LevelInfo => {
   const safeXp = Math.max(0, xp)
   let level = 1
@@ -264,13 +310,16 @@ export default function Home() {
   const [programIndex, setProgramIndex] = useState(0)
   const [isDeleting, setIsDeleting] = useState(false)
   const [showJumpButton, setShowJumpButton] = useState(false)
+  const [mobileActionMenuOpen, setMobileActionMenuOpen] = useState(false)
   const [gamificationSnapshot, setGamificationSnapshot] = useState<{ xp: number; unlockedBadges: string[] }>(
     () => ({ xp: 0, unlockedBadges: [] }),
   )
   const [progressOverview, setProgressOverview] = useState<ProgressOverview | null>(null)
+  const [profileHydrated, setProfileHydrated] = useState(false)
   const profileHoverOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const profileHoverCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fullProfileCardRef = useRef<HTMLDivElement | null>(null)
+  const customProgramInputRef = useRef<HTMLInputElement | null>(null)
 
   const scrollToPageTop = () => {
     if (typeof window === "undefined") return
@@ -279,20 +328,40 @@ export default function Home() {
 
   const refreshGamificationSnapshot = useCallback(() => {
     if (typeof window === "undefined") return
+
+    const applySnapshot = (snapshot: { xp: number; unlockedBadges: string[] }) => {
+      setGamificationSnapshot(snapshot)
+      try {
+        window.localStorage.setItem(GAMIFICATION_STORAGE_KEY, JSON.stringify(snapshot))
+      } catch {
+        // ignore write failures
+      }
+    }
+
+    const fallbackFromCourses = () => {
+      const courses = loadCourseStatuses()
+      const snapshot = deriveGamificationFromCourses(Array.isArray(courses) ? courses : [])
+      applySnapshot(snapshot)
+    }
+
     try {
       const stored = window.localStorage.getItem(GAMIFICATION_STORAGE_KEY)
       if (!stored) {
-        setGamificationSnapshot({ xp: 0, unlockedBadges: [] })
+        fallbackFromCourses()
         return
       }
       const parsed = JSON.parse(stored)
-      const xp = Number.isFinite(parsed?.xp) ? Math.max(0, parsed.xp) : 0
+      const xp = Number.isFinite(parsed?.xp) ? Math.max(0, parsed.xp) : null
       const unlockedBadges = Array.isArray(parsed?.unlockedBadges)
         ? parsed.unlockedBadges.filter((id: unknown) => typeof id === "string")
-        : []
-      setGamificationSnapshot({ xp, unlockedBadges })
+        : null
+      if (xp === null || unlockedBadges === null) {
+        fallbackFromCourses()
+        return
+      }
+      applySnapshot({ xp, unlockedBadges })
     } catch {
-      setGamificationSnapshot({ xp: 0, unlockedBadges: [] })
+      fallbackFromCourses()
     }
   }, [])
 
@@ -305,6 +374,51 @@ export default function Home() {
       setProgressOverview(null)
     }
   }, [])
+
+  const syncProfileFromStorage = useCallback(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = localStorage.getItem(PROFILE_STORAGE_KEY)
+      if (!stored) return
+      const parsed = JSON.parse(stored)
+      setProfileCard((prev) => ({
+        ...prev,
+        name: typeof parsed?.name === "string" ? parsed.name : prev.name,
+        program: typeof parsed?.program === "string" ? parsed.program : prev.program,
+        year: Number.isFinite(parsed?.year) ? parsed.year : prev.year,
+        expectedGraduation:
+          typeof parsed?.expectedGraduation === "string" || parsed?.expectedGraduation === null
+            ? parsed.expectedGraduation
+            : prev.expectedGraduation,
+        cardColor:
+          typeof parsed?.cardColor === "string" && parsed.cardColor.trim().length > 0
+            ? parsed.cardColor
+            : prev.cardColor,
+      }))
+      setProfileHydrated(true)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const syncYearFromTrackerPreferences = useCallback(() => {
+    try {
+      const prefs = loadTrackerPreferences()
+      const yearLevel = Number.isFinite(prefs?.currentYearLevel) ? Math.max(1, Math.floor(prefs.currentYearLevel)) : null
+      if (yearLevel === null) return
+      setProfileCard((prev) => ({ ...prev, year: yearLevel }))
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const handleProfileStorage = useCallback(
+    (event: StorageEvent) => {
+      if (event?.key && event.key !== PROFILE_STORAGE_KEY) return
+      syncProfileFromStorage()
+    },
+    [syncProfileFromStorage],
+  )
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -353,73 +467,16 @@ export default function Home() {
   useEffect(() => {
     refreshGamificationSnapshot()
     refreshProgressOverview()
-  }, [refreshGamificationSnapshot, refreshProgressOverview])
+    syncYearFromTrackerPreferences()
+  }, [refreshGamificationSnapshot, refreshProgressOverview, syncYearFromTrackerPreferences])
 
   useEffect(() => {
-    if (typeof window === "undefined") return
-    try {
-      const stored = localStorage.getItem(PROFILE_STORAGE_KEY)
-      if (!stored) return
-      const parsed = JSON.parse(stored)
-      setProfileCard((prev) => ({
-        ...prev,
-        name: typeof parsed?.name === "string" ? parsed.name : prev.name,
-        program: typeof parsed?.program === "string" ? parsed.program : prev.program,
-        year: Number.isFinite(parsed?.year) ? parsed.year : prev.year,
-        expectedGraduation:
-          typeof parsed?.expectedGraduation === "string" || parsed?.expectedGraduation === null
-            ? parsed.expectedGraduation
-            : prev.expectedGraduation,
-        cardColor:
-          typeof parsed?.cardColor === "string" && parsed.cardColor.trim().length > 0
-            ? parsed.cardColor
-            : prev.cardColor,
-      }))
-    } catch {
-      // ignore profile hydration errors
-    }
-  }, [])
-
-  useEffect(() => {
-    if (typeof window === "undefined") return
-    try {
-      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profileCard))
-    } catch {
-      // ignore profile persistence errors
-    }
-  }, [profileCard])
-
-  useEffect(() => {
-    const handleProfileStorage = (event: StorageEvent) => {
-      if (event.key !== PROFILE_STORAGE_KEY || !event.newValue) return
-      try {
-        const parsed = JSON.parse(event.newValue)
-        setProfileCard((prev) => ({
-          ...prev,
-          name: typeof parsed?.name === "string" ? parsed.name : prev.name,
-          program: typeof parsed?.program === "string" ? parsed.program : prev.program,
-          year: Number.isFinite(parsed?.year) ? parsed.year : prev.year,
-          expectedGraduation:
-            typeof parsed?.expectedGraduation === "string" || parsed?.expectedGraduation === null
-              ? parsed.expectedGraduation
-              : prev.expectedGraduation,
-          cardColor:
-            typeof parsed?.cardColor === "string" && parsed.cardColor.trim().length > 0
-              ? parsed.cardColor
-              : prev.cardColor,
-        }))
-      } catch {
-        // ignore
-      }
-    }
-
-    if (typeof window !== "undefined") {
-      window.addEventListener("storage", handleProfileStorage)
-      return () => window.removeEventListener("storage", handleProfileStorage)
-    }
-
-    return () => undefined
-  }, [])
+    if (typeof window === "undefined") return undefined
+    syncProfileFromStorage()
+    setProfileHydrated(true)
+    window.addEventListener("storage", handleProfileStorage)
+    return () => window.removeEventListener("storage", handleProfileStorage)
+  }, [handleProfileStorage, syncProfileFromStorage])
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined
@@ -429,12 +486,16 @@ export default function Home() {
       }
       if (event.key === "courseStatuses") {
         refreshProgressOverview()
+        refreshGamificationSnapshot()
+      }
+      if (event.key === TRACKER_PREFERENCES_KEY) {
+        syncYearFromTrackerPreferences()
       }
     }
 
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
-  }, [refreshGamificationSnapshot, refreshProgressOverview])
+  }, [refreshGamificationSnapshot, refreshProgressOverview, syncYearFromTrackerPreferences])
 
   useEffect(() => {
     if (profileEditorVisible) return
@@ -444,40 +505,29 @@ export default function Home() {
   }, [profileCard, profileEditorVisible])
 
   useEffect(() => {
-    if (!toastMessage) return
-    const t = setTimeout(() => {
-      setToastMessage("")
-      setToastType("")
-    }, 3000)
-    return () => clearTimeout(t)
-  }, [toastMessage])
+    if (!fullProfileDialogOpen) return undefined
 
-  useEffect(() => {
-    if (!fullProfileDialogOpen) return
-    refreshGamificationSnapshot()
-    refreshProgressOverview()
-    if (typeof document !== "undefined") {
-      const previousOverflow = document.body.style.overflow
-      document.body.style.overflow = "hidden"
-
-      const handleKeyDown = (event: KeyboardEvent) => {
-        if (event.key === "Escape") {
-          setFullProfileDialogOpen(false)
-        }
-      }
-
-      const focusTarget = fullProfileCardRef.current
-      if (focusTarget) {
-        focusTarget.focus()
-      }
-
-      window.addEventListener("keydown", handleKeyDown)
-      return () => {
-        document.body.style.overflow = previousOverflow
-        window.removeEventListener("keydown", handleKeyDown)
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setFullProfileDialogOpen(false)
+        setProfileEditorVisible(false)
       }
     }
-  }, [fullProfileDialogOpen, refreshGamificationSnapshot, refreshProgressOverview])
+
+    const focusTarget = fullProfileCardRef.current
+    if (focusTarget) {
+      focusTarget.focus()
+    }
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [fullProfileDialogOpen])
 
   useEffect(() => {
     if (fullProfileDialogOpen) return
@@ -649,6 +699,35 @@ export default function Home() {
     [profileCard],
   )
 
+  const programOptions = PROGRAMS
+  const trimmedDraftProgram = profileDraft.program.trim()
+  const isCustomProgram = trimmedDraftProgram.length > 0 && !programOptions.includes(trimmedDraftProgram)
+  const [programCustomSelected, setProgramCustomSelected] = useState(isCustomProgram)
+  const programSelectValue = programCustomSelected ? "custom" : trimmedDraftProgram
+
+  useEffect(() => {
+    // When the editor opens, sync the custom flag to the current profile value
+    if (profileEditorVisible) {
+      setProgramCustomSelected(isCustomProgram)
+    }
+  }, [profileEditorVisible, isCustomProgram])
+
+  useEffect(() => {
+    // If the user types a preset program exactly, snap back to preset mode
+    if (programCustomSelected && trimmedDraftProgram && programOptions.includes(trimmedDraftProgram)) {
+      setProgramCustomSelected(false)
+    }
+  }, [programCustomSelected, trimmedDraftProgram, programOptions])
+
+  useEffect(() => {
+    if (typeof document === "undefined") return
+    document.body.dataset.profileEditing = profileEditorVisible ? "true" : "false"
+    window.dispatchEvent(new CustomEvent("compareng:profile-open-state", { detail: { open: fullProfileDialogOpen, editing: profileEditorVisible } }))
+    return () => {
+      document.body.dataset.profileEditing = "false"
+    }
+  }, [profileEditorVisible, fullProfileDialogOpen])
+
   const handleSaveProfile = useCallback(() => {
     const next: ProfileCardState = {
       ...profileDraft,
@@ -660,6 +739,14 @@ export default function Home() {
     profileBaselineRef.current = next
     setProfileDirty(false)
   }, [profileDraft])
+
+  // Expose save handler to other UI (e.g., navbar/bottom-nav back/save buttons)
+  useEffect(() => {
+    ;(window as any).comparengSaveProfile = () => handleSaveProfile()
+    return () => {
+      delete (window as any).comparengSaveProfile
+    }
+  }, [handleSaveProfile])
 
   const openProfileEditor = useCallback(() => {
     profileBaselineRef.current = profileCard
@@ -721,10 +808,46 @@ export default function Home() {
     setProfileEditorVisible(false)
   }
 
+  useEffect(() => {
+    if (programSelectValue === "custom" && customProgramInputRef.current) {
+      customProgramInputRef.current.focus()
+    }
+  }, [programSelectValue])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined
+    const handler = () => {
+      setFullProfileDialogOpen(false)
+      setProfileEditorVisible(false)
+    }
+    window.addEventListener("compareng:close-profile", handler)
+    return () => window.removeEventListener("compareng:close-profile", handler)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const open = fullProfileDialogOpen
+    document.body.dataset.profileOpen = open ? "true" : "false"
+    window.dispatchEvent(new CustomEvent("compareng:profile-open-state", { detail: { open } }))
+    return () => {
+      document.body.dataset.profileOpen = "false"
+    }
+  }, [fullProfileDialogOpen])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      if (!profileHydrated) return
+      window.localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profileCard))
+    } catch {
+      // ignore write failures
+    }
+  }, [profileCard, profileHydrated])
+
   // Feedback logic moved to FeedbackDialog component; keep toast helpers intact for other uses
 
   return (
-    <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
+    <>
       <OnboardingDialog
         open={onboardingOpen}
         onOpenChange={setOnboardingOpen}
@@ -734,7 +857,7 @@ export default function Home() {
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
         {/* Simple toast notification (uses Alert for consistent UI) */}
         {toastMessage && (
-          <div className="fixed bottom-6 right-6 z-50 w-80">
+          <div className="fixed bottom-24 right-4 z-50 w-80 sm:right-6 md:bottom-6">
             <Alert variant={toastType === "error" ? "destructive" : "default"} className={toastType === "error" ? "" : "bg-green-600 text-white border-green-600"}>
               <div className="flex flex-col">
                 <AlertTitle className={toastType === "error" ? "" : "text-white"}>{toastType === "error" ? "Error" : "Success"}</AlertTitle>
@@ -745,14 +868,14 @@ export default function Home() {
         )}
         <div className="fixed inset-x-0 top-0 z-50" ref={disclaimerRef}>
           <div className="w-full bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 p-2 text-xs md:text-sm">
-            <div className="container mx-auto px-4 flex items-center justify-between gap-4">
-              <span className="font-semibold whitespace-normal md:whitespace-nowrap">
-                Disclaimer:
-              </span>
-              <span className="flex-1 text-left leading-snug">
-                This is a personal project and is NOT officially affiliated with FEU Tech or the FEU Tech CpE Department.
-              </span>
-              <span className="signature-font credit-reveal text-sm md:text-base whitespace-nowrap inline-block">
+            <div className="container mx-auto px-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-4 text-center sm:text-left">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:gap-2">
+                <span className="font-semibold">Disclaimer:</span>
+                <span className="leading-snug">
+                  This is a personal project and is NOT officially affiliated with FEU Tech or the FEU Tech CpE Department.
+                </span>
+              </div>
+              <span className="signature-font credit-reveal text-sm md:text-base inline-block">
                 Created by France Estrella
               </span>
             </div>
@@ -761,16 +884,115 @@ export default function Home() {
         <div className="container mx-auto px-4 pb-12 pt-16">
           <div className="max-w-5xl mx-auto">
             {/* Header with Dark Mode Toggle */}
-            <div className="relative mb-8 text-center md:pt-12">
+            <div className="relative mb-8 text-center pt-10 md:pt-12">
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div className="flex items-start gap-3">
+                <div className="hidden md:flex flex-wrap justify-center items-center gap-2 md:justify-start">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => {
+                      const nextTheme = theme === "dark" ? "light" : "dark"
+                      trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "home" })
+                      setTheme(nextTheme)
+                    }}
+                    aria-label="Toggle theme"
+                    className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                  >
+                    <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+                    <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="bg-white/80 text-slate-900 border-slate-300 hover:bg-white dark:bg-white/10 dark:text-white dark:border-white/40 dark:hover:bg-white/20"
+                    onClick={() => {
+                      trackAnalyticsEvent("onboarding.open", { source: "button" })
+                      setOnboardingOpen(true)
+                    }}
+                  >
+                    Start Onboarding
+                  </Button>
+                  <PatchNotesButton autoOpenOnce={shouldAutoOpenWhatsNew} buttonLabel="What's New" />
+                </div>
+
+                <div className="flex w-full items-start gap-3 justify-between md:w-auto md:ml-auto md:block">
+                  <div className="md:hidden flex items-start justify-start">
+                    <div className="relative">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => {
+                          const nextOpen = !mobileActionMenuOpen
+                          setMobileActionMenuOpen(nextOpen)
+                          trackAnalyticsEvent("home.mobileMenu.toggle", { open: nextOpen })
+                        }}
+                        aria-label={mobileActionMenuOpen ? "Close quick actions" : "Open quick actions"}
+                        className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                      >
+                        {mobileActionMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+                      </Button>
+
+                      <AnimatePresence>
+                        {mobileActionMenuOpen && (
+                          <motion.div
+                            key="home-mobile-actions"
+                            initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                            transition={{ duration: 0.18, ease: "easeInOut" }}
+                            className="absolute left-0 mt-2 w-56 rounded-2xl border border-slate-200 bg-white p-3 shadow-lg dark:border-white/10 dark:bg-slate-900"
+                          >
+                            <div className="flex flex-col gap-2">
+                              <Button
+                                variant="outline"
+                                className="justify-start w-full"
+                                onClick={() => {
+                                  setMobileActionMenuOpen(false)
+                                  trackAnalyticsEvent("onboarding.open", { source: "mobile-menu" })
+                                  setOnboardingOpen(true)
+                                }}
+                              >
+                                Start Onboarding
+                              </Button>
+                              <div
+                                className="w-full [&>button]:w-full [&>button]:justify-start [&>button]:text-left"
+                                onClick={() => {
+                                  setMobileActionMenuOpen(false)
+                                }}
+                              >
+                                <PatchNotesButton autoOpenOnce={shouldAutoOpenWhatsNew} buttonLabel="What's New" />
+                              </div>
+                              <Button
+                                variant="outline"
+                                className="justify-start w-full"
+                                onClick={() => {
+                                  const nextTheme = theme === "dark" ? "light" : "dark"
+                                  trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "home-mobile-menu" })
+                                  setTheme(nextTheme)
+                                  setMobileActionMenuOpen(false)
+                                }}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-white">
+                                    <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+                                    <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+                                  </span>
+                                  <span>Toggle Theme</span>
+                                </div>
+                              </Button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 ml-auto md:ml-0 md:justify-end">
                   <Popover open={profilePreviewOpen} onOpenChange={setProfilePreviewOpen}>
                     <PopoverTrigger asChild>
                       <button
                         type="button"
                         className="relative flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-white/30 bg-slate-900/70 text-sm font-semibold uppercase text-white shadow-lg ring-2 ring-white/40 transition hover:-translate-y-[1px] hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/80 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
-                        style={{ textShadow: "0 0 6px rgba(0,0,0,0.55)" }}
-                        style={{ background: profileAccent }}
+                        style={{ textShadow: "0 0 6px rgba(0,0,0,0.55)", background: profileAccent }}
                         aria-label={`Open profile preview for ${profileName}`}
                         onMouseEnter={scheduleProfileOpen}
                         onMouseLeave={scheduleProfileClose}
@@ -783,11 +1005,10 @@ export default function Home() {
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
-                      align="start"
-                      side="bottom"
+                      align="center"
+                      side="left"
+                      sideOffset={8}
                       className="w-72 border-0 bg-transparent shadow-none p-0"
-                      onMouseEnter={scheduleProfileOpen}
-                      onMouseLeave={scheduleProfileClose}
                       onClick={() => {
                         setProfilePreviewOpen(false)
                         setFullProfileDialogOpen(true)
@@ -821,6 +1042,8 @@ export default function Home() {
                     </PopoverContent>
                   </Popover>
 
+                  </div>
+
                     <AnimatePresence>
                       {fullProfileDialogOpen && (
                         <motion.div
@@ -839,7 +1062,7 @@ export default function Home() {
                             aria-hidden
                           />
                           <motion.div
-                            className="absolute left-1/2 top-1/2 w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 px-4 sm:px-0"
+                            className="absolute inset-0 flex w-full items-start justify-center px-0 sm:items-center sm:px-4"
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
@@ -850,14 +1073,15 @@ export default function Home() {
                               role="dialog"
                               aria-modal="true"
                               aria-labelledby="full-profile-title"
-                              className="relative max-h-[85vh] overflow-y-auto overflow-x-visible rounded-3xl border border-slate-200/80 bg-white text-slate-900 shadow-2xl ring-1 ring-black/10 outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-white dark:ring-white/10"
+                              className="relative flex h-screen flex-col overflow-hidden rounded-none border-0 bg-white text-slate-900 shadow-2xl ring-0 outline-none dark:bg-slate-900 dark:text-white sm:h-auto sm:max-h-[85vh] sm:w-full sm:max-w-3xl sm:rounded-3xl sm:border sm:border-slate-200/80 sm:ring-1 sm:ring-black/10 dark:sm:border-slate-800 dark:sm:ring-white/10"
                               tabIndex={-1}
                             >
                               <div className="sticky top-0 z-10 h-1 w-full bg-gradient-to-r from-transparent via-white/60 to-transparent dark:via-slate-900/60" />
                               <div className="absolute inset-0" style={{ background: rankTier.gradient }} />
                               <div className="absolute inset-0 bg-gradient-to-br from-black/35 via-black/25 to-white/10" />
+                              <div className="absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-white/5" />
                               <motion.div
-                                className="relative flex flex-col gap-4 p-5 sm:p-6"
+                                className="relative flex flex-col gap-4 p-4 sm:p-6"
                                 initial={{ opacity: 0 }}
                                 animate={{ opacity: 1 }}
                                 exit={{ opacity: 0 }}
@@ -869,7 +1093,7 @@ export default function Home() {
                                   animate={{ x: profileEditorVisible ? "-100%" : "0%" }}
                                   transition={{ duration: 0.32, ease: [0.4, 0, 0.2, 1] }}
                                 >
-                                  <div className="w-full shrink-0 space-y-4">
+                                  <div className="w-full shrink-0 flex flex-col gap-4 max-h-[calc(100vh-120px)] sm:max-h-none min-h-0 max-w-3xl mx-auto">
                                     <div className="flex items-start justify-between gap-4">
                                       <div className="flex items-start gap-4">
                                         <div
@@ -1004,7 +1228,9 @@ export default function Home() {
                                       </Card>
                                     </div>
 
-                                    <div className="rounded-xl border border-slate-200 bg-white/80 p-4 shadow-sm text-left dark:border-slate-800 dark:bg-slate-900/60">
+                                      <div
+                                        className="rounded-xl border border-slate-200 bg-white/80 p-4 shadow-sm text-left dark:border-slate-800 dark:bg-slate-900/60 w-full flex-1 min-h-0 overflow-y-auto max-h-[65vh] [scrollbar-width:thin] [scrollbar-color:rgba(100,116,139,0.8)_transparent] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-500/60 [&::-webkit-scrollbar-thumb:hover]:bg-slate-500/80 [WebkitOverflowScrolling:touch] md:flex-none md:min-h-[240px] md:max-h-[320px]"
+                                      >
                                       <div className="flex items-center gap-2 pb-3">
                                         <Award className="h-4 w-4 text-indigo-500" />
                                         <div className="flex items-baseline gap-2">
@@ -1019,14 +1245,14 @@ export default function Home() {
                                               key={badge.id}
                                               className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm transition hover:-translate-y-[1px] hover:shadow-sm dark:border-slate-800 dark:bg-slate-900/60"
                                             >
-                                              <div className="min-w-0">
-                                                <p className="truncate font-semibold text-slate-900 dark:text-white">{badge.label}</p>
-                                                <p className="text-xs text-muted-foreground">
+                                              <div className="min-w-0 space-y-1">
+                                                <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{badge.label}</p>
+                                                <p className="text-[11px] text-muted-foreground">
                                                   Year {badge.year}
                                                   {badge.term ? ` • ${badge.term}` : ""}
                                                 </p>
                                               </div>
-                                              <Badge variant="secondary" className="bg-slate-900 text-white shadow-sm dark:bg-white/15 dark:text-white">
+                                              <Badge variant="secondary" className="bg-slate-900 text-white shadow-sm dark:bg-white/15 dark:text-white text-[11px] px-2 py-1">
                                                 +{badge.xp} XP
                                               </Badge>
                                             </div>
@@ -1040,7 +1266,7 @@ export default function Home() {
                                     </div>
                                   </div>
 
-                                  <div className="w-full shrink-0 space-y-4">
+                                  <div className="w-full shrink-0 space-y-4 max-w-3xl mx-auto">
                                     <div className="flex items-start justify-between gap-4">
                                       <div className="space-y-1 text-left">
                                         <p className="text-[11px] uppercase tracking-[0.22em] text-white/80">Profile settings</p>
@@ -1127,17 +1353,54 @@ export default function Home() {
                                       </div>
                                       <div className="space-y-1.5">
                                         <Label className="text-xs text-white/80 text-left">Program</Label>
-                                        <Input
-                                          value={profileDraft.program}
-                                          onChange={(e) =>
+                                        <Select
+                                          value={programSelectValue}
+                                          onValueChange={(value) => {
+                                            if (value === "custom") {
+                                              setProgramCustomSelected(true)
+                                              setProfileDraft((prev) => {
+                                                const keepCurrent = prev.program.trim() && (programCustomSelected || isCustomProgram)
+                                                const next = { ...prev, program: keepCurrent ? prev.program : "" }
+                                                markProfileDirty(next)
+                                                return next
+                                              })
+                                              return
+                                            }
+                                            setProgramCustomSelected(false)
                                             setProfileDraft((prev) => {
-                                              const next = { ...prev, program: e.target.value }
+                                              const next = { ...prev, program: value }
                                               markProfileDirty(next)
                                               return next
                                             })
-                                          }
-                                          placeholder="Computer Engineering"
-                                        />
+                                          }}
+                                        >
+                                          <SelectTrigger className="bg-white/80 text-slate-900">
+                                            <SelectValue placeholder="Choose your program" />
+                                          </SelectTrigger>
+                                          <SelectContent className="z-[13050]" position="popper">
+                                            {programOptions.map((program) => (
+                                              <SelectItem key={program} value={program}>
+                                                {program}
+                                              </SelectItem>
+                                            ))}
+                                            <SelectItem value="custom">Custom / Other</SelectItem>
+                                          </SelectContent>
+                                        </Select>
+                                        {(programSelectValue === "custom" || isCustomProgram) && (
+                                          <Input
+                                            ref={customProgramInputRef}
+                                            value={profileDraft.program}
+                                            onChange={(e) =>
+                                              setProfileDraft((prev) => {
+                                                const next = { ...prev, program: e.target.value }
+                                                markProfileDirty(next)
+                                                return next
+                                              })
+                                            }
+                                            placeholder="Type your program"
+                                            className="mt-2 bg-white/80 text-slate-900"
+                                          />
+                                        )}
                                       </div>
                                       <div className="space-y-1.5">
                                         <Label className="text-xs text-white/80 text-left">Year level</Label>
@@ -1203,11 +1466,6 @@ export default function Home() {
                                         ))}
                                       </div>
                                       <p className="text-xs text-white/80">Hit save to apply these updates across Course Tracker badges.</p>
-                                      <div className="pt-1">
-                                        <Button className="w-full" onClick={handleSaveProfile} disabled={!profileDirty}>
-                                          Save changes
-                                        </Button>
-                                      </div>
                                     </div>
                                   </div>
                                 </motion.div>
@@ -1219,37 +1477,9 @@ export default function Home() {
                     )}
                     </AnimatePresence>
 
-                </div>
-
-                <div className="flex flex-wrap justify-center items-center gap-2 md:justify-end">
-                  <Button
-                    variant="outline"
-                    className="bg-white/80 text-slate-900 border-slate-300 hover:bg-white dark:bg-white/10 dark:text-white dark:border-white/40 dark:hover:bg-white/20"
-                    onClick={() => {
-                      trackAnalyticsEvent("onboarding.open", { source: "button" })
-                      setOnboardingOpen(true)
-                    }}
-                  >
-                    Start Onboarding
-                  </Button>
-                  <PatchNotesButton autoOpenOnce={shouldAutoOpenWhatsNew} buttonLabel="What's New" />
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => {
-                      const nextTheme = theme === "dark" ? "light" : "dark"
-                      trackAnalyticsEvent("theme.toggle", { to: nextTheme, source: "home" })
-                      setTheme(nextTheme)
-                    }}
-                    aria-label="Toggle theme"
-                    className="rounded-full border-slate-300 bg-white/80 text-slate-900 hover:bg-white transition-colors dark:border-white/40 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
-                  >
-                    <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-                    <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
-                  </Button>
-                </div>
+                  </div>
               </div>
-              <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold text-center mx-auto max-w-3xl">
+              <h1 className="mt-4 px-4 text-center font-bold leading-tight whitespace-nowrap mx-auto max-w-full text-[clamp(1.6rem,6vw,3rem)]">
                 FEU Tech ComParEng Tools
               </h1>
             </div>
@@ -1612,11 +1842,11 @@ export default function Home() {
         {showJumpButton && (
           <motion.div
             key="home-floating-back-to-top"
-            initial={{ opacity: 0, y: 12, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 12, scale: 0.95 }}
-            transition={{ duration: 0.2, ease: "easeInOut" }}
-            className="pointer-events-none fixed bottom-4 right-20 z-[10000] sm:bottom-6 sm:right-24"
+            initial={{ opacity: 0, y: 22, scale: 0.9, rotate: -3 }}
+            animate={{ opacity: 1, y: 0, scale: 1, rotate: 0 }}
+            exit={{ opacity: 0, y: 22, scale: 0.9, rotate: -3 }}
+            transition={{ type: "spring", stiffness: 340, damping: 16 }}
+            className="pointer-events-none fixed bottom-20 right-4 z-[10000] sm:bottom-16 sm:right-8 md:bottom-6 md:right-20 hidden md:block"
           >
             <Button
               type="button"
@@ -1625,13 +1855,16 @@ export default function Home() {
               className="pointer-events-auto shadow-lg shadow-slate-500/30"
               onClick={scrollToPageTop}
               aria-label="Back to top"
+              asChild
             >
-              <ArrowUp className="h-4 w-4" />
-              Back to top
+              <motion.span whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }} className="inline-flex items-center gap-1">
+                <ArrowUp className="h-4 w-4" />
+                Back to top
+              </motion.span>
             </Button>
           </motion.div>
         )}
       </AnimatePresence>
-    </ThemeProvider>
+    </>
   )
 }

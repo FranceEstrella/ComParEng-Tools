@@ -18,13 +18,13 @@ import {
   Moon,
   Sun,
   ArrowLeft,
+  ArrowUp,
+  ArrowRight,
   Calendar,
   Download,
   Upload,
   Save,
   Eye,
-  ArrowUp,
-  ArrowRight,
   Table,
   Grid3X3,
   GraduationCap,
@@ -1064,7 +1064,7 @@ const escapeHtml = (value: string) =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;")
 
-// Quick Navigation Component
+// Desktop-only quick navigation shortcuts between tools
 const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean }) => {
   const handleScrollTop = () => {
     if (typeof window === "undefined") return
@@ -1072,7 +1072,7 @@ const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean })
   }
 
   return (
-    <div className="flex flex-col sm:flex-row gap-3 justify-center">
+    <div className="hidden md:flex flex-col sm:flex-row gap-3 justify-center">
       <Link href="/">
         <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
           <ArrowLeft className="h-4 w-4" />
@@ -2446,6 +2446,7 @@ export default function CourseTracker() {
     expectedGraduation: null,
     cardColor: DEFAULT_PROFILE_CARD_COLOR,
   })
+  const [profileHydrated, setProfileHydrated] = useState(false)
   const [currentYearLevel, setCurrentYearLevel] = useState(1)
   const [currentTerm, setCurrentTerm] = useState<TermName>("Term 1")
   const [maxYearLevelOption, setMaxYearLevelOption] = useState(4)
@@ -2453,6 +2454,7 @@ export default function CourseTracker() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const progressCardRef = useRef<HTMLDivElement>(null)
+  const [mounted, setMounted] = useState(false)
   const [showJumpButton, setShowJumpButton] = useState(false)
   const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
   const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
@@ -2503,8 +2505,32 @@ export default function CourseTracker() {
   const overallCompletedRef = useRef(false)
   const overallRainActiveRef = useRef(false)
 
+  const syncProfileFromStorage = useCallback(() => {
+    try {
+      const storedProfile = window.localStorage.getItem(PROFILE_STORAGE_KEY)
+      if (!storedProfile) return
+      const parsed = JSON.parse(storedProfile)
+      setProfileState((prev) => ({
+        ...prev,
+        name: typeof parsed?.name === "string" ? parsed.name : prev.name,
+        program: typeof parsed?.program === "string" ? parsed.program : prev.program,
+        year: Number.isFinite(parsed?.year) ? parsed.year : prev.year,
+        expectedGraduation:
+          typeof parsed?.expectedGraduation === "string" || parsed?.expectedGraduation === null
+            ? parsed.expectedGraduation
+            : prev.expectedGraduation,
+        cardColor:
+          typeof parsed?.cardColor === "string" && parsed.cardColor.trim().length > 0 ? parsed.cardColor : prev.cardColor,
+      }))
+    } catch (error) {
+      console.error("Failed to sync profile state", error)
+    }
+  }, [])
+
   // Hydrate gamification + profile data from localStorage
   useEffect(() => {
+    setMounted(true)
+
     if (typeof window === "undefined") return
     try {
       const stored = window.localStorage.getItem(GAMIFICATION_STORAGE_KEY)
@@ -2514,29 +2540,12 @@ export default function CourseTracker() {
           setGamificationState({ xp: Math.max(0, parsed.xp), unlockedBadges: parsed.unlockedBadges })
         }
       }
-
-      const storedProfile = window.localStorage.getItem(PROFILE_STORAGE_KEY)
-      if (storedProfile) {
-        const parsed = JSON.parse(storedProfile)
-        setProfileState((prev) => ({
-          ...prev,
-          name: typeof parsed?.name === "string" ? parsed.name : prev.name,
-          program: typeof parsed?.program === "string" ? parsed.program : prev.program,
-          year: Number.isFinite(parsed?.year) ? parsed.year : prev.year,
-          expectedGraduation:
-            typeof parsed?.expectedGraduation === "string" || parsed?.expectedGraduation === null
-              ? parsed.expectedGraduation
-              : prev.expectedGraduation,
-          cardColor:
-            typeof parsed?.cardColor === "string" && parsed.cardColor.trim().length > 0
-              ? parsed.cardColor
-              : prev.cardColor,
-        }))
-      }
+      syncProfileFromStorage()
+      setProfileHydrated(true)
     } catch (error) {
       console.error("Failed to load gamification/profile state", error)
     }
-  }, [])
+  }, [syncProfileFromStorage])
 
   // Persist gamification state
   useEffect(() => {
@@ -2552,17 +2561,32 @@ export default function CourseTracker() {
   useEffect(() => {
     if (typeof window === "undefined") return
     try {
+      if (!profileHydrated) return
       window.localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profileState))
     } catch (error) {
       console.error("Failed to save profile state", error)
     }
-  }, [profileState])
+  }, [profileState, profileHydrated])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const handleProfileStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== PROFILE_STORAGE_KEY) return
+      syncProfileFromStorage()
+    }
+    window.addEventListener("storage", handleProfileStorage)
+    return () => window.removeEventListener("storage", handleProfileStorage)
+  }, [syncProfileFromStorage])
 
   useEffect(() => {
     const hasValue = expectedGraduationLabel && expectedGraduationLabel !== "N/A"
     if (!hasValue) return
     setProfileState((prev) => ({ ...prev, expectedGraduation: expectedGraduationLabel }))
   }, [expectedGraduationLabel])
+
+  useEffect(() => {
+    setProfileState((prev) => (prev.year === currentYearLevel ? prev : { ...prev, year: currentYearLevel }))
+  }, [currentYearLevel])
 
   useEffect(() => {
     if (!coursesHydrated) return
@@ -4911,9 +4935,9 @@ export default function CourseTracker() {
             document.body,
           )}
         <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
-        <div className="mb-6 mt-4">
-          <QuickNavigation />
-        </div>
+              <div className="hidden md:block mb-6 mt-4">
+                <QuickNavigation />
+              </div>
 
         <div className="p-4 md:p-6 lg:p-8 w-full max-w-[95rem] mx-auto font-sans">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
@@ -6394,33 +6418,36 @@ export default function CourseTracker() {
           </DialogContent>
         </Dialog>
 
-        <AnimatePresence>
-          {showJumpButton && !isBottomNavVisible && (
-            <motion.div
-              key="course-tracker-floating-back-to-top"
-              initial={{ opacity: 0, y: 12, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 12, scale: 0.95 }}
-              transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="pointer-events-none fixed bottom-4 right-20 z-[10000] sm:bottom-6 sm:right-24"
-            >
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                className="pointer-events-auto shadow-lg shadow-slate-500/30"
-                onClick={scrollToPageTop}
-                aria-label="Back to top"
-              >
-                <ArrowUp className="h-4 w-4" />
-                Back to top
-              </Button>
-            </motion.div>
+        {mounted &&
+          createPortal(
+            <AnimatePresence>
+              {showJumpButton && !isBottomNavVisible && (
+                <motion.div
+                  key="course-tracker-floating-back-to-top"
+                  initial={{ opacity: 0, y: 12, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 12, scale: 0.95 }}
+                  transition={{ duration: 0.2, ease: "easeInOut" }}
+                  className="pointer-events-none fixed bottom-24 right-4 z-[10000] sm:bottom-16 sm:right-8 md:bottom-6 md:right-[5.5rem] hidden md:block"
+                >
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="pointer-events-auto shadow-lg shadow-slate-500/30"
+                    onClick={scrollToPageTop}
+                    aria-label="Back to top"
+                  >
+                    <ArrowUp className="h-4 w-4" />
+                    Back to top
+                  </Button>
+                </motion.div>
+              )}
+            </AnimatePresence>,
+            document.body,
           )}
-        </AnimatePresence>
 
-        {/* Navigation Buttons (Bottom) */}
-        <div className="mt-10 mb-6" ref={bottomNavigationRef}>
+        <div className="hidden md:block mt-10 mb-6" ref={bottomNavigationRef}>
           <QuickNavigation showBackToTop />
         </div>
 

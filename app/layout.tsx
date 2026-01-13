@@ -3,10 +3,12 @@ import type { Metadata } from "next"
 import { Inter } from "next/font/google"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
+import NavbarWrapper from "@/components/navbar-wrapper"
 import InstallBanner from "@/components/install-banner"
 import ServiceWorkerRegister from "@/components/service-worker-register"
 import ReportIssueButton from "@/components/report-issue-button"
 import NavigationOverlay from "@/components/navigation-overlay"
+import BottomNav from "@/components/bottom-nav"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -71,11 +73,13 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.className} page-fade-in theme-transition`}>
+      <body className={`${inter.className} page-fade-in theme-transition pb-24 md:pb-0`}>
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
           <InstallBanner />
           <ServiceWorkerRegister />
+          <NavbarWrapper />
           {children}
+          <BottomNav />
           <NavigationOverlay />
           <ReportIssueButton />
         </ThemeProvider>

@@ -21,8 +21,6 @@ import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription }
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
-  ArrowLeft,
-  ArrowUp,
   RefreshCw,
   Plus,
   Pencil,
@@ -46,6 +44,8 @@ import {
   ChevronDown,
   Settings,
   Search,
+  ArrowLeft,
+  ArrowUp,
 } from "lucide-react"
 import Link from "next/link"
 import { useTheme } from "next-themes"
@@ -574,7 +574,6 @@ const sampleAvailableCourses = [
     hasSlots: true,
   },
 ]
-
 const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean }) => {
   const handleScrollTop = () => {
     if (typeof window === "undefined") return
@@ -582,7 +581,7 @@ const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean })
   }
 
   return (
-    <div className="flex flex-col sm:flex-row gap-3 justify-center">
+    <div className="hidden md:flex flex-col sm:flex-row gap-3 justify-center">
       <Link href="/">
         <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
           <ArrowLeft className="h-4 w-4" />
@@ -5865,12 +5864,12 @@ const renderScheduleView = () => {
       </Dialog>
       <div className="flex-1 overflow-hidden px-4 pb-4 pt-3 lg:px-8 flex flex-col min-h-0">
         <div className="mb-4 shrink-0">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h1 className="text-2xl font-semibold">Schedule Maker</h1>
-            <div className="flex flex-1 justify-center">
+            <div className="hidden md:flex flex-1 justify-center">
               <QuickNavigation />
             </div>
-            <div className="flex flex-shrink-0 items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
               <Button variant="outline" size="icon" onClick={zoomOut} aria-label="Zoom out" className="h-8 w-8">
                 <Minus className="h-3.5 w-3.5" />
               </Button>

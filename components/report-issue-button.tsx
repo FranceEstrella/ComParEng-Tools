@@ -62,7 +62,7 @@ export default function ReportIssueButton() {
 
   return createPortal(
     <>
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[9999] sm:bottom-6 sm:right-6">
+      <div className="pointer-events-none fixed bottom-24 right-4 z-[9999] md:bottom-6 md:right-6">
         <Button
           size="icon"
           variant="secondary"

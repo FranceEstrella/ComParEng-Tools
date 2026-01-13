@@ -44,7 +44,7 @@ export default function NavigationOverlay() {
   return (
     <div
       className={cn(
-        "fixed inset-0 z-50 bg-slate-900/35 backdrop-blur-sm transition-opacity duration-200",
+        "fixed inset-0 z-30 bg-slate-900/35 backdrop-blur-sm transition-opacity duration-200",
         visible ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
       )}
     >

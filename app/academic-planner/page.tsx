@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
-  ArrowLeft,
   ArrowUp,
+  ArrowLeft,
   BookOpen,
   FileWarning,
   Info,
@@ -39,6 +39,7 @@ import {
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
+import { createPortal } from "react-dom"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { initialCourses, curriculumCodes, registerCourseCodeAliases, resolveCanonicalCourseCode } from "@/lib/course-data"
@@ -72,9 +73,68 @@ import FeedbackDialog from "@/components/feedback-dialog"
 import { cn } from "@/lib/utils"
 import { trackAnalyticsEvent } from "@/lib/analytics-client"
 
-// Course status types
-type CourseStatus = "passed" | "active" | "pending" | "failed"
+// Quick Navigation Component (desktop only)
+const QuickNavigation = ({
+  showBackToTop = false,
+  onNavigate,
+}: {
+  showBackToTop?: boolean
+  onNavigate?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => void
+}) => {
+  const handleScrollTop = () => {
+    if (typeof window === "undefined") return
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }
 
+  return (
+    <div className="hidden md:flex flex-col sm:flex-row gap-3 justify-center">
+      <Link
+        href="/"
+        onClick={(event) => {
+          onNavigate?.("/", event)
+        }}
+      >
+        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
+          <ArrowLeft className="h-4 w-4" />
+          Back to Home
+        </Button>
+      </Link>
+      <Link
+        href="/schedule-maker"
+        onClick={(event) => {
+          onNavigate?.("/schedule-maker", event)
+        }}
+      >
+        <Button className="w-full sm:w-auto bg-purple-700 dark:bg-purple-900 bg-gradient-to-r from-purple-600 to-purple-800 hover:bg-purple-800 dark:hover:bg-purple-950 hover:from-purple-700 hover:to-purple-900 text-white flex items-center gap-2">
+          <Calendar className="h-4 w-4" />
+          Schedule Maker
+        </Button>
+      </Link>
+      <Link
+        href="/course-tracker"
+        onClick={(event) => {
+          onNavigate?.("/course-tracker", event)
+        }}
+      >
+        <Button className="w-full sm:w-auto bg-blue-700 dark:bg-blue-900 bg-gradient-to-r from-blue-600 to-blue-800 hover:bg-blue-800 dark:hover:bg-blue-950 hover:from-blue-700 hover:to-blue-900 text-white flex items-center gap-2">
+          <BookOpen className="h-4 w-4" />
+          Course Tracker
+        </Button>
+      </Link>
+      {showBackToTop && (
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full sm:w-auto flex items-center gap-2"
+          onClick={handleScrollTop}
+        >
+          <ArrowUp className="h-4 w-4" />
+          Back to Top
+        </Button>
+      )}
+    </div>
+  )
+}
 // Course interface
 interface Course {
   id: string
@@ -441,69 +501,6 @@ const sanitizeLockedPlacementSnapshot = (
   return sanitized
 }
 
-// Quick Navigation Component
-const QuickNavigation = ({
-  showBackToTop = false,
-  onNavigate,
-}: {
-  showBackToTop?: boolean
-  onNavigate?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => void
-}) => {
-  const handleScrollTop = () => {
-    if (typeof window === "undefined") return
-    window.scrollTo({ top: 0, behavior: "smooth" })
-  }
-
-  return (
-    <div className="flex flex-col sm:flex-row gap-3 justify-center">
-      <Link
-        href="/"
-        onClick={(event) => {
-          onNavigate?.("/", event)
-        }}
-      >
-        <Button variant="outline" className="w-full sm:w-auto flex items-center gap-2 bg-transparent">
-          <ArrowLeft className="h-4 w-4" />
-          Back to Home
-        </Button>
-      </Link>
-      <Link
-        href="/schedule-maker"
-        onClick={(event) => {
-          onNavigate?.("/schedule-maker", event)
-        }}
-      >
-        <Button className="w-full sm:w-auto bg-purple-700 dark:bg-purple-900 bg-gradient-to-r from-purple-600 to-purple-800 hover:bg-purple-800 dark:hover:bg-purple-950 hover:from-purple-700 hover:to-purple-900 text-white flex items-center gap-2">
-          <Calendar className="h-4 w-4" />
-          Schedule Maker
-        </Button>
-      </Link>
-      <Link
-        href="/course-tracker"
-        onClick={(event) => {
-          onNavigate?.("/course-tracker", event)
-        }}
-      >
-        <Button className="w-full sm:w-auto bg-blue-700 dark:bg-blue-900 bg-gradient-to-r from-blue-600 to-blue-800 hover:bg-blue-800 dark:hover:bg-blue-950 hover:from-blue-700 hover:to-blue-900 text-white flex items-center gap-2">
-          <BookOpen className="h-4 w-4" />
-          Course Tracker
-        </Button>
-      </Link>
-      {showBackToTop && (
-        <Button
-          type="button"
-          variant="outline"
-          className="w-full sm:w-auto flex items-center gap-2"
-          onClick={handleScrollTop}
-        >
-          <ArrowUp className="h-4 w-4" />
-          Back to Top
-        </Button>
-      )}
-    </div>
-  )
-}
-
 export default function AcademicPlanner() {
   const { theme, setTheme } = useTheme()
   const router = useRouter()
@@ -621,6 +618,7 @@ export default function AcademicPlanner() {
   const [highlightedCourseId, setHighlightedCourseId] = useState<string | null>(null)
   const [creditPreview, setCreditPreview] = useState<CreditRebalancePreview | null>(null)
   const [creditPreviewDialogOpen, setCreditPreviewDialogOpen] = useState(false)
+  const [mounted, setMounted] = useState(false)
   const [showJumpButton, setShowJumpButton] = useState(false)
   const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
   const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
@@ -761,6 +759,10 @@ export default function AcademicPlanner() {
       window.removeEventListener("scroll", updateVisibilityStates)
       window.removeEventListener("resize", updateVisibilityStates)
     }
+  }, [])
+
+  useEffect(() => {
+    setMounted(true)
   }, [])
 
   useEffect(() => {
@@ -5950,7 +5952,7 @@ export default function AcademicPlanner() {
           isMobile && floatingControlsVisible ? "pb-40" : ""
         )}
       >
-        <div className="mb-6">
+        <div className="hidden md:block mb-6">
           <QuickNavigation onNavigate={handleNavigationIntent} />
         </div>
 
@@ -8405,33 +8407,36 @@ export default function AcademicPlanner() {
               </div>
             )}
 
-            <AnimatePresence>
-              {showJumpButton && !isBottomNavVisible && (
-                <motion.div
-                  key="academic-planner-floating-back-to-top"
-                  initial={{ opacity: 0, y: 12, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 12, scale: 0.95 }}
-                  transition={{ duration: 0.2, ease: "easeInOut" }}
-                  className="pointer-events-none fixed bottom-4 right-20 z-[10000] sm:bottom-6 sm:right-24"
-                >
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    className="pointer-events-auto shadow-lg shadow-slate-500/30"
-                    onClick={scrollToPageTop}
-                    aria-label="Back to top"
-                  >
-                    <ArrowUp className="h-4 w-4" />
-                    Back to top
-                  </Button>
-                </motion.div>
+            {mounted &&
+              createPortal(
+                <AnimatePresence>
+                  {showJumpButton && !isBottomNavVisible && (
+                    <motion.div
+                      key="academic-planner-floating-back-to-top"
+                      initial={{ opacity: 0, y: 12, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 12, scale: 0.95 }}
+                      transition={{ duration: 0.2, ease: "easeInOut" }}
+                      className="pointer-events-none fixed bottom-24 right-4 z-[10000] sm:bottom-16 sm:right-8 md:bottom-6 md:right-[5.5rem] hidden md:block"
+                    >
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="pointer-events-auto shadow-lg shadow-slate-500/30"
+                        onClick={scrollToPageTop}
+                        aria-label="Back to top"
+                      >
+                        <ArrowUp className="h-4 w-4" />
+                        Back to top
+                      </Button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>,
+                document.body,
               )}
-            </AnimatePresence>
 
-            {/* Bottom Navigation */}
-            <div className="mt-10 mb-6" ref={bottomNavigationRef}>
+            <div className="hidden md:block mt-10 mb-6" ref={bottomNavigationRef}>
               <QuickNavigation showBackToTop onNavigate={handleNavigationIntent} />
             </div>
           </>
