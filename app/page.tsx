@@ -1286,7 +1286,7 @@ export default function Home() {
                                           aria-label={profileDirty ? "Save and go back" : "Back to profile overview"}
                                         >
                                           <motion.div
-                                            animate={{ rotate: profileDirty && profileBackHover ? 180 : 0, scale: profileDirty && profileBackHover ? 0.96 : 1 }}
+                                            animate={{ rotate: profileDirty && profileBackHover ? -12 : 0, scale: profileDirty && profileBackHover ? 0.96 : 1 }}
                                             transition={{ duration: 0.2, ease: "easeInOut" }}
                                           >
                                             {profileDirty && profileBackHover ? <Check className="h-4 w-4" /> : <ArrowLeft className="h-4 w-4" />}
@@ -1349,7 +1349,7 @@ export default function Home() {
                                               return next
                                             })
                                           }
-                                          placeholder="Penguin"
+                                          placeholder="NeeBot"
                                         />
                                       </div>
                                       <div className="space-y-1.5">
@@ -1438,7 +1438,7 @@ export default function Home() {
                                     <div className="space-y-2">
                                       <div className="flex items-center gap-2 text-sm font-semibold text-white">
                                         <Palette className="h-4 w-4" />
-                                        <span>Card accent</span>
+                                        <span>Avatar color</span>
                                       </div>
                                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                                         {PROFILE_COLOR_OPTIONS.map((option) => (

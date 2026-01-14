@@ -6792,7 +6792,7 @@ const renderScheduleView = () => {
                                     >
                                       <Pencil className="h-4 w-4" />
                                     </Button>
-                                    {!isEditing && (
+                                    {!isEditing && !isActive && (
                                       <Button
                                         variant="ghost"
                                         size="sm"

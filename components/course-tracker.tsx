@@ -402,6 +402,7 @@ interface FilterAndSearchControlsProps {
   viewMode: "card" | "table"
   setViewMode: (v: "card" | "table") => void
   courses: Course[]
+  onSearchSelect: (term: string, selectedCourseId?: string) => void
   onAddAliases: (aliases: Record<string, string>) => void
   courseCodeAliases: Record<string, string | { canonical: string; displayAlias?: boolean }>
   onRemoveAlias: (legacyCode: string) => void
@@ -1360,6 +1361,7 @@ const FilterAndSearchControls = ({
   viewMode,
   setViewMode,
   courses,
+  onSearchSelect,
   onAddAliases,
   courseCodeAliases,
   onRemoveAlias,
@@ -1497,6 +1499,12 @@ const FilterAndSearchControls = ({
     setConfirmOpen(true)
   }
 
+  const handleJumpToSelection = (term: string, selectedCourseId?: string) => {
+    const trimmed = term.trim()
+    if (!trimmed) return
+    onSearchSelect(trimmed, selectedCourseId)
+  }
+
   const confirmAliasSave = () => {
     if (!pendingAlias) return
     onAddAliases({ [pendingAlias.alias]: pendingAlias.canonical })
@@ -1537,6 +1545,13 @@ const FilterAndSearchControls = ({
                       if (e.target.value.length >= 3) setOpen(true)
                       else setOpen(false)
                     }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        handleJumpToSelection(searchTerm)
+                        setOpen(false)
+                      }
+                    }}
                     onFocus={() => {
                       if (searchTerm.length >= 3 && suggestions.length > 0) {
                         setOpen(true)
@@ -1548,9 +1563,11 @@ const FilterAndSearchControls = ({
                   />
                 </PopoverTrigger>
                 <PopoverContent
-                  className="p-0 w-full"
+                  className="p-0 w-[min(420px,calc(100vw-3rem))] max-h-80 overflow-auto"
                   align="start"
-                  sideOffset={5}
+                  side="bottom"
+                  sideOffset={6}
+                  position="popper"
                   onOpenAutoFocus={(event) => event.preventDefault()}
                   onCloseAutoFocus={(event) => {
                     event.preventDefault()
@@ -1568,6 +1585,7 @@ const FilterAndSearchControls = ({
                               setSearchTerm(course.code)
                               setOpen(false)
                               inputRef.current?.focus()
+                              handleJumpToSelection(course.code, course.id)
                             }}
                             className="cursor-pointer"
                           >
@@ -2330,7 +2348,7 @@ const AcademicTimeline = ({
                     <SelectTrigger className="w-32">
                       <SelectValue placeholder="Year" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="z-[14000]" position="popper">
                       {yearLevelOptions.map((year) => (
                         <SelectItem key={year} value={String(year)}>
                           Year {year}
@@ -2349,7 +2367,7 @@ const AcademicTimeline = ({
                     <SelectTrigger className="w-32">
                       <SelectValue placeholder="Term" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="z-[14000]" position="popper">
                       {["Term 1", "Term 2", "Term 3"].map((term) => (
                         <SelectItem key={term} value={term}>
                           {term}
@@ -3594,6 +3612,24 @@ export default function CourseTracker() {
     return courses.find((course) => course.id === id)
   }
 
+  const buildLabPairOverrides = useCallback(
+    (course: Course | undefined, newStatus: CourseStatus): Record<string, CourseStatus> => {
+      if (!course) return {}
+      const canonical = resolveCanonicalCourseCode(course.code)
+      if (!canonical) return {}
+
+      const pairCanonical = canonical.endsWith("L") ? canonical.slice(0, -1) : `${canonical}L`
+      if (pairCanonical === canonical) return {}
+
+      const pairCourse = courses.find((candidate) => resolveCanonicalCourseCode(candidate.code) === pairCanonical)
+      if (!pairCourse || pairCourse.id === course.id) return {}
+      if (pairCourse.status === newStatus) return {}
+
+      return { [pairCourse.id]: newStatus }
+    },
+    [courses],
+  )
+
   const getCascadePreview = (course: Course, targetStatus: CourseStatus) => {
     const requiredStatus = PREREQ_TARGET_STATUS[targetStatus]
     if (!requiredStatus) return null
@@ -4294,6 +4330,69 @@ export default function CourseTracker() {
   // Group the filtered courses for display
   const groupedFilteredCourses = useMemo<CoursesByYearAndTerm>(() => groupCourses(filteredCourses), [filteredCourses])
 
+  const openGroupsForCourses = useCallback((courseList: Course[]) => {
+    if (!Array.isArray(courseList) || courseList.length === 0) return
+
+    const nextYears: Record<number, boolean> = {}
+    const nextTerms: Record<string, boolean> = {}
+
+    courseList.forEach((course) => {
+      if (!course?.year || !course?.term) return
+      nextYears[course.year] = true
+      nextTerms[`${course.year}::${course.term}`] = true
+    })
+
+    if (Object.keys(nextYears).length > 0) {
+      setOpenYears((prev) => ({ ...prev, ...nextYears }))
+    }
+    if (Object.keys(nextTerms).length > 0) {
+      setOpenTerms((prev) => ({ ...prev, ...nextTerms }))
+    }
+  }, [])
+
+  const highlightCourseCard = useCallback((courseId: string) => {
+    if (typeof document === "undefined") return
+    const el = document.getElementById(`course-card-${courseId}`)
+    if (!el) return
+
+    const highlightClasses = [
+      "ring-2",
+      "ring-blue-400",
+      "dark:ring-blue-500",
+      "ring-offset-2",
+      "ring-offset-white",
+      "dark:ring-offset-gray-900",
+    ]
+
+    highlightClasses.forEach((cls) => el.classList.add(cls))
+    window.setTimeout(() => {
+      highlightClasses.forEach((cls) => el.classList.remove(cls))
+    }, 1600)
+  }, [])
+
+  const revealSearchResults = useCallback(
+    (term: string, selectedCourseId?: string) => {
+      const normalized = term.trim()
+      if (!normalized) return
+
+      const matched = courses.filter((course) => matchesCourseSearch(course, normalized))
+      if (matched.length === 0) return
+
+      openGroupsForCourses(matched)
+
+      const targetId = selectedCourseId || matched[0]?.id
+      if (!targetId || typeof document === "undefined") return
+
+      window.requestAnimationFrame(() => {
+        const el = document.getElementById(`course-card-${targetId}`)
+        if (!el) return
+        el.scrollIntoView({ behavior: "smooth", block: "center" })
+        highlightCourseCard(targetId)
+      })
+    },
+    [courses, matchesCourseSearch, openGroupsForCourses, highlightCourseCard],
+  )
+
   const prereqDialogActionLabel = prereqDialogState
     ? `Mark prerequisites as ${formatStatusLabel(
         PREREQ_TARGET_STATUS[prereqDialogState.targetStatus] ?? "pending",
@@ -4335,6 +4434,8 @@ export default function CourseTracker() {
   const handleStatusChange = (courseId: string, newStatus: CourseStatus) => {
     const targetCourse = findCourseById(courseId)
     if (!targetCourse) return
+
+    const labPairOverrides = buildLabPairOverrides(targetCourse, newStatus)
 
     const dependentDowngrades =
       dependencyDataAvailable &&
@@ -4383,16 +4484,22 @@ export default function CourseTracker() {
       }
     }
 
-    applyStatusChange(courseId, newStatus, immediateDependentOverrides)
+    const mergedOverrides = {
+      ...labPairOverrides,
+      ...(immediateDependentOverrides ?? {}),
+    }
+
+    applyStatusChange(courseId, newStatus, mergedOverrides)
   }
 
   const confirmPrereqCascade = () => {
     if (!prereqDialogState) return
     const downgradeEntries = prereqDialogState.dependentRollbacks
     const hasDowngrades = Object.keys(downgradeEntries || {}).length > 0
+    const labPairOverrides = buildLabPairOverrides(prereqDialogState.course, prereqDialogState.targetStatus)
     const combinedOverrides = hasDowngrades
-      ? { ...downgradeEntries, ...prereqDialogState.overrides }
-      : prereqDialogState.overrides
+      ? { ...labPairOverrides, ...downgradeEntries, ...prereqDialogState.overrides }
+      : { ...labPairOverrides, ...prereqDialogState.overrides }
     applyStatusChange(prereqDialogState.course.id, prereqDialogState.targetStatus, combinedOverrides)
     setPrereqDialogState(null)
   }
@@ -4401,11 +4508,10 @@ export default function CourseTracker() {
     if (!prereqDialogState) return
     const downgradeEntries = prereqDialogState.dependentRollbacks
     const hasDowngrades = Object.keys(downgradeEntries || {}).length > 0
-    applyStatusChange(
-      prereqDialogState.course.id,
-      prereqDialogState.targetStatus,
-      hasDowngrades ? downgradeEntries : undefined,
-    )
+    const labPairOverrides = buildLabPairOverrides(prereqDialogState.course, prereqDialogState.targetStatus)
+    const combinedOverrides = hasDowngrades ? { ...labPairOverrides, ...downgradeEntries } : labPairOverrides
+
+    applyStatusChange(prereqDialogState.course.id, prereqDialogState.targetStatus, combinedOverrides)
     setPrereqDialogState(null)
   }
 
@@ -4415,17 +4521,26 @@ export default function CourseTracker() {
 
   const confirmDependentRollback = () => {
     if (!dependentRollbackDialogState) return
+    const labPairOverrides = buildLabPairOverrides(
+      dependentRollbackDialogState.course,
+      dependentRollbackDialogState.targetStatus,
+    )
+    const combinedOverrides = { ...labPairOverrides, ...dependentRollbackDialogState.overrides }
     applyStatusChange(
       dependentRollbackDialogState.course.id,
       dependentRollbackDialogState.targetStatus,
-      dependentRollbackDialogState.overrides,
+      combinedOverrides,
     )
     setDependentRollbackDialogState(null)
   }
 
   const skipDependentRollbackUpdates = () => {
     if (!dependentRollbackDialogState) return
-    applyStatusChange(dependentRollbackDialogState.course.id, dependentRollbackDialogState.targetStatus)
+    const labPairOverrides = buildLabPairOverrides(
+      dependentRollbackDialogState.course,
+      dependentRollbackDialogState.targetStatus,
+    )
+    applyStatusChange(dependentRollbackDialogState.course.id, dependentRollbackDialogState.targetStatus, labPairOverrides)
     setDependentRollbackDialogState(null)
   }
 
@@ -4499,13 +4614,23 @@ export default function CourseTracker() {
       currentTerm,
       courseCount: courses.length,
     })
+    // Compose profile and gamification data for export
+    const levelInfo = calculateLevelInfo(gamificationState.xp)
+    const rankTier = getRankTier(levelInfo.level)
     const snapshot = {
-      version: 3,
+      version: 4,
       exportedAt: new Date().toISOString(),
       tracker: {
         startYear,
         currentYearLevel,
         currentTerm,
+      },
+      profile: {
+        ...profileState,
+        xp: gamificationState.xp,
+        level: levelInfo.level,
+        rank: rankTier.name,
+        badges: gamificationState.unlockedBadges,
       },
       courses,
       courseCodeAliases,
@@ -4563,6 +4688,7 @@ export default function CourseTracker() {
           return Object.keys(next).length ? next : null
         }
 
+        let parsedProfile: any = null
         if (Array.isArray(parsed)) {
           parsedCourses = parsed as Course[]
         } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.courses)) {
@@ -4573,6 +4699,9 @@ export default function CourseTracker() {
           parsedAliases =
             parseAliasMap((parsed as Record<string, unknown>).courseCodeAliases) ||
             parseAliasMap((parsed as Record<string, unknown>).aliases)
+          if (parsed.profile && typeof parsed.profile === "object") {
+            parsedProfile = parsed.profile
+          }
         }
 
         if (
@@ -4630,6 +4759,18 @@ export default function CourseTracker() {
           } catch (err) {
             console.error("Failed to persist course code aliases from import", err)
           }
+        }
+
+        // Restore profile and gamification state if present
+        if (parsedProfile) {
+          if (typeof parsedProfile.name === "string") setProfileState((prev) => ({ ...prev, name: parsedProfile.name }))
+          if (typeof parsedProfile.program === "string") setProfileState((prev) => ({ ...prev, program: parsedProfile.program }))
+          if (typeof parsedProfile.year === "number") setProfileState((prev) => ({ ...prev, year: parsedProfile.year }))
+          if (typeof parsedProfile.expectedGraduation === "string" || parsedProfile.expectedGraduation === null)
+            setProfileState((prev) => ({ ...prev, expectedGraduation: parsedProfile.expectedGraduation }))
+          if (typeof parsedProfile.cardColor === "string") setProfileState((prev) => ({ ...prev, cardColor: parsedProfile.cardColor }))
+          if (typeof parsedProfile.xp === "number") setGamificationState((prev) => ({ ...prev, xp: parsedProfile.xp }))
+          if (Array.isArray(parsedProfile.badges)) setGamificationState((prev) => ({ ...prev, unlockedBadges: parsedProfile.badges }))
         }
 
         setSetupUploadStatus({ fileName, uploadedAt: Date.now() })
@@ -4692,7 +4833,7 @@ export default function CourseTracker() {
             <AnimatePresence>
               {rewardOverlay?.open && (
                 <motion.div
-                  className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/75 backdrop-blur-sm"
+                  className="fixed inset-0 z-[14000] flex items-center justify-center bg-black/75 backdrop-blur-sm"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
@@ -4927,6 +5068,9 @@ export default function CourseTracker() {
                           Click anywhere to continue
                         </motion.p>
                       )}
+                      <p className="text-[11px] text-amber-100/70">
+                        You can view all badges earned in Profile.
+                      </p>
                     </div>
                   </motion.div>
                 </motion.div>
@@ -5162,6 +5306,7 @@ export default function CourseTracker() {
             viewMode={viewMode}
             setViewMode={setViewMode}
             courses={courses}
+            onSearchSelect={revealSearchResults}
             onAddAliases={handleAddAliases}
             courseCodeAliases={courseCodeAliases}
             onRemoveAlias={handleRemoveAlias}
@@ -5312,6 +5457,7 @@ export default function CourseTracker() {
                                     return (
                                       <Card
                                         key={course.id}
+                                        id={`course-card-${course.id}`}
                                         className={cn(
                                           "flex flex-col justify-between shadow-sm hover:shadow-md transition-shadow duration-200 border dark:border-gray-700",
                                           course.status === "passed" && "border-l-4 border-l-green-500",
@@ -5837,7 +5983,7 @@ export default function CourseTracker() {
                     <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Year level" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="z-[14000]" position="popper">
                       {yearLevelOptions.map((level) => (
                         <SelectItem key={`setup-year-${level}`} value={String(level)}>
                           Year {level}
@@ -5861,7 +6007,7 @@ export default function CourseTracker() {
                     <SelectTrigger className="mt-1">
                       <SelectValue placeholder="Term" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="z-[14000]" position="popper">
                       {TERM_SEQUENCE.map((term) => (
                         <SelectItem key={`setup-term-${term}`} value={term}>
                           {term}
