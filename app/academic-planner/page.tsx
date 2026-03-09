@@ -275,6 +275,17 @@ interface BlockedMoveDialogState {
   blockers: PrereqBlockerInfo[]
 }
 
+interface BulkBlockedMoveDialogState {
+  targetYear: number
+  targetTerm: string
+  blockedCourses: Array<{
+    courseId: string
+    courseCode: string
+    courseName: string
+    blockers: PrereqBlockerInfo[]
+  }>
+}
+
 // Move history interface
 interface MoveHistoryEntry {
   id: string
@@ -551,6 +562,7 @@ export default function AcademicPlanner() {
     } | null
   >(null)
   const [blockedMoveDialog, setBlockedMoveDialog] = useState<BlockedMoveDialogState | null>(null)
+  const [bulkBlockedMoveDialog, setBulkBlockedMoveDialog] = useState<BulkBlockedMoveDialogState | null>(null)
   const [creditGuardrailDialog, setCreditGuardrailDialog] = useState<CreditGuardrailDialogInfo | null>(null)
   const [moveSelectResetCounter, setMoveSelectResetCounter] = useState(0)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
@@ -2822,6 +2834,91 @@ export default function AcademicPlanner() {
     return blockers
   }
 
+  const getPrereqBlockersForTermWithOverrides = (
+    course: PlanCourse | Course,
+    targetYear: number,
+    targetTerm: string,
+    overrides: Map<string, { year: number; term: string }>,
+  ): PrereqBlockerInfo[] => {
+    const prereqs = Array.isArray((course as any).prerequisites) ? course.prerequisites : []
+    const blockers: PrereqBlockerInfo[] = []
+
+    prereqs.forEach((prereqId) => {
+      const prereqCourse = findCourseById(prereqId)
+      const prereqLabel = {
+        code: prereqCourse?.code ?? prereqId,
+        name: prereqCourse?.name ?? prereqCourse?.code ?? prereqId,
+      }
+
+      if (prereqCourse && prereqCourse.status === "passed") {
+        return
+      }
+
+      const overrideLocation = overrides.get(prereqId)
+      const prereqLocation = overrideLocation ?? getCourseLocationInPlan(prereqId)
+
+      if (!prereqLocation) {
+        blockers.push({
+          courseId: prereqId,
+          code: prereqLabel.code,
+          name: prereqLabel.name,
+          reason: "not_scheduled",
+        })
+        return
+      }
+
+      if (!isAtLeastOneTermAfter(targetYear, targetTerm, prereqLocation.year, prereqLocation.term)) {
+        blockers.push({
+          courseId: prereqId,
+          code: prereqLabel.code,
+          name: prereqCourse?.name ?? prereqLabel.code,
+          reason: "scheduled_too_late",
+          scheduledYear: prereqLocation.year,
+          scheduledTerm: prereqLocation.term,
+        })
+      }
+    })
+
+    return blockers
+  }
+
+  const getBlockedCoursesForBulkMove = (
+    courseIds: string[],
+    targetYear: number,
+    targetTerm: string,
+  ): BulkBlockedMoveDialogState["blockedCourses"] => {
+    const normalizedTargetTerm = normalizeTermLabel(targetTerm)
+    const overrides = new Map<string, { year: number; term: string }>()
+
+    courseIds.forEach((id) => {
+      overrides.set(id, { year: targetYear, term: normalizedTargetTerm })
+    })
+
+    return courseIds
+      .map((id) => {
+        const course = findCourseById(id) ?? getPlanCourseEntry(id)?.course
+        if (!course) return null
+        const blockers = getPrereqBlockersForTermWithOverrides(course, targetYear, normalizedTargetTerm, overrides)
+        if (blockers.length === 0) return null
+        return {
+          courseId: id,
+          courseCode: course.code,
+          courseName: course.name,
+          blockers,
+        }
+      })
+      .filter(
+        (
+          entry,
+        ): entry is {
+          courseId: string
+          courseCode: string
+          courseName: string
+          blockers: PrereqBlockerInfo[]
+        } => Boolean(entry),
+      )
+  }
+
   interface PlannedCreditMove {
     courseId: string
     toYear: number
@@ -3790,10 +3887,157 @@ export default function AcademicPlanner() {
   const handleBulkMove = () => {
     if (bulkMoveTargetTerm && selectedCourses.size > 0) {
       const [year, term] = bulkMoveTargetTerm.split("-")
-      moveMultipleCoursesToTerm(Array.from(selectedCourses), Number.parseInt(year), term)
+      const parsedYear = Number.parseInt(year, 10)
+      if (!Number.isFinite(parsedYear)) return
+      const targetCourseIds = Array.from(selectedCourses)
+      const blockedCourses = getBlockedCoursesForBulkMove(targetCourseIds, parsedYear, term)
+      if (blockedCourses.length > 0) {
+        setBulkBlockedMoveDialog({
+          targetYear: parsedYear,
+          targetTerm: normalizeTermLabel(term),
+          blockedCourses,
+        })
+        return
+      }
+
+      moveMultipleCoursesToTerm(targetCourseIds, parsedYear, term)
       setSelectedCourses(new Set())
       setBulkMoveDialogOpen(false)
       setBulkMoveTargetTerm("")
+    }
+  }
+
+  const getActionTargetCourseIds = (courseId: string): string[] => {
+    if (selectedCourses.size > 1 && selectedCourses.has(courseId)) {
+      return Array.from(selectedCourses)
+    }
+    return [courseId]
+  }
+
+  const handlePriorityAction = (courseId: string, level: keyof typeof PRIORITY_WEIGHTS) => {
+    const targetCourseIds = getActionTargetCourseIds(courseId)
+    setCoursePriorities((prev) => {
+      const next = { ...prev }
+      targetCourseIds.forEach((id) => {
+        next[id] = level
+        const pairCourseId = resolveLockPairCourseId(id)
+        if (pairCourseId) {
+          next[pairCourseId] = level
+        }
+      })
+      return next
+    })
+  }
+
+  const handleLockAction = (courseId: string, year: number, term: string) => {
+    const normalizedTerm = normalizeTermLabel(term)
+    const targetCourseIds = getActionTargetCourseIds(courseId)
+
+    const expandedTargetIds = new Set<string>()
+    targetCourseIds.forEach((id) => {
+      expandedTargetIds.add(id)
+      const pairCourseId = resolveLockPairCourseId(id)
+      if (pairCourseId) {
+        expandedTargetIds.add(pairCourseId)
+      }
+    })
+
+    const lockTargetIds = Array.from(expandedTargetIds)
+
+    setLockedPlacements((prev) => {
+      const next = { ...prev }
+      const shouldUnlockAll =
+        lockTargetIds.length > 0 &&
+        lockTargetIds.every((id) => {
+          const lock = prev[id]
+          return !!lock && lock.year === year && termsMatch(lock.term, normalizedTerm)
+        })
+
+      if (shouldUnlockAll) {
+        lockTargetIds.forEach((id) => {
+          delete next[id]
+        })
+        return next
+      }
+
+      lockTargetIds.forEach((id) => {
+        next[id] = { year, term: normalizedTerm }
+      })
+      return next
+    })
+  }
+
+  const handleMoveAction = (courseId: string, rawValue: string) => {
+    const targetCourseIds = getActionTargetCourseIds(courseId)
+
+    if (targetCourseIds.length <= 1) {
+      handleMoveSelectChange(courseId, rawValue)
+      return
+    }
+
+    if (!rawValue) return
+    if (rawValue.startsWith("blocked|")) {
+      const [, yearStr, termLabel] = rawValue.split("|")
+      const parsedYear = Number.parseInt(yearStr, 10)
+      if (Number.isFinite(parsedYear) && termLabel) {
+        handleBlockedMoveAttempt(courseId, parsedYear, termLabel, true)
+      }
+      return
+    }
+
+    const [yearStr, term] = rawValue.split("-")
+    if (!yearStr || !term) return
+    const parsedYear = Number.parseInt(yearStr, 10)
+    if (!Number.isFinite(parsedYear)) return
+
+    const normalizedTargetTerm = normalizeTermLabel(term)
+    const blockedCourses = getBlockedCoursesForBulkMove(targetCourseIds, parsedYear, normalizedTargetTerm)
+
+    if (blockedCourses.length > 0) {
+      setBulkBlockedMoveDialog({
+        targetYear: parsedYear,
+        targetTerm: normalizedTargetTerm,
+        blockedCourses,
+      })
+      resetMoveSelects()
+      return
+    }
+
+    moveMultipleCoursesToTerm(targetCourseIds, parsedYear, term)
+    setSelectedCourses(new Set())
+    resetMoveSelects()
+  }
+
+  const removeCoursesFromPlan = (courseIds: string[]) => {
+    if (!courseIds || courseIds.length === 0) return
+    const idsToRemove = new Set<string>()
+
+    courseIds.forEach((id) => {
+      idsToRemove.add(id)
+      const baseCourse = findCourseById(id) ?? getPlanCourseEntry(id)?.course ?? null
+      const pairedCourseId = baseCourse ? getPairedCourseId(baseCourse) : null
+      if (pairedCourseId) {
+        idsToRemove.add(pairedCourseId)
+      }
+    })
+
+    setGraduationPlan((prevPlan) => {
+      const updatedPlan = prevPlan
+        .map((semester) => ({
+          ...semester,
+          courses: semester.courses.filter((course) => !idsToRemove.has(course.id)),
+        }))
+        .filter((semester) => semester.courses.length > 0)
+
+      return applyPetitionFlagsToPlan(updatedPlan)
+    })
+  }
+
+  const handleRemoveAction = (courseId: string) => {
+    const targetCourseIds = getActionTargetCourseIds(courseId)
+    removeCoursesFromPlan(targetCourseIds)
+    if (targetCourseIds.length > 1) {
+      setSelectedCourses(new Set())
     }
   }
 
@@ -5519,27 +5763,6 @@ export default function AcademicPlanner() {
     return resultPlan
   }
 
-  // Remove a course from the graduation plan
-  const removeCourseFromPlan = (courseId: string) => {
-    const baseCourse = findCourseById(courseId) ?? getPlanCourseEntry(courseId)?.course ?? null
-    const pairedCourseId = baseCourse ? getPairedCourseId(baseCourse) : null
-    const idsToRemove = new Set<string>([courseId])
-    if (pairedCourseId) {
-      idsToRemove.add(pairedCourseId)
-    }
-
-    setGraduationPlan((prevPlan) => {
-      const updatedPlan = prevPlan
-        .map((semester) => ({
-          ...semester,
-          courses: semester.courses.filter((course) => !idsToRemove.has(course.id)),
-        }))
-        .filter((semester) => semester.courses.length > 0)
-
-      return applyPetitionFlagsToPlan(updatedPlan)
-    })
-  }
-
   // Change section for a course in the plan
   const changeCourseSection = (courseId: string, newSection: CourseSection) => {
     setGraduationPlan((prevPlan) => {
@@ -6826,6 +7049,59 @@ export default function AcademicPlanner() {
           </DialogContent>
         </Dialog>
         <Dialog
+          open={Boolean(bulkBlockedMoveDialog)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setBulkBlockedMoveDialog(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Some Selected Courses Cannot Be Moved</DialogTitle>
+              <DialogDescription>
+                {bulkBlockedMoveDialog
+                  ? `The selected move to ${formatAcademicYear(bulkBlockedMoveDialog.targetYear)} ${bulkBlockedMoveDialog.targetTerm} is blocked for ${bulkBlockedMoveDialog.blockedCourses.length} course${bulkBlockedMoveDialog.blockedCourses.length === 1 ? "" : "s"} due to prerequisites.`
+                  : "Prerequisite requirements prevented this bulk move."}
+              </DialogDescription>
+            </DialogHeader>
+            {bulkBlockedMoveDialog && (
+              <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1 text-sm">
+                {bulkBlockedMoveDialog.blockedCourses.map((blockedCourse) => (
+                  <div
+                    key={blockedCourse.courseId}
+                    className="rounded-md border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-900/50 dark:bg-amber-900/20"
+                  >
+                    <p className="text-sm font-semibold">{blockedCourse.courseCode}</p>
+                    <p className="text-xs text-muted-foreground">{blockedCourse.courseName}</p>
+                    <div className="mt-2 space-y-2">
+                      {blockedCourse.blockers.map((blocker) => (
+                        <div
+                          key={`${blockedCourse.courseId}-${blocker.courseId}`}
+                          className="rounded border border-white/70 bg-white/70 p-2 text-xs dark:border-slate-700/60 dark:bg-slate-900/40"
+                        >
+                          <p className="font-semibold">{blocker.code}</p>
+                          <p className="text-muted-foreground">{blocker.name}</p>
+                          <p className="mt-1 text-muted-foreground">
+                            {blocker.reason === "not_scheduled"
+                              ? "Not scheduled or passed yet. Place it at least one term earlier."
+                              : blocker.scheduledYear && blocker.scheduledTerm
+                                ? `Currently planned for ${formatAcademicYear(blocker.scheduledYear)} ${blocker.scheduledTerm}. It must be at least one term earlier.`
+                                : "This prerequisite must be completed earlier."}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <DialogFooter>
+              <Button onClick={() => setBulkBlockedMoveDialog(null)}>Understood</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog
           open={Boolean(creditGuardrailDialog)}
           onOpenChange={(open) => {
             if (!open) {
@@ -7984,7 +8260,9 @@ export default function AcademicPlanner() {
                                       <TableCell>
                                         <Select
                                           value={getPriorityLabel(course.id, course) as string}
-                                          onValueChange={(value) => setCoursePriority(course.id, value as keyof typeof PRIORITY_WEIGHTS)}
+                                          onValueChange={(value) =>
+                                            handlePriorityAction(course.id, value as keyof typeof PRIORITY_WEIGHTS)
+                                          }
                                         >
                                           <SelectTrigger className="w-28">
                                             <SelectValue placeholder="Priority" />
@@ -8007,7 +8285,7 @@ export default function AcademicPlanner() {
                                             <Button
                                               variant={locked ? "default" : "outline"}
                                               size="sm"
-                                              onClick={() => toggleCourseLock(course.id, semester.year, semester.term)}
+                                              onClick={() => handleLockAction(course.id, semester.year, semester.term)}
                                               title={locked ? "Unlock from this term" : "Lock to this term"}
                                               className="flex items-center gap-1"
                                             >
@@ -8021,7 +8299,7 @@ export default function AcademicPlanner() {
                                         <div className="flex items-center gap-2">
                                           <Select
                                             key={`${course.id}-${moveSelectResetCounter}`}
-                                            onValueChange={(value) => handleMoveSelectChange(course.id, value)}
+                                            onValueChange={(value) => handleMoveAction(course.id, value)}
                                           >
                                             <SelectTrigger className="w-40">
                                               <SelectValue placeholder="Move to..." />
@@ -8074,7 +8352,7 @@ export default function AcademicPlanner() {
                                           <Button
                                             variant="ghost"
                                             size="icon"
-                                            onClick={() => removeCourseFromPlan(course.id)}
+                                            onClick={() => handleRemoveAction(course.id)}
                                             className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
                                             title="Remove from plan"
                                             aria-label={`Remove ${getDisplayCode(course.code)} from plan`}
