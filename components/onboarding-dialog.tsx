@@ -809,7 +809,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         className={cn(
           "border-none bg-transparent p-0 shadow-none",
           isMobileLayout
-            ? "left-0 top-0 h-screen w-full max-w-none translate-x-0 translate-y-0 rounded-none"
+            ? "inset-0 h-auto w-auto max-h-none max-w-none translate-x-0 translate-y-0 rounded-none"
             : "max-w-3xl"
         )}
       >
@@ -817,7 +817,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         <div
           className={cn(
             "relative flex h-full max-h-[90vh] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-white/10 dark:bg-slate-900",
-            isMobileLayout && "h-screen max-h-none overflow-y-auto rounded-none border-none"
+            isMobileLayout && "h-full min-h-full max-h-none overflow-y-auto rounded-none border-none"
           )}
         >
           <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-400 via-blue-400 to-amber-400" />

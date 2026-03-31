@@ -985,6 +985,10 @@ export default function ScheduleMaker() {
   const [zoomLevel, setZoomLevel] = useState<number>(0)
   const [isCapturingImage, setIsCapturingImage] = useState(false)
   const [searchPanelVisible, setSearchPanelVisible] = useState<boolean>(false)
+  const [mobileCoursesOpen, setMobileCoursesOpen] = useState(false)
+  const [isCompactViewport, setIsCompactViewport] = useState(false)
+  const [forceDesktopExportLayout, setForceDesktopExportLayout] = useState(false)
+  const [compactBottomOverlay, setCompactBottomOverlay] = useState<"summary" | "actions" | null>(null)
   const [scheduleTitle, setScheduleTitle] = useState(DEFAULT_SCHEDULE_TITLE)
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [scheduleTitleDraft, setScheduleTitleDraft] = useState(DEFAULT_SCHEDULE_TITLE)
@@ -1436,9 +1440,10 @@ export default function ScheduleMaker() {
 
   useEffect(() => {
     if (typeof window === "undefined") return
-    const media = window.matchMedia("(max-width: 768px)")
+    const mobileMedia = window.matchMedia("(max-width: 768px)")
+    const compactMedia = window.matchMedia("(max-width: 1023px)")
 
-    const handleChange = (event: MediaQueryListEvent | MediaQueryList) => {
+    const handleMobileChange = (event: MediaQueryListEvent | MediaQueryList) => {
       const suppressed = window.localStorage.getItem("scheduleMaker.hideMobilePrompt") === "true"
       if (!event.matches) {
         setShowMobilePrompt(false)
@@ -1447,9 +1452,24 @@ export default function ScheduleMaker() {
       }
     }
 
-    handleChange(media)
-    media.addEventListener("change", handleChange)
-    return () => media.removeEventListener("change", handleChange)
+    const handleCompactChange = (event: MediaQueryListEvent | MediaQueryList) => {
+      setIsCompactViewport(event.matches)
+      if (!event.matches) {
+        setMobileCoursesOpen(false)
+        setCompactBottomOverlay(null)
+      }
+    }
+
+    handleMobileChange(mobileMedia)
+    handleCompactChange(compactMedia)
+
+    mobileMedia.addEventListener("change", handleMobileChange)
+    compactMedia.addEventListener("change", handleCompactChange)
+
+    return () => {
+      mobileMedia.removeEventListener("change", handleMobileChange)
+      compactMedia.removeEventListener("change", handleCompactChange)
+    }
   }, [])
 
   useEffect(() => {
@@ -4143,7 +4163,14 @@ const downloadScheduleImage = async () => {
   trackAnalyticsEvent("schedule_maker.download_image_click", { selectedCount: selectedCourses.length })
   if (!scheduleRef.current) return;
 
+  const shouldForceDesktopLayout = isCompactViewport
   setIsCapturingImage(true)
+  setForceDesktopExportLayout(shouldForceDesktopLayout)
+
+  // If we are in compact view, wait for one full render cycle so blocks/layout switch to desktop export mode.
+  if (shouldForceDesktopLayout) {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  }
   
   // Capture at max zoom for clarity
   const prevZoom = zoomLevel
@@ -4176,14 +4203,19 @@ const downloadScheduleImage = async () => {
     // Add some space after Saturday in the exported PNG (does not affect live view).
     const EXPORT_RIGHT_GUTTER_PX = 26
     // Crop empty space at the bottom of the exported PNG (does not affect live view).
-    // Increase this if the export has too much empty space; decrease if it crops too aggressively.
-    const EXPORT_CROP_BOTTOM_PX = 350
+    // Keep this conservative because aggressive crop can cut off the schedule on mobile viewports.
+    const EXPORT_CROP_BOTTOM_PX = 220
     // -------------------------------------
 
     const RIGHT_EDGE_SAFETY_PX = 4
     const scheduleEl = scheduleRef.current
     const parentEl = scheduleEl.parentElement as HTMLElement | null
     const scrollEl = scheduleEl.querySelector('[data-schedule-scroll]') as HTMLElement | null
+    const unclippedAncestors: Array<{
+      el: HTMLElement
+      overflow: string
+      maxHeight: string
+    }> = []
     const originalScheduleHeight = scheduleEl.style.height
     const originalScheduleOverflow = scheduleEl.style.overflow
     const originalScheduleWidth = scheduleEl.style.width
@@ -4210,6 +4242,19 @@ const downloadScheduleImage = async () => {
       scheduleEl.style.height = `${fullHeight + (headerEl?.offsetHeight ?? 0) + 200}px`
       cardEl.style.width = `${fullWidth + 32}px` // add padding margin headroom
       cardEl.style.height = `${fullHeight + (headerEl?.offsetHeight ?? 0) + 240}px`
+    }
+
+    // Unclip any overflow-hidden wrappers between schedule and card.
+    let currentAncestor = scheduleEl.parentElement
+    while (currentAncestor && currentAncestor !== cardEl) {
+      unclippedAncestors.push({
+        el: currentAncestor,
+        overflow: currentAncestor.style.overflow,
+        maxHeight: currentAncestor.style.maxHeight,
+      })
+      currentAncestor.style.overflow = "visible"
+      currentAncestor.style.maxHeight = "none"
+      currentAncestor = currentAncestor.parentElement
     }
 
     // Store original styles
@@ -4275,15 +4320,44 @@ const downloadScheduleImage = async () => {
     }
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
 
-    const captureWidth = (scrollEl?.scrollWidth || cardEl.scrollWidth) + RIGHT_EDGE_SAFETY_PX
+    const captureWidth = Math.max(
+      scrollEl?.scrollWidth ?? 0,
+      scheduleEl.scrollWidth,
+      cardEl.scrollWidth,
+      cardEl.offsetWidth,
+    ) + RIGHT_EDGE_SAFETY_PX
     const captureHeight = Math.max(
       scrollEl?.scrollHeight || 0,
       scheduleEl.scrollHeight,
       cardEl.scrollHeight,
     ) + (headerEl?.offsetHeight ?? 0) + 160
+    const isMobileViewport = window.matchMedia?.("(max-width: 768px)")?.matches ?? false
+    const maxCanvasDimension = isMobileViewport ? 4096 : 8192
+    const adaptiveScale = Math.min(
+      EXPORT_CANVAS_SCALE,
+      maxCanvasDimension / Math.max(1, captureWidth),
+      maxCanvasDimension / Math.max(1, captureHeight),
+    )
+    const exportScale = Math.max(1, adaptiveScale)
+    const exportDebugEnabled = window.localStorage.getItem("scheduleMaker.exportDebug") === "true"
+    if (exportDebugEnabled) {
+      console.info("[schedule-export] capture metrics", {
+        isMobileViewport,
+        captureWidth,
+        captureHeight,
+        exportScale,
+        maxCanvasDimension,
+        scheduleScrollWidth: scheduleEl.scrollWidth,
+        scheduleScrollHeight: scheduleEl.scrollHeight,
+        scrollElScrollWidth: scrollEl?.scrollWidth ?? null,
+        scrollElScrollHeight: scrollEl?.scrollHeight ?? null,
+        cardScrollWidth: cardEl.scrollWidth,
+        cardScrollHeight: cardEl.scrollHeight,
+      })
+    }
 
     const canvas = await html2canvas(cardEl, {
-      scale: EXPORT_CANVAS_SCALE,
+      scale: exportScale,
       useCORS: true,
       logging: false,
       backgroundColor: exportBackgroundColor,
@@ -4480,6 +4554,10 @@ const downloadScheduleImage = async () => {
       scrollEl.style.maxHeight = originalScrollMaxHeight ?? ""
       scrollEl.style.paddingRight = originalScrollPaddingRight ?? ""
     }
+    unclippedAncestors.forEach(({ el, overflow, maxHeight }) => {
+      el.style.overflow = overflow
+      el.style.maxHeight = maxHeight
+    })
     cardEl.style.width = originalCardWidth;
     cardEl.style.height = originalCardHeight;
 
@@ -4517,8 +4595,17 @@ const downloadScheduleImage = async () => {
     let outputCanvas: HTMLCanvasElement = canvas
     try {
       const pxRatio = captureWidth > 0 ? canvas.width / captureWidth : 1
-      const cropBottomPx = Math.max(0, EXPORT_CROP_BOTTOM_PX) * pxRatio
+      const cropBottomPx = (isMobileViewport ? 0 : Math.max(0, EXPORT_CROP_BOTTOM_PX)) * pxRatio
       const targetHeight = Math.max(1, Math.round(canvas.height - cropBottomPx))
+      if (exportDebugEnabled) {
+        console.info("[schedule-export] crop metrics", {
+          canvasWidth: canvas.width,
+          canvasHeight: canvas.height,
+          pxRatio,
+          cropBottomPx,
+          targetHeight,
+        })
+      }
       if (targetHeight > 0 && targetHeight < canvas.height) {
         const cropped = document.createElement("canvas")
         cropped.width = canvas.width
@@ -4549,6 +4636,7 @@ const downloadScheduleImage = async () => {
       // ignore
     }
     // Restore user zoom
+    setForceDesktopExportLayout(false)
     setZoomLevel(prevZoom)
     setIsCapturingImage(false)
   }
@@ -4738,6 +4826,7 @@ const downloadScheduleImage = async () => {
     textColor,
     onContextMenu,
   }) => {
+    const isCompactScheduleLayout = isCompactViewport && !forceDesktopExportLayout && !isCapturingImage
     const titleContainerRef = useRef<HTMLDivElement | null>(null)
     const titleTextRef = useRef<HTMLDivElement | null>(null)
     const [titleFontPx, setTitleFontPx] = useState(() => (compactTitle ? 11 : 12))
@@ -4765,8 +4854,8 @@ const downloadScheduleImage = async () => {
       const textEl = titleTextRef.current
       if (!container || !textEl) return
 
-      const minFont = 9
-      const maxFont = compactTitle ? 11 : 12
+      const minFont = isCompactScheduleLayout ? 8 : 9
+      const maxFont = isCompactScheduleLayout ? (compactTitle ? 10 : 11) : compactTitle ? 11 : 12
 
       let next = maxFont
       textEl.style.fontSize = `${next}px`
@@ -4814,10 +4903,10 @@ const downloadScheduleImage = async () => {
       }
 
       if (showTime) {
-        setTimeFontPx(fitSelf(timeRef.current, { max: 11, min: 9 }))
+        setTimeFontPx(fitSelf(timeRef.current, isCompactScheduleLayout ? { max: 10, min: 8 } : { max: 11, min: 9 }))
       }
       if (showRoom) {
-        setRoomFontPx(fitSelf(roomRef.current, { max: 10, min: 9 }))
+        setRoomFontPx(fitSelf(roomRef.current, isCompactScheduleLayout ? { max: 9, min: 8 } : { max: 10, min: 9 }))
       }
     }, [showTime, showRoom, displayTime, displayRoom, style.height, style.width])
 
@@ -4928,12 +5017,14 @@ const downloadScheduleImage = async () => {
   }
 
 const renderScheduleView = () => {
+  const isCompactScheduleLayout = isCompactViewport && !forceDesktopExportLayout && !isCapturingImage
   // Constants for precise alignment
-  const HEADER_HEIGHT = 44; // Height of header row in pixels
-  const HOUR_HEIGHT = zoomedHourHeight; // Each hour height adjusts with zoom
+  const HEADER_HEIGHT = isCompactScheduleLayout ? 38 : 44 // Height of header row in pixels
+  const HOUR_HEIGHT = isCompactScheduleLayout ? Math.min(zoomedHourHeight, 36) : zoomedHourHeight // Compact view still shows full grid but with better vertical readability
   const FIRST_HOUR = 7; // Schedule starts at 7AM
-  const TIME_COL_WIDTH = 80; // Narrower time column to maximize course space
+  const TIME_COL_WIDTH = isCompactScheduleLayout ? 56 : 80 // Narrower time column in compact view
   const DAY_COUNT = 6; // Monday–Saturday
+  const compactCalendarHeight = HEADER_HEIGHT + HOUR_HEIGHT * 15
 
   const gridVars: React.CSSProperties = {
     // Space for time column, remaining width split across day columns
@@ -4948,36 +5039,37 @@ const renderScheduleView = () => {
         ref={scheduleRef}
       >
         <div
-          className="relative h-full overflow-auto hide-scrollbar"
+          className={`relative h-full hide-scrollbar ${isCompactScheduleLayout ? "overflow-x-hidden overflow-y-hidden" : "overflow-auto"}`}
           data-schedule-scroll
           style={{
             ...gridVars,
-            minWidth: "640px",
-            height: "calc(100vh - 160px)",
-            maxHeight: "calc(100vh - 160px)",
+            minWidth: isCompactScheduleLayout ? "0" : "640px",
+            width: "100%",
+            height: isCompactScheduleLayout ? `${compactCalendarHeight}px` : "calc(100vh - 160px)",
+            maxHeight: isCompactScheduleLayout ? `${compactCalendarHeight}px` : "calc(100vh - 160px)",
           }}
         >
           {/* Header row - fixed at top */}
           <div
-            className="sticky top-0 z-30 grid min-w-[720px] border-b border-slate-200/70 bg-white/95 dark:border-slate-700/80 dark:bg-slate-900/95"
+            className={`sticky top-0 z-30 grid border-b border-slate-200/70 bg-white/95 dark:border-slate-700/80 dark:bg-slate-900/95 ${isCompactScheduleLayout ? "min-w-0" : "min-w-[720px]"}`}
             style={{ gridTemplateColumns: `var(--time-col) repeat(${DAY_COUNT}, minmax(0, 1fr))` }}
           >
-            <div className="day-header rounded-md bg-gray-100 p-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+            <div className={`day-header rounded-md bg-gray-100 text-center font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300 ${isCompactScheduleLayout ? "p-1 text-[10px]" : "p-2 text-xs"}`}>
               Time
             </div>
             {DAYS.map((day, index) => (
               <div
                 key={day}
-                className="day-header rounded-md bg-gray-100 p-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300 day-column-fade"
+                className={`day-header rounded-md bg-gray-100 text-center font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300 day-column-fade ${isCompactScheduleLayout ? "p-1 text-[10px]" : "p-2 text-xs"}`}
                 style={{ animationDelay: `${index * 60}ms` }}
               >
-                {getFullDayName(day)}
+                {isCompactScheduleLayout ? day : getFullDayName(day)}
               </div>
             ))}
           </div>
 
           {/* Time slots - absolutely positioned */}
-          <div className="relative min-w-[720px]" style={{ height: `${HOUR_HEIGHT * 15}px`, ...gridVars }}>
+          <div className={`relative ${isCompactScheduleLayout ? "min-w-0" : "min-w-[720px]"}`} style={{ height: `${HOUR_HEIGHT * 15}px`, ...gridVars }}>
             {/* Column backdrops with subtle fade-in */}
             <div className="pointer-events-none absolute inset-0" style={{ ...gridVars }}>
               {DAYS.map((day, index) => (
@@ -4997,7 +5089,9 @@ const renderScheduleView = () => {
             {/* Hour markers */}
             {Array.from({ length: 15 }).map((_, i) => {
               const hour = FIRST_HOUR + i
-              const timeString = `${hour % 12 || 12}:00 ${hour < 12 ? "AM" : "PM"}`
+              const timeString = isCompactScheduleLayout
+                ? `${hour % 12 || 12}${hour < 12 ? "AM" : "PM"}`
+                : `${hour % 12 || 12}:00 ${hour < 12 ? "AM" : "PM"}`
               return (
                 <div
                   key={hour}
@@ -5081,11 +5175,17 @@ const renderScheduleView = () => {
                 const endTop = (endHour - FIRST_HOUR) * HOUR_HEIGHT + (endMinute / 60) * HOUR_HEIGHT
 
                 const height = endTop - startTop
-                const showTime = height >= 64
-                const showRoom = height >= 88
-                const compactTitle = height < 72
-                const blockPadding = height < 56 ? "4px 8px" : "6px 10px 12px"
-                const justifyContent = showTime || showRoom ? "space-between" : "center"
+                const showTime = isCompactScheduleLayout ? height >= 30 : height >= 64
+                const showRoom = isCompactScheduleLayout ? height >= 42 : height >= 88
+                const compactTitle = isCompactScheduleLayout ? height < 58 : height < 72
+                const blockPadding = isCompactScheduleLayout
+                  ? height < 42
+                    ? "1px 4px"
+                    : "2px 5px"
+                  : height < 56
+                    ? "4px 8px"
+                    : "6px 10px 12px"
+                const justifyContent = isCompactScheduleLayout ? "flex-start" : showTime || showRoom ? "space-between" : "center"
 
                 return course.parsedDays.map((day) => {
                   const dayIndex = DAYS.indexOf(day)
@@ -5098,14 +5198,14 @@ const renderScheduleView = () => {
                     backgroundColor: bgColor,
                     width: `calc(var(--day-width) - 4px)`,
                     zIndex: 10,
-                    margin: "0 2px",
+                    margin: isCompactScheduleLayout ? "0 1px" : "0 2px",
                     display: "flex",
                     flexDirection: "column",
                     justifyContent,
                     padding: blockPadding,
                     boxSizing: "border-box",
                     overflow: "hidden",
-                    gap: showTime || showRoom ? 4 : 0,
+                    gap: isCompactScheduleLayout ? 0 : showTime || showRoom ? 4 : 0,
                     boxShadow:
                       theme === "dark"
                         ? `0 0 0 1px ${hexToRgba(bgColor, 0.45)}, 0 0 14px ${hexToRgba(bgColor, 0.6)}, 0 0 28px ${hexToRgba(bgColor, 0.45)}`
@@ -5146,6 +5246,84 @@ const renderScheduleView = () => {
             </AnimatePresence>
           </div>
         </div>
+        {isClient &&
+          isCompactViewport &&
+          compactBottomOverlay &&
+          createPortal(
+            <div className="fixed inset-0 z-[10100] lg:hidden">
+              <div className="absolute inset-0 bg-black/25" onClick={() => setCompactBottomOverlay(null)} />
+              <div className="absolute inset-x-3 bottom-[calc(env(safe-area-inset-bottom,0px)+5rem)]">
+                <Card className="bg-white/95 shadow-xl backdrop-blur-sm dark:bg-slate-900/95">
+                  <CardHeader className="py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle className="text-base font-semibold">
+                        {compactBottomOverlay === "summary" ? "Summary" : "Exports & actions"}
+                      </CardTitle>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => setCompactBottomOverlay(null)}
+                      >
+                        Close
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  {compactBottomOverlay === "summary" ? (
+                    <CardContent className="space-y-1.5 pt-0 text-sm">
+                      <div className="flex justify-between"><span>Total units</span><AnimatePresence mode="popLayout" initial={false}><AnimatedNumber value={totalSelectedCredits} /></AnimatePresence></div>
+                      <div className="flex justify-between"><span>Courses selected</span><AnimatePresence mode="popLayout" initial={false}><AnimatedNumber value={selectedCourseCodes.length} /></AnimatePresence></div>
+                      <div className="flex justify-between"><span>Sections added</span><AnimatePresence mode="popLayout" initial={false}><AnimatedNumber value={selectedCourses.length} /></AnimatePresence></div>
+                    </CardContent>
+                  ) : (
+                    <CardContent className="space-y-2 pt-0">
+                      <div className="grid grid-cols-3 gap-2">
+                        <Button
+                          variant="outline"
+                          className="h-9 w-full justify-center gap-1.5 text-xs font-medium whitespace-nowrap"
+                          onClick={handleUndo}
+                          disabled={historyIndex <= 0}
+                        >
+                          <Undo className="h-3.5 w-3.5" /> Undo
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="h-9 w-full justify-center gap-1.5 text-xs font-medium whitespace-nowrap"
+                          onClick={handleRedo}
+                          disabled={historyIndex < 0 || historyIndex >= history.length - 1}
+                        >
+                          <Redo className="h-3.5 w-3.5" /> Redo
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="h-9 w-full justify-center gap-1.5 text-xs font-medium whitespace-nowrap"
+                          onClick={() => setHistoryDialogOpen(true)}
+                          disabled={history.length === 0}
+                        >
+                          <History className="h-3.5 w-3.5" /> History
+                        </Button>
+                      </div>
+                      <Button variant="outline" className="h-9 w-full justify-start gap-2 text-sm" onClick={downloadScheduleImage}>
+                        <Download className="h-3.5 w-3.5" /> Download schedule
+                      </Button>
+                      <Button variant="outline" className="h-9 w-full justify-start gap-2 text-sm" onClick={openIcsDialog}>
+                        <Calendar className="h-3.5 w-3.5" /> Export to calendar
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="h-9 w-full justify-start gap-2 text-sm"
+                        onClick={openSolarOSESWindow}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" /> Add to SOLAR-OSES
+                      </Button>
+                    </CardContent>
+                  )}
+                </Card>
+              </div>
+            </div>,
+            document.body,
+          )}
       </div>
     </div>
   );
@@ -5864,12 +6042,22 @@ const renderScheduleView = () => {
       </Dialog>
       <div className="flex-1 overflow-hidden px-4 pb-4 pt-3 lg:px-8 flex flex-col min-h-0">
         <div className="mb-4 shrink-0">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div
+              className={`flex flex-col gap-3 ${
+                isCompactViewport
+                  ? "items-center text-center"
+                  : "sm:flex-row sm:items-center sm:justify-between"
+              }`}
+            >
             <h1 className="text-2xl font-semibold">Schedule Maker</h1>
             <div className="hidden md:flex flex-1 justify-center">
               <QuickNavigation />
             </div>
-            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            <div
+              className={`flex flex-wrap items-center gap-2 ${
+                isCompactViewport ? "justify-center" : "sm:justify-end"
+              }`}
+            >
               <Button variant="outline" size="icon" onClick={zoomOut} aria-label="Zoom out" className="h-8 w-8">
                 <Minus className="h-3.5 w-3.5" />
               </Button>
@@ -5925,18 +6113,41 @@ const renderScheduleView = () => {
         </div>
 
   <div className="grid flex-1 min-h-0 max-h-full gap-2 overflow-hidden lg:grid-cols-[280px_minmax(0,1fr)_280px] xl:grid-cols-[300px_minmax(0,1fr)_300px]">
+          {isCompactViewport && mobileCoursesOpen && (
+            <div
+              className="fixed inset-0 z-[10010] bg-black/45 backdrop-blur-[1px] lg:hidden"
+              onClick={() => setMobileCoursesOpen(false)}
+            />
+          )}
           {/* Left Sidebar */}
           <motion.div
-            className="flex min-h-0 h-full flex-col gap-3 overflow-auto pr-1 hide-scrollbar"
+            className={`min-h-0 h-full flex-col gap-3 pr-1 hide-scrollbar ${
+              isCompactViewport && mobileCoursesOpen ? "overflow-hidden" : "overflow-auto"
+            } ${
+              isCompactViewport
+                ? mobileCoursesOpen
+                  ? "fixed inset-0 z-[10020] flex bg-slate-50 p-3 dark:bg-slate-950"
+                  : "hidden"
+                : "hidden lg:flex"
+            }`}
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.25, ease: "easeOut", delay: 0.05 }}
           >
             {/* Combined card for search and selected courses */}
-            <Card className="flex flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
+            <Card className={`flex flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50 ${isCompactViewport && mobileCoursesOpen ? "min-h-0 flex-1" : ""}`}>
               <CardHeader className="space-y-2 pb-3">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
                   <CardTitle className="text-base font-semibold">My Courses</CardTitle>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 lg:hidden"
+                    onClick={() => setMobileCoursesOpen(false)}
+                  >
+                    Close
+                  </Button>
                 </div>
                 {/* Search with floating results */}
                 <div className="relative text-[13px]">
@@ -5959,7 +6170,7 @@ const renderScheduleView = () => {
                       <AnimatePresence>
                         {searchPanelVisible && (
                           <motion.div
-                            className="fixed inset-0 z-50 flex items-start justify-center pt-24 px-3"
+                            className="fixed inset-0 z-[10040] flex items-start justify-center pt-24 px-3"
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
@@ -6186,12 +6397,12 @@ const renderScheduleView = () => {
               </CardHeader>
 
               {/* Selected courses section */}
-              <CardContent className="border-t border-slate-200 pt-3 dark:border-slate-700">
+              <CardContent className={`border-t border-slate-200 pt-3 dark:border-slate-700 ${isCompactViewport && mobileCoursesOpen ? "flex min-h-0 flex-1 flex-col" : ""}`}>
                 <div className="mb-3">
                   <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Selected courses</h3>
                   <p className="text-xs text-slate-500">Pick sections to send them to the calendar.</p>
                 </div>
-                <div className="space-y-2 max-h-[560px] overflow-y-auto themed-scrollbar">
+                <div className={`space-y-2 overflow-y-auto themed-scrollbar ${isCompactViewport && mobileCoursesOpen ? "min-h-0 flex-1 max-h-none" : "max-h-[560px]"}`}>
                   {selectedCourseCodes.length === 0 && (
                     <p className="text-sm text-slate-500">No courses selected yet.</p>
                   )}
@@ -6450,6 +6661,96 @@ const renderScheduleView = () => {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.28, ease: "easeOut", delay: 0.12 }}
           >
+            <div className="mb-2 flex justify-center lg:hidden">
+              <Button
+                variant="outline"
+                className="h-9 w-full max-w-sm justify-center gap-2 text-sm"
+                onClick={() => setMobileCoursesOpen(true)}
+              >
+                <BookOpen className="h-4 w-4" />
+                My Courses
+              </Button>
+            </div>
+            {isCompactViewport && (
+              <Card className="mb-2 bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50 lg:hidden">
+                <CardHeader className="py-3">
+                  <CardTitle className="text-sm font-semibold">Versions</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 pt-0 text-sm">
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    {versions.map((version) => {
+                      const isActive = version.id === activeVersionState?.activeVersionId
+                      const nameParts = version.name.trim().split(" ")
+                      const label = nameParts[nameParts.length - 1]?.charAt(0) || version.name.charAt(0)
+                      return (
+                        <button
+                          key={version.id}
+                          type="button"
+                          onClick={() => setActiveVersion(version.id)}
+                          aria-label={`Activate ${version.name}`}
+                          aria-pressed={isActive}
+                          className={`flex h-8 w-8 items-center justify-center rounded-xl border text-[11px] font-semibold transition ${
+                            isActive
+                              ? "border-rose-500 bg-rose-500/20 text-rose-600 dark:border-rose-400 dark:bg-rose-500/20 dark:text-rose-100"
+                              : "border-slate-300 bg-white text-slate-600 hover:border-slate-400 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-600 dark:hover:bg-slate-800"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      )
+                    })}
+                    <Popover open={addVersionMenuOpen} onOpenChange={setAddVersionMenuOpen}>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="flex h-8 w-8 items-center justify-center rounded-xl border border-dashed border-slate-300 text-slate-500 transition hover:border-blue-500 hover:text-blue-500 dark:border-slate-700 dark:text-slate-300 dark:hover:border-blue-400 dark:hover:text-blue-200"
+                          aria-label="Create version"
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent align="center" className="w-56 space-y-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Add version
+                        </p>
+                        <Button
+                          variant="default"
+                          size="sm"
+                          className="w-full justify-start"
+                          onClick={() => {
+                            createVersion("new")
+                            setAddVersionMenuOpen(false)
+                          }}
+                        >
+                          Start fresh
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="w-full justify-start"
+                          onClick={() => {
+                            createVersion("duplicate")
+                            setAddVersionMenuOpen(false)
+                          }}
+                        >
+                          Duplicate current
+                        </Button>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  {compactBottomOverlay === null && (
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <Button variant="outline" className="h-9 w-full" onClick={() => setCompactBottomOverlay("summary")}>
+                        Summary
+                      </Button>
+                      <Button variant="outline" className="h-9 w-full" onClick={() => setCompactBottomOverlay("actions")}>
+                        Exports & actions
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
             <Card
               data-schedule-card
               className="flex min-h-0 h-full flex-1 flex-col overflow-hidden bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50"
@@ -6563,7 +6864,7 @@ const renderScheduleView = () => {
 
           {/* Right Sidebar */}
           <motion.div
-            className="flex min-h-0 h-full flex-col gap-3 overflow-auto pl-1 hide-scrollbar"
+            className="hidden min-h-0 h-full flex-col gap-3 overflow-auto pl-1 hide-scrollbar lg:flex"
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.24, ease: "easeOut", delay: 0.18 }}

@@ -137,7 +137,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             "max-w-2xl",
             isMajorUpdate && "bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-900 text-white border-0 shadow-[0_20px_80px_rgba(16,185,129,0.35)]",
             isCompactLayout
-              ? "left-0 top-0 h-screen w-full max-w-none translate-x-0 translate-y-0 rounded-none border-0 p-6 pt-8"
+              ? "inset-0 h-auto w-auto max-h-none max-w-none translate-x-0 translate-y-0 rounded-none border-0 p-6 pt-8 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)]"
               : "p-6"
           )}
           style={

@@ -75,7 +75,7 @@ export default function BottomNav() {
   const columnsClass = showScrollTop ? "grid-cols-5" : "grid-cols-4"
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-[13060] border-t border-slate-200 bg-white/90 backdrop-blur-lg shadow-[0_-8px_18px_rgba(15,23,42,0.14)] dark:border-slate-800 dark:bg-slate-900/90 md:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-[9000] border-t border-slate-200 bg-white/90 backdrop-blur-lg shadow-[0_-8px_18px_rgba(15,23,42,0.14)] dark:border-slate-800 dark:bg-slate-900/90 md:hidden">
       <div className="mx-auto max-w-5xl px-3">
         <div className={`grid ${columnsClass} gap-1 py-2 pb-[calc(env(safe-area-inset-bottom,0px)+0.4rem)]`}>
           {profileOpen ? (
