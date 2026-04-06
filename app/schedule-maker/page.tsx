@@ -808,6 +808,7 @@ export default function ScheduleMaker() {
   const loadingVersionRef = useRef<boolean>(false)
   const hasHydratedVersionRef = useRef<boolean>(false)
   const hydratedTermYearKeyRef = useRef<string | null>(null)
+  const versionStoreBootstrappedRef = useRef<boolean>(false)
   const previousTermYearKeyRef = useRef<string | null>(null)
   const previousSessionTermYearKeyRef = useRef<string | null | undefined>(undefined)
   const hasCheckedInitialReopenNoticeRef = useRef(false)
@@ -1975,9 +1976,11 @@ export default function ScheduleMaker() {
           setScheduleTitleDraft(nextTitle)
           persistVersionStore(migratedStore)
           legacyScheduleSeedRef.current = null
+          versionStoreBootstrappedRef.current = true
           return
         }
         ensureActiveVersion()
+        versionStoreBootstrappedRef.current = true
         return
       }
       const parsed = JSON.parse(raw)
@@ -2034,9 +2037,11 @@ export default function ScheduleMaker() {
           setScheduleTitleDraft(nextTitle)
         }
       }
+      versionStoreBootstrappedRef.current = true
     } catch (err) {
       console.error("Failed to restore versions", err)
       ensureActiveVersion()
+      versionStoreBootstrappedRef.current = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isClient])
@@ -2131,6 +2136,7 @@ export default function ScheduleMaker() {
 
   useEffect(() => {
     if (!isClient) return
+    if (!versionStoreBootstrappedRef.current) return
     if (loadingVersionRef.current) return
 
     const entry = versionStore[activeTermYearKey]
