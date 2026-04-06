@@ -758,6 +758,57 @@ const ALL_GRADE_OPTIONS = ACCEPTABLE_GRADE_VALUES.map((value) => ({
   label: `${value} — ${GRADE_LABELS[value] ?? ""}`.trim(),
 }))
 
+const TRACKER_ONBOARDING_SLIDES: Array<{
+  id: number
+  title: string
+  description: string
+  toneClass: string
+  optional?: boolean
+}> = [
+  {
+    id: 1,
+    title: "Mark in-progress courses Active",
+    description: "Set your current subjects to Active to light up progress and planner views.",
+    toneClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-100",
+  },
+  {
+    id: 2,
+    title: "Set completed prerequisites as Passed",
+    description:
+      "Mark no-prerequisite courses like COE0001, MATH0001, CHEM0001, HUM0001, PHYS0001, HIST0001, and PE0 as Passed so future checks stay unlocked.",
+    toneClass: "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-100",
+  },
+  {
+    id: 3,
+    title: "Record grades in Table view",
+    description: "Add grades and the term you last took each course for accurate transcripts and retake checks.",
+    toneClass: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-100",
+    optional: true,
+  },
+  {
+    id: 4,
+    title: "Export your PDF transcript",
+    description: "Export your transcript once grades are in - handy for sharing quick progress updates.",
+    toneClass: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-100",
+    optional: true,
+  },
+  {
+    id: 5,
+    title: "Save and load progress from the tools menu",
+    description:
+      "Use the hamburger button on the top-right, then open Course Tracker Tools to save, download, upload, or reset your progress.",
+    toneClass: "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-100",
+  },
+  {
+    id: 6,
+    title: "Manage course code aliases",
+    description:
+      "In the same hamburger tools menu, use Course Code Alias to map old subject codes to current codes so imports and searches stay accurate.",
+    toneClass: "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/30 dark:text-fuchsia-100",
+    optional: true,
+  },
+]
+
 const FAIL_GRADE_OPTIONS = FAIL_GRADE_VALUES.map((value) => ({
   value,
   label: `${value} — ${GRADE_LABELS[value] ?? ""}`.trim(),
@@ -2601,6 +2652,7 @@ export default function CourseTracker() {
   const [hasSeenSetupDialog, setHasSeenSetupDialog] = useState(false)
   const [hasSeenNextStepsDialog, setHasSeenNextStepsDialog] = useState(false)
   const [nextStepsDialogOpen, setNextStepsDialogOpen] = useState(false)
+  const [nextStepsSlideIndex, setNextStepsSlideIndex] = useState(0)
   const [noProgressDismissed, setNoProgressDismissed] = useState(false)
   const [coursesHydrated, setCoursesHydrated] = useState(false)
   const [preferencesHydrated, setPreferencesHydrated] = useState(false)
@@ -3308,6 +3360,30 @@ export default function CourseTracker() {
   const handleNextStepsClose = () => {
     markNextStepsSeen()
     setNextStepsDialogOpen(false)
+    setNextStepsSlideIndex(0)
+  }
+
+  const handleNextStepsOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setNextStepsSlideIndex(0)
+      setNextStepsDialogOpen(true)
+      return
+    }
+
+    if (nextStepsSlideIndex < TRACKER_ONBOARDING_SLIDES.length - 1) {
+      setNextStepsDialogOpen(true)
+      return
+    }
+
+    handleNextStepsClose()
+  }
+
+  const handleNextStep = () => {
+    setNextStepsSlideIndex((prev) => Math.min(prev + 1, TRACKER_ONBOARDING_SLIDES.length - 1))
+  }
+
+  const handlePrevStep = () => {
+    setNextStepsSlideIndex((prev) => Math.max(prev - 1, 0))
   }
 
   const handleTrackerSetupClose = () => {
@@ -6425,15 +6501,21 @@ export default function CourseTracker() {
 
         <Dialog
           open={nextStepsDialogOpen}
-          onOpenChange={(nextOpen) => {
-            if (nextOpen) {
-              setNextStepsDialogOpen(true)
-            } else {
-              handleNextStepsClose()
-            }
-          }}
+          onOpenChange={handleNextStepsOpenChange}
         >
-          <DialogContent className="max-w-lg">
+          <DialogContent
+            className="max-w-lg"
+            onEscapeKeyDown={(event) => {
+              if (nextStepsSlideIndex < TRACKER_ONBOARDING_SLIDES.length - 1) {
+                event.preventDefault()
+              }
+            }}
+            onInteractOutside={(event) => {
+              if (nextStepsSlideIndex < TRACKER_ONBOARDING_SLIDES.length - 1) {
+                event.preventDefault()
+              }
+            }}
+          >
             <DialogHeader>
               <DialogTitle>Next steps to get started</DialogTitle>
               <DialogDescription>
@@ -6441,54 +6523,78 @@ export default function CourseTracker() {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
-              <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
-                Kickoff checklist
+              <div className="flex items-center justify-between gap-2">
+                <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                  Course tracker jumpstart
+                </div>
+                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  {nextStepsSlideIndex + 1} / {TRACKER_ONBOARDING_SLIDES.length}
+                </span>
               </div>
 
-              <ol className="relative space-y-4 border-l border-slate-200 pl-4 text-sm text-muted-foreground dark:border-slate-800">
-                <li className="flex gap-3">
-                  <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-emerald-500 bg-white ring-4 ring-emerald-100 dark:bg-slate-900 dark:ring-emerald-500/25" aria-hidden="true" />
-                  <div className="space-y-1">
-                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Mark in-progress courses Active</p>
-                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Set your current subjects to Active to light up progress and planner views.</p>
-                  </div>
-                </li>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-900/40">
+                <div className="mb-2 flex items-center gap-2 text-slate-900 dark:text-slate-100">
+                  <Badge variant="secondary" className={TRACKER_ONBOARDING_SLIDES[nextStepsSlideIndex].toneClass}>
+                    {TRACKER_ONBOARDING_SLIDES[nextStepsSlideIndex].id}
+                  </Badge>
+                  <span className="font-semibold">{TRACKER_ONBOARDING_SLIDES[nextStepsSlideIndex].title}</span>
+                  {TRACKER_ONBOARDING_SLIDES[nextStepsSlideIndex].optional ? (
+                    <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                      Optional
+                    </span>
+                  ) : null}
+                </div>
+                <p className="text-sm text-slate-600 dark:text-slate-300">
+                  {TRACKER_ONBOARDING_SLIDES[nextStepsSlideIndex].description}
+                </p>
+              </div>
 
-                <li className="flex gap-3">
-                  <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-sky-500 bg-white ring-4 ring-sky-100 dark:bg-slate-900 dark:ring-sky-500/25" aria-hidden="true" />
-                  <div className="space-y-1">
-                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Set remaining courses as Passed</p>
-                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Mark no-prerequisite courses (COE0001, MATH0001, CHEM0001, HUM0001, PHYS0001, HIST0001, PE0) as Passed so future checks stay unlocked.</p>
-                  </div>
-                </li>
-
-                <li className="flex gap-3">
-                  <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-indigo-500 bg-white ring-4 ring-indigo-100 dark:bg-slate-900 dark:ring-indigo-500/25" aria-hidden="true" />
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-200">Optional</span>
-                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Record grades in Table view</p>
-                    </div>
-                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Add grades and the term you last took each course for accurate transcripts and retake checks.</p>
-                  </div>
-                </li>
-
-                <li className="flex gap-3">
-                  <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-amber-500 bg-white ring-4 ring-amber-100 dark:bg-slate-900 dark:ring-amber-500/25" aria-hidden="true" />
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-900/60 dark:text-amber-200">Optional</span>
-                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Export a transcript of your grades in PDF</p>
-                    </div>
-                    <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">Export your transcript once grades are in—handy for sharing quick progress updates.</p>
-                  </div>
-                </li>
-              </ol>
+              <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700" aria-hidden="true">
+                <motion.div
+                  className="h-1.5 rounded-full bg-emerald-500"
+                  initial={false}
+                  animate={{
+                    width: `${((nextStepsSlideIndex + 1) / TRACKER_ONBOARDING_SLIDES.length) * 100}%`,
+                  }}
+                  transition={{ type: "spring", stiffness: 220, damping: 28 }}
+                />
+              </div>
             </div>
-            <DialogFooter>
-              <Button className="w-full sm:w-auto" onClick={handleNextStepsClose}>
-                Got it
-              </Button>
+            <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between">
+              <div className="flex w-full gap-2 sm:w-auto">
+                <Button
+                  variant="outline"
+                  className="w-full sm:w-auto"
+                  onClick={handlePrevStep}
+                  disabled={nextStepsSlideIndex === 0}
+                >
+                  Back
+                </Button>
+                <Button
+                  className="w-full sm:w-auto"
+                  onClick={
+                    nextStepsSlideIndex >= TRACKER_ONBOARDING_SLIDES.length - 1
+                      ? handleNextStepsClose
+                      : handleNextStep
+                  }
+                >
+                  {nextStepsSlideIndex >= TRACKER_ONBOARDING_SLIDES.length - 1 ? "Finish" : "Next"}
+                </Button>
+              </div>
+              {nextStepsSlideIndex === 0 ? (
+                <Button variant="outline" className="w-full sm:w-auto gap-2" onClick={triggerUploadDialog}>
+                  <Upload className="h-4 w-4" />
+                  Upload saved progress
+                </Button>
+              ) : TRACKER_ONBOARDING_SLIDES[nextStepsSlideIndex].id === 5 ||
+                TRACKER_ONBOARDING_SLIDES[nextStepsSlideIndex].id === 6 ? (
+                <Button variant="outline" className="w-full sm:w-auto gap-2" onClick={() => setUtilityDialogOpen(true)}>
+                  <Menu className="h-4 w-4" />
+                  Open tools menu
+                </Button>
+              ) : (
+                <span className="text-xs text-slate-500 dark:text-slate-400">Complete all slides to finish onboarding.</span>
+              )}
             </DialogFooter>
           </DialogContent>
         </Dialog>
