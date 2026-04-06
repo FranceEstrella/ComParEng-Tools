@@ -184,8 +184,8 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
-          "max-w-lg overflow-hidden",
-          isCompactLayout ? "w-[min(92vw,24rem)] p-4" : "w-[min(96vw,34rem)] p-6"
+          "w-[calc(100vw-2rem)] max-w-2xl overflow-visible",
+          isCompactLayout ? "p-4" : "p-6"
         )}
       >
         <DialogHeader>
@@ -246,15 +246,15 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
                 {historyExpanded && (
                   <ul
                     className={cn(
-                      "space-y-1 text-sm text-gray-600 dark:text-gray-400",
+                      "space-y-1 pr-1 text-sm text-gray-600 dark:text-gray-400",
                       isCompactLayout ? "max-h-28 overflow-y-auto" : "max-h-36 overflow-y-auto"
                     )}
                   >
                     {feedbackHistory.slice(0, isCompactLayout ? 3 : 5).map((h, i) => (
-                      <li key={i} className="border rounded p-2 bg-gray-50 dark:bg-gray-800 break-words">
+                      <li key={i} className="min-w-0 border rounded p-2 bg-gray-50 dark:bg-gray-800 break-words">
                         <div className="text-xs text-gray-500">{new Date(h.date).toLocaleString()} • {h.sentVia}</div>
                         <div className="font-medium">{h.subject}</div>
-                        <div className="text-sm text-gray-600 dark:text-gray-300 truncate">{h.message}</div>
+                        <div className="text-sm text-gray-600 dark:text-gray-300 break-words">{h.message}</div>
                       </li>
                     ))}
                   </ul>

@@ -15,6 +15,94 @@ export interface PatchNote {
 
 export const patchNotes: PatchNote[] = [
   {
+    version: "1.49",
+    date: "April 7, 2026",
+    title: "Course Tracker & Schedule Maker overhaul",
+    silent: true,
+    changes: [
+      {
+        type: "new",
+        description:
+          "Introduced a unified Course Tracker Tools hamburger menu beside the theme toggle, housing Save/Load Progress and Course Code Alias management.",
+      },
+      {
+        type: "new",
+        description:
+          "Added bulk shortcuts to mark all active or future courses as passed, including a detailed confirmation dialog listing affected course codes and names.",
+      },
+      {
+        type: "new",
+        description:
+          "Implemented term-scoped schedule versioning to isolate saved schedules per semester and prevent cross-term data leakage.",
+      },
+      {
+        type: "new",
+        description:
+          "Added Save and Lock controls so specific schedules can be protected from overwrite during incoming data syncs.",
+      },
+      {
+        type: "new",
+        description:
+          "Added visual status feedback including deferred reward overlays until import succeeds, autosave indicators, backup success prompts, a fixed Program Progress overlay while scrolling, and a previous-term schedule saved prompt flow.",
+      },
+      {
+        type: "improved",
+        description:
+          "Redesigned the Academic Timeline with denser cards, tighter typography, and an integrated Open Planner action inside the Graduation Date display.",
+      },
+      {
+        type: "improved",
+        description:
+          "Refined Save/Load Progress into polished option-list rows with inline Saved just now feedback animations.",
+      },
+      {
+        type: "improved",
+        description:
+          "Moved Reset All Progress into a dedicated danger section at the bottom of the tools menu for safer operation.",
+      },
+      {
+        type: "improved",
+        description:
+          "Overhauled tool cards into a mobile-first, single-block clickable design, removing separate white footer sections and standalone Open buttons.",
+      },
+      {
+        type: "improved",
+        description:
+          "Reworked onboarding into a mandatory per-slide guided flow with a linear progress bar and explicit right-click and drag interaction guidance.",
+      },
+      {
+        type: "improved",
+        description:
+          "Simplified homepage mobile layout, updated the extension call-to-action to Install Extension on PC, and standardized button sizes, text scales, and spacing across tool panels.",
+      },
+      {
+        type: "improved",
+        description:
+          "Updated course-storage.js and the /api/get-available-courses and /api/receive-course-data endpoints to support school-year and term-specific data buckets, with stricter POST validation for year consistency.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Resolved maximum update depth exceeded loops and fixed refresh race conditions that could overwrite active schedule versions.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Fixed z-index layering problems in nested modals, corrected mobile Graduation CTA text clipping, and resolved clipping in the Feedback history dialog.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Hardened hydration logic so the last active term and school year reliably restore on startup.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Cleaned up invalid alias handler references and removed unsupported popover props.",
+      },
+    ],
+  },
+  {
     version: "1.48",
     date: "December 27, 2025",
     title: "Alias consistency & planner prompts (silent)",

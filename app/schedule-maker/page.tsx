@@ -588,6 +588,57 @@ const DEFAULT_CUSTOM_COLOR = "#3b82f6"
 const DEFAULT_SCHEDULE_TITLE = "Weekly Schedule"
 const HEX_COLOR_PATTERN = /^[0-9A-Fa-f]{6}$/
 
+const SCHEDULE_ONBOARDING_SLIDES: Array<{ id: number; title: string; description: string; toneClass: string }> = [
+  {
+    id: 1,
+    title: "Import saved courses",
+    description: "Already exported selections before? Upload them to restore your picks instantly.",
+    toneClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-100",
+  },
+  {
+    id: 2,
+    title: "Open Search Courses",
+    description: "Use the search panel to browse what was captured or refresh after the portal import finishes.",
+    toneClass: "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-100",
+  },
+  {
+    id: 3,
+    title: "Review suggested courses",
+    description: "Start with the suggested Active courses, or search manually to add anything else you plan to enroll in.",
+    toneClass: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-100",
+  },
+  {
+    id: 4,
+    title: "Add courses to the grid",
+    description: "Click to add a section to your list or drag it onto the calendar at the exact time slot you want. You can also drag a course block outside the calendar to remove it from the schedule.",
+    toneClass: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-100",
+  },
+  {
+    id: 5,
+    title: "Customize course blocks",
+    description: "Right-click a block on the schedule or a course in your selected list to rename it and apply your color style.",
+    toneClass: "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/30 dark:text-fuchsia-100",
+  },
+  {
+    id: 6,
+    title: "Fill out the week",
+    description: "Repeat for every subject until your schedule covers all the courses you intend to take.",
+    toneClass: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-100",
+  },
+  {
+    id: 7,
+    title: "Optional: make a backup version",
+    description: "Duplicate your schedule or start a new version for petition-only sections or overflow contingencies.",
+    toneClass: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-100",
+  },
+  {
+    id: 8,
+    title: "Export and share",
+    description: "Save the current version as an image and an .ics file so you can import it into your calendar app.",
+    toneClass: "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-100",
+  },
+]
+
 const sanitizeHexColor = (value: string): string | null => {
   if (!value) return null
   const trimmed = value.trim()
@@ -878,6 +929,7 @@ export default function ScheduleMaker() {
   const [noActiveDialogDismissed, setNoActiveDialogDismissed] = useState(false)
   const [nextStepsDialogOpen, setNextStepsDialogOpen] = useState(false)
   const [nextStepsDialogDismissed, setNextStepsDialogDismissed] = useState(false)
+  const [nextStepsSlideIndex, setNextStepsSlideIndex] = useState(0)
   const [dragCourseCode, setDragCourseCode] = useState<string | null>(null)
   const [dragPreviewSections, setDragPreviewSections] = useState<SectionPreview[]>([])
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
@@ -1734,6 +1786,9 @@ export default function ScheduleMaker() {
 
   // Load data from localStorage only on the client side
   const clearScheduleSelections = useCallback(() => {
+    if (selectedCourses.length === 0) {
+      return
+    }
     setSelectedCourses([])
     setSelectedCourseCodes([])
     setCustomizations({})
@@ -1744,7 +1799,7 @@ export default function ScheduleMaker() {
         console.error("Error clearing saved schedule data:", error)
       }
     }
-  }, [])
+  }, [selectedCourses.length])
 
   const ensureActiveVersion = useCallback(() => {
     setVersionStore((prev) => {
@@ -4303,14 +4358,31 @@ export default function ScheduleMaker() {
   const handleScheduleNextStepsClose = () => {
     setNextStepsDialogOpen(false)
     setNextStepsDialogDismissed(true)
+    setNextStepsSlideIndex(0)
   }
 
   const handleScheduleNextStepsOpenChange = (nextOpen: boolean) => {
     if (nextOpen) {
+      setNextStepsSlideIndex(0)
       setNextStepsDialogOpen(true)
       return
     }
+
+    // Force users to go through every onboarding slide before dismissing.
+    if (nextStepsSlideIndex < SCHEDULE_ONBOARDING_SLIDES.length - 1) {
+      setNextStepsDialogOpen(true)
+      return
+    }
+
     handleScheduleNextStepsClose()
+  }
+
+  const handleScheduleNextStep = () => {
+    setNextStepsSlideIndex((prev) => Math.min(prev + 1, SCHEDULE_ONBOARDING_SLIDES.length - 1))
+  }
+
+  const handleSchedulePrevStep = () => {
+    setNextStepsSlideIndex((prev) => Math.max(prev - 1, 0))
   }
 
   // Check if a time slot falls within a course's time range
@@ -6291,111 +6363,89 @@ const renderScheduleView = () => {
         </DialogContent>
       </Dialog>
       <Dialog open={nextStepsDialogOpen} onOpenChange={handleScheduleNextStepsOpenChange}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent
+          className="sm:max-w-lg"
+          onEscapeKeyDown={(event) => {
+            if (nextStepsSlideIndex < SCHEDULE_ONBOARDING_SLIDES.length - 1) {
+              event.preventDefault()
+            }
+          }}
+          onInteractOutside={(event) => {
+            if (nextStepsSlideIndex < SCHEDULE_ONBOARDING_SLIDES.length - 1) {
+              event.preventDefault()
+            }
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Next steps to build your schedule</DialogTitle>
             <DialogDescription>
-              Follow this quick path once the no-data prompts are out of the way so your calendar is ready to export.
+              Follow every slide in this quick walkthrough before entering the scheduler.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
-            <div className="inline-flex items-center gap-2 rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-100">
-              Schedule maker jumpstart
+            <div className="flex items-center justify-between gap-2">
+              <div className="inline-flex items-center gap-2 rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-100">
+                Schedule maker jumpstart
+              </div>
+              <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                {nextStepsSlideIndex + 1} / {SCHEDULE_ONBOARDING_SLIDES.length}
+              </span>
             </div>
 
-            <ol className="relative space-y-4 border-l border-slate-200 pl-4 text-sm text-muted-foreground dark:border-slate-800">
-              <li className="flex gap-3">
-                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-emerald-500 bg-white ring-4 ring-emerald-100 dark:bg-slate-900 dark:ring-emerald-500/25" aria-hidden="true" />
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
-                    <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-100">0</Badge>
-                    <span className="font-semibold">Import saved courses</span>
-                  </div>
-                  <p>Already exported selections before? Upload them to restore your picks instantly.</p>
-                </div>
-              </li>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-900/40">
+              <div className="mb-2 flex items-center gap-2 text-slate-900 dark:text-slate-100">
+                <Badge variant="secondary" className={SCHEDULE_ONBOARDING_SLIDES[nextStepsSlideIndex].toneClass}>
+                  {SCHEDULE_ONBOARDING_SLIDES[nextStepsSlideIndex].id}
+                </Badge>
+                <span className="font-semibold">{SCHEDULE_ONBOARDING_SLIDES[nextStepsSlideIndex].title}</span>
+              </div>
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+                {SCHEDULE_ONBOARDING_SLIDES[nextStepsSlideIndex].description}
+              </p>
+            </div>
 
-              <li className="flex gap-3">
-                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-sky-500 bg-white ring-4 ring-sky-100 dark:bg-slate-900 dark:ring-sky-500/25" aria-hidden="true" />
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
-                    <Badge variant="secondary" className="bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-100">1</Badge>
-                    <span className="font-semibold">Open Search Courses</span>
-                  </div>
-                  <p>Use the search panel to browse what was captured or refresh after the portal import finishes.</p>
-                </div>
-              </li>
-
-              <li className="flex gap-3">
-                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-blue-500 bg-white ring-4 ring-blue-100 dark:bg-slate-900 dark:ring-blue-500/25" aria-hidden="true" />
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
-                    <Badge variant="secondary" className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-100">2</Badge>
-                    <span className="font-semibold">Review suggested courses</span>
-                  </div>
-                  <p>Start with the suggested Active courses, or search manually to add anything else you plan to enroll in.</p>
-                </div>
-              </li>
-
-              <li className="flex gap-3">
-                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-indigo-500 bg-white ring-4 ring-indigo-100 dark:bg-slate-900 dark:ring-indigo-500/25" aria-hidden="true" />
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
-                    <Badge variant="secondary" className="bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-100">3</Badge>
-                    <span className="font-semibold">Add courses to the grid</span>
-                  </div>
-                  <p>Click to add a section to your list or drag it onto the calendar at the exact time slot you want.</p>
-                </div>
-              </li>
-
-              <li className="flex gap-3">
-                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-violet-500 bg-white ring-4 ring-violet-100 dark:bg-slate-900 dark:ring-violet-500/25" aria-hidden="true" />
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
-                    <Badge variant="secondary" className="bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-100">4</Badge>
-                    <span className="font-semibold">Fill out the week</span>
-                  </div>
-                  <p>Repeat for every subject until your schedule covers all the courses you intend to take.</p>
-                </div>
-              </li>
-
-              <li className="flex gap-3">
-                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-amber-500 bg-white ring-4 ring-amber-100 dark:bg-slate-900 dark:ring-amber-500/25" aria-hidden="true" />
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
-                    <Badge variant="secondary" className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-100">5</Badge>
-                    <span className="font-semibold">Optional: make a backup version</span>
-                  </div>
-                  <p>Duplicate your schedule or start a new version for petition-only sections or overflow contingencies.</p>
-                </div>
-              </li>
-
-              <li className="flex gap-3">
-                <span className="mt-1.5 h-3 w-3 rounded-full border-2 border-rose-500 bg-white ring-4 ring-rose-100 dark:bg-slate-900 dark:ring-rose-500/25" aria-hidden="true" />
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
-                    <Badge variant="secondary" className="bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-100">6</Badge>
-                    <span className="font-semibold">Export and share</span>
-                  </div>
-                  <p>Save the current version as an image and an .ics file so you can import it into your calendar app.</p>
-                </div>
-              </li>
-            </ol>
+            <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700" aria-hidden="true">
+              <motion.div
+                className="h-1.5 rounded-full bg-indigo-500"
+                initial={false}
+                animate={{
+                  width: `${((nextStepsSlideIndex + 1) / SCHEDULE_ONBOARDING_SLIDES.length) * 100}%`,
+                }}
+                transition={{ type: "spring", stiffness: 220, damping: 28 }}
+              />
+            </div>
           </div>
 
           <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between">
-            <Button
-              variant="outline"
-              className="w-full sm:w-auto gap-2"
-              onClick={triggerImportSelectedCourses}
-            >
-              <Upload className="h-4 w-4" />
-              Import courses
-            </Button>
-            <Button className="w-full sm:w-auto" onClick={handleScheduleNextStepsClose}>
-              Got it
-            </Button>
+            <div className="flex w-full gap-2 sm:w-auto">
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={handleSchedulePrevStep}
+                disabled={nextStepsSlideIndex === 0}
+              >
+                Back
+              </Button>
+              <Button
+                className="w-full sm:w-auto"
+                onClick={nextStepsSlideIndex >= SCHEDULE_ONBOARDING_SLIDES.length - 1 ? handleScheduleNextStepsClose : handleScheduleNextStep}
+              >
+                {nextStepsSlideIndex >= SCHEDULE_ONBOARDING_SLIDES.length - 1 ? "Finish" : "Next"}
+              </Button>
+            </div>
+            {nextStepsSlideIndex === 0 ? (
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto gap-2"
+                onClick={triggerImportSelectedCourses}
+              >
+                <Upload className="h-4 w-4" />
+                Import courses
+              </Button>
+            ) : (
+              <span className="text-xs text-slate-500 dark:text-slate-400">Complete all slides to finish onboarding.</span>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -6580,10 +6630,10 @@ const renderScheduleView = () => {
         </DialogContent>
       </Dialog>
       <Dialog open={Boolean(sameSectionPrompt?.open)} onOpenChange={(open) => { if (!open) closeSameSectionPrompt() }}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>
-              Add other courses in section {sameSectionPrompt?.primary ? normalizeSection(sameSectionPrompt.primary.section) : ""}?
+              Add other courses in section {sameSectionPrompt?.primary ? normalizeSection(sameSectionPrompt.primary.section) : "this section"}?
             </DialogTitle>
             <DialogDescription>
               We found {sameSectionPrompt?.matches?.length ?? 0} more course(s) with the same section label.
@@ -6600,16 +6650,16 @@ const renderScheduleView = () => {
 
               <div className="space-y-2">
                 <p className="text-sm font-medium text-slate-800 dark:text-slate-100">Matches</p>
-                <div className="max-h-[220px] space-y-1 overflow-y-auto rounded-md border border-slate-200/80 bg-white p-2 text-sm dark:border-slate-700 dark:bg-slate-900">
+                <div className="space-y-1 rounded-md border border-slate-200/80 bg-white p-2 text-sm dark:border-slate-700 dark:bg-slate-900">
                   {(sameSectionPrompt.matches || []).slice(0, 12).map((match) => (
-                    <div key={`${match.courseCode}-${match.section}`} className="flex items-center justify-between gap-2 rounded px-2 py-1">
+                    <div key={`${match.courseCode}-${match.section}`} className="flex min-w-0 items-center justify-between gap-2 rounded px-2 py-1">
                       <div className="min-w-0">
                         <p className="truncate text-[13px] font-semibold">{getDisplayCode(match.courseCode)}</p>
                         <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
                           {cleanTimeString(match.meetingTime)} • {formatMeetingDays(match.meetingDays)} • {cleanRoomString(match.room)}
                         </p>
                       </div>
-                      <Badge variant={match.hasSlots ? "secondary" : "destructive"} className="text-[10px]">
+                      <Badge variant={match.hasSlots ? "secondary" : "destructive"} className="shrink-0 text-[10px]">
                         {match.hasSlots ? "Open" : "Full"}
                       </Badge>
                     </div>
@@ -6623,7 +6673,7 @@ const renderScheduleView = () => {
                   checked={rememberSameSectionAddToggle}
                   onCheckedChange={(value) => setRememberSameSectionAddToggle(Boolean(value))}
                 />
-                <Label htmlFor="remember-same-section" className="text-[12px] text-slate-700 dark:text-slate-200">
+                <Label htmlFor="remember-same-section" className="min-w-0 flex-1 break-words text-[12px] text-slate-700 dark:text-slate-200">
                   Remember this choice (auto-add same section next time)
                 </Label>
               </div>
@@ -6634,7 +6684,7 @@ const renderScheduleView = () => {
               Not now
             </Button>
             <Button onClick={confirmSameSectionAdd} className="w-full sm:w-auto">
-              Add matching
+              Add all matched courses
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -7408,6 +7458,17 @@ const renderScheduleView = () => {
                       )
                     })}
                   </AnimatePresence>
+                </div>
+                <div className="mt-3">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-full justify-center text-xs text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-300 dark:hover:bg-rose-900/20"
+                    onClick={clearScheduleSelections}
+                    disabled={selectedCourses.length === 0}
+                  >
+                    Remove all selected courses
+                  </Button>
                 </div>
               </CardContent>
             </Card>

@@ -12,9 +12,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
-import { Megaphone, Sparkles, ShieldCheck, FileText } from "lucide-react"
+import { Megaphone, Sparkles, ShieldCheck, FileText, Wrench, AlertTriangle } from "lucide-react"
 
 type Props = {
   autoOpenOnce?: boolean
@@ -67,6 +66,25 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
   const changeLimit = 5
   const visibleChanges =
     isCompactLayout && !showAllChanges ? activeNote.changes.slice(0, changeLimit) : activeNote.changes
+  const changeGroupMeta = {
+    new: { label: "New", icon: Sparkles },
+    improved: { label: "Improved", icon: Wrench },
+    fixed: { label: "Fixed", icon: ShieldCheck },
+    "known-issue": { label: "Known Issues", icon: AlertTriangle },
+  } as const
+
+  const groupedVisibleChanges = useMemo(() => {
+    const groupOrder: Array<(typeof activeNote.changes)[number]["type"]> = ["new", "improved", "fixed", "known-issue"]
+
+    return groupOrder
+      .map((type) => ({
+        type,
+        label: changeGroupMeta[type].label,
+        Icon: changeGroupMeta[type].icon,
+        items: visibleChanges.filter((change) => change.type === type),
+      }))
+      .filter((group) => group.items.length > 0)
+  }, [activeNote.changes, changeGroupMeta, visibleChanges])
   const isMajorUpdate = Boolean(!activeNote.silent && latestNonSilent && activeNote.version === latestNonSilent.version)
 
   const majorHighlights = [
@@ -137,7 +155,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             "max-w-2xl",
             isMajorUpdate && "bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-900 text-white border-0 shadow-[0_20px_80px_rgba(16,185,129,0.35)]",
             isCompactLayout
-              ? "inset-0 h-auto w-auto max-h-none max-w-none translate-x-0 translate-y-0 rounded-none border-0 p-6 pt-8 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)]"
+              ? "w-[calc(100vw-1rem)] max-w-none max-h-[85svh] overflow-y-auto rounded-2xl p-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)]"
               : "p-6"
           )}
           style={
@@ -201,16 +219,23 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             </div>
           </div>
         )}
-        <div className={cn("py-2", isCompactLayout ? "space-y-2" : "space-y-3")}
+        <div className={cn(isCompactLayout ? "space-y-2 py-1" : "space-y-3 py-2")}
           aria-label="Latest updates"
         >
-          {visibleChanges.map((c, idx) => (
-            <div key={`${c.type}-${idx}`} className="flex items-start gap-2 text-sm">
-              <Badge variant={c.type === "fixed" ? "secondary" : c.type === "new" ? "default" : "outline"}>
-                {c.type}
-              </Badge>
-              <span className="leading-snug whitespace-pre-line text-sm">{c.description}</span>
-            </div>
+          {groupedVisibleChanges.map((group) => (
+            <section key={group.type} className="space-y-1.5">
+              <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-600 dark:text-slate-300">
+                <group.Icon className="h-3.5 w-3.5" />
+                {group.label}
+              </h4>
+              <ul className="list-disc space-y-1 pl-4 text-sm">
+                {group.items.map((item, index) => (
+                  <li key={`${group.type}-${index}`} className="leading-snug whitespace-pre-line">
+                    {item.description}
+                  </li>
+                ))}
+              </ul>
+            </section>
           ))}
           {isCompactLayout && activeNote.changes.length > changeLimit && (
             <div className="pt-1">
@@ -239,7 +264,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             </div>
           </div>
         )}
-        <DialogFooter>
+        <DialogFooter className={cn(isCompactLayout && "pt-2")}>
           <Button variant="outline" onClick={handleCloseClick}>Close</Button>
         </DialogFooter>
         </DialogContent>

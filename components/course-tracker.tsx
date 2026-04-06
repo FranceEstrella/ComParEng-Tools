@@ -34,6 +34,7 @@ import {
   Shield,
   Sparkles,
   Crown,
+  Menu,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -376,6 +377,15 @@ interface RewardStep {
   levelAfter: LevelInfo
 }
 
+interface BulkPrereqConfirmState {
+  title: string
+  description: string
+  applyLabel: string
+  updatedCourses: Course[]
+  successMessage: string
+  passedCourses: Array<{ id: string; code: string; name: string }>
+}
+
 interface LevelStage {
   fromLevel: number
   toLevel: number
@@ -403,11 +413,19 @@ interface FilterAndSearchControlsProps {
   setViewMode: (v: "card" | "table") => void
   courses: Course[]
   onSearchSelect: (term: string, selectedCourseId?: string) => void
+  getDisplayCode: (code: string) => string
+  activeVisibleCount: number
+  futureVisibleCount: number
+  onMarkAllActiveAsPassed: () => void
+  onMarkAllFutureAsActive: () => void
+}
+
+interface CourseAliasControlsProps {
+  courses: Course[]
   onAddAliases: (aliases: Record<string, string>) => void
   courseCodeAliases: Record<string, string | { canonical: string; displayAlias?: boolean }>
   onRemoveAlias: (legacyCode: string) => void
   onToggleAliasDisplay: (legacyCode: string, displayAlias: boolean) => void
-  getDisplayCode: (code: string) => string
 }
 
 interface OverallProgressProps {
@@ -427,12 +445,12 @@ interface SaveLoadControlsProps {
   triggerUploadDialog: () => void
   setCourses: React.Dispatch<React.SetStateAction<Course[]>>
   setSaveMessage: (m: string | null) => void
+  onImportSuccessPrompt: (details: { title: string; description: string }) => void
 }
 
 interface AcademicTimelineProps {
   startYear: number
   handleStartYearChange: (v: string | React.ChangeEvent<HTMLInputElement>) => void
-  academicYears: AcademicYear[]
   expectedGraduation: string
   currentYearLevel: number
   onCurrentYearLevelChange: (value: number) => void
@@ -1362,32 +1380,15 @@ const FilterAndSearchControls = ({
   setViewMode,
   courses,
   onSearchSelect,
-  onAddAliases,
-  courseCodeAliases,
-  onRemoveAlias,
-  onToggleAliasDisplay,
   getDisplayCode,
+  activeVisibleCount,
+  futureVisibleCount,
+  onMarkAllActiveAsPassed,
+  onMarkAllFutureAsActive,
 }: FilterAndSearchControlsProps) => {
   const [open, setOpen] = useState(false)
   const [suggestions, setSuggestions] = useState<Course[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
-  const [aliasFormOpen, setAliasFormOpen] = useState(false)
-  const [aliasForm, setAliasForm] = useState({ alias: "", canonical: "" })
-  const [aliasError, setAliasError] = useState<string | null>(null)
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [pendingAlias, setPendingAlias] = useState<{ alias: string; canonical: string } | null>(null)
-  const [missingAliasDialogOpen, setMissingAliasDialogOpen] = useState(false)
-  const [aliasListOpen, setAliasListOpen] = useState(false)
-  const aliasEntries = useMemo(() => {
-    return Object.entries(courseCodeAliases || {})
-      .map(([legacy, value]) => {
-        const canonical = typeof value === "string" ? value : value?.canonical
-        const displayAlias = typeof value === "object" && value !== null ? value.displayAlias !== false : true
-        return { legacy, canonical, displayAlias }
-      })
-      .filter((entry) => Boolean(entry.canonical))
-      .sort((a, b) => a.legacy.localeCompare(b.legacy))
-  }, [courseCodeAliases])
 
   const matchesSearchTerm = useCallback(
     (course: Course, term: string) => {
@@ -1419,6 +1420,234 @@ const FilterAndSearchControls = ({
       setOpen(false)
     }
   }, [matchesSearchTerm, searchTerm, courses])
+
+  const handleJumpToSelection = (term: string, selectedCourseId?: string) => {
+    const trimmed = term.trim()
+    if (!trimmed) return
+    onSearchSelect(trimmed, selectedCourseId)
+  }
+
+  return (
+    <div className="mb-6 space-y-4">
+      <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Search Input with Suggestions */}
+          <div className="relative">
+            <Label htmlFor="search-course" className="text-sm font-medium mb-1 block">
+              Search Courses
+            </Label>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Popover
+                open={open && suggestions.length > 0}
+                onOpenChange={(next) => {
+                  setOpen(next)
+                  if (next) {
+                    inputRef.current?.focus()
+                  }
+                }}
+                modal={false}
+              >
+                <PopoverTrigger asChild>
+                  <Input
+                    id="search-course"
+                    type="text"
+                    placeholder="Search by code or name..."
+                    value={searchTerm}
+                    onChange={(e) => {
+                      setSearchTerm(e.target.value)
+                      if (e.target.value.length >= 3) setOpen(true)
+                      else setOpen(false)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        handleJumpToSelection(searchTerm)
+                        setOpen(false)
+                      }
+                    }}
+                    onFocus={() => {
+                      if (searchTerm.length >= 3 && suggestions.length > 0) {
+                        setOpen(true)
+                      }
+                    }}
+                    className="pl-8 w-full"
+                    autoComplete="off" // Prevent browser autocomplete
+                    ref={inputRef}
+                  />
+                </PopoverTrigger>
+                <PopoverContent
+                  className="p-0 w-[min(420px,calc(100vw-3rem))] max-h-80 overflow-auto"
+                  align="start"
+                  side="bottom"
+                  sideOffset={6}
+                  onOpenAutoFocus={(event) => event.preventDefault()}
+                  onCloseAutoFocus={(event) => {
+                    event.preventDefault()
+                    inputRef.current?.focus()
+                  }}
+                >
+                  <Command>
+                    <CommandList>
+                      <CommandGroup heading="Suggestions">
+                        {suggestions.map((course) => (
+                          <CommandItem
+                            key={course.id}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onSelect={() => {
+                              setSearchTerm(course.code)
+                              setOpen(false)
+                              inputRef.current?.focus()
+                              handleJumpToSelection(course.code, course.id)
+                            }}
+                            className="cursor-pointer"
+                          >
+                            <span className="font-medium">{getDisplayCode(course.code)}</span>
+                            <span className="ml-2 text-sm text-muted-foreground">{course.name}</span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+              {searchTerm && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
+                  onClick={() => {
+                    setSearchTerm("")
+                    inputRef.current?.focus()
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Status Filter and View Toggle */}
+          <div>
+            <Label className="text-sm font-medium mb-1 block">Filter & View Options</Label>
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant={filterStatus === "all" ? "default" : "outline"}
+                    onClick={() => setFilterStatus("all")}
+                    className="text-xs"
+                  >
+                    All
+                  </Button>
+                  <Button
+                    variant={filterStatus === "pending" ? "default" : "outline"}
+                    onClick={() => setFilterStatus("pending")}
+                    className="text-xs bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800 hover:bg-yellow-500/20"
+                  >
+                    Pending
+                  </Button>
+                  <Button
+                    variant={filterStatus === "active" ? "default" : "outline"}
+                    onClick={() => setFilterStatus("active")}
+                    className="text-xs bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800 hover:bg-blue-500/20"
+                  >
+                    Active
+                  </Button>
+                  <Button
+                    variant={filterStatus === "passed" ? "default" : "outline"}
+                    onClick={() => setFilterStatus("passed")}
+                    className="text-xs bg-green-500/10 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800 hover:bg-green-500/20"
+                  >
+                    Passed
+                  </Button>
+                  <Button
+                    variant={filterStatus === "future" ? "default" : "outline"}
+                    onClick={() => setFilterStatus("future")}
+                    className="text-xs bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-200 dark:border-purple-800 hover:bg-purple-500/20"
+                  >
+                    Future
+                  </Button>
+                </div>
+
+                {filterStatus === "active" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs self-start xl:self-auto"
+                    onClick={onMarkAllActiveAsPassed}
+                    disabled={activeVisibleCount === 0}
+                  >
+                    Mark all active as passed ({activeVisibleCount})
+                  </Button>
+                )}
+
+                {filterStatus === "future" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs self-start xl:self-auto"
+                    onClick={onMarkAllFutureAsActive}
+                    disabled={futureVisibleCount === 0}
+                  >
+                    Mark all future as active ({futureVisibleCount})
+                  </Button>
+                )}
+              </div>
+
+              <div className="flex justify-end">
+                <div className="flex border rounded-md overflow-hidden">
+                  <Button
+                    variant={viewMode === "card" ? "default" : "ghost"}
+                    size="sm"
+                    onClick={() => setViewMode("card")}
+                    className="rounded-none"
+                  >
+                    <Grid3X3 className="h-4 w-4 mr-1" />
+                    Card
+                  </Button>
+                  <Button
+                    variant={viewMode === "table" ? "default" : "ghost"}
+                    size="sm"
+                    onClick={() => setViewMode("table")}
+                    className="rounded-none"
+                  >
+                    <Table className="h-4 w-4 mr-1" />
+                    Table
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const CourseAliasControls = ({
+  courses,
+  onAddAliases,
+  courseCodeAliases,
+  onRemoveAlias,
+  onToggleAliasDisplay,
+}: CourseAliasControlsProps) => {
+  const [aliasForm, setAliasForm] = useState({ alias: "", canonical: "" })
+  const [aliasError, setAliasError] = useState<string | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [pendingAlias, setPendingAlias] = useState<{ alias: string; canonical: string } | null>(null)
+  const [missingAliasDialogOpen, setMissingAliasDialogOpen] = useState(false)
+  const [aliasListOpen, setAliasListOpen] = useState(false)
+  const aliasEntries = useMemo(() => {
+    return Object.entries(courseCodeAliases || {})
+      .map(([legacy, value]) => {
+        const canonical = typeof value === "string" ? value : value?.canonical
+        const displayAlias = typeof value === "object" && value !== null ? value.displayAlias !== false : true
+        return { legacy, canonical, displayAlias }
+      })
+      .filter((entry) => Boolean(entry.canonical))
+      .sort((a, b) => a.legacy.localeCompare(b.legacy))
+  }, [courseCodeAliases])
 
   const handleAliasSave = () => {
     const rawAlias = aliasForm.alias.trim().toUpperCase()
@@ -1499,12 +1728,6 @@ const FilterAndSearchControls = ({
     setConfirmOpen(true)
   }
 
-  const handleJumpToSelection = (term: string, selectedCourseId?: string) => {
-    const trimmed = term.trim()
-    if (!trimmed) return
-    onSearchSelect(trimmed, selectedCourseId)
-  }
-
   const confirmAliasSave = () => {
     if (!pendingAlias) return
     onAddAliases({ [pendingAlias.alias]: pendingAlias.canonical })
@@ -1514,196 +1737,20 @@ const FilterAndSearchControls = ({
   }
 
   return (
-    <div className="mb-6 space-y-4">
-      <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Search Input with Suggestions */}
-          <div className="relative">
-            <Label htmlFor="search-course" className="text-sm font-medium mb-1 block">
-              Search Courses
-            </Label>
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Popover
-                open={open && suggestions.length > 0}
-                onOpenChange={(next) => {
-                  setOpen(next)
-                  if (next) {
-                    inputRef.current?.focus()
-                  }
-                }}
-                modal={false}
-              >
-                <PopoverTrigger asChild>
-                  <Input
-                    id="search-course"
-                    type="text"
-                    placeholder="Search by code or name..."
-                    value={searchTerm}
-                    onChange={(e) => {
-                      setSearchTerm(e.target.value)
-                      if (e.target.value.length >= 3) setOpen(true)
-                      else setOpen(false)
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault()
-                        handleJumpToSelection(searchTerm)
-                        setOpen(false)
-                      }
-                    }}
-                    onFocus={() => {
-                      if (searchTerm.length >= 3 && suggestions.length > 0) {
-                        setOpen(true)
-                      }
-                    }}
-                    className="pl-8 w-full"
-                    autoComplete="off" // Prevent browser autocomplete
-                    ref={inputRef}
-                  />
-                </PopoverTrigger>
-                <PopoverContent
-                  className="p-0 w-[min(420px,calc(100vw-3rem))] max-h-80 overflow-auto"
-                  align="start"
-                  side="bottom"
-                  sideOffset={6}
-                  position="popper"
-                  onOpenAutoFocus={(event) => event.preventDefault()}
-                  onCloseAutoFocus={(event) => {
-                    event.preventDefault()
-                    inputRef.current?.focus()
-                  }}
-                >
-                  <Command>
-                    <CommandList>
-                      <CommandGroup heading="Suggestions">
-                        {suggestions.map((course) => (
-                          <CommandItem
-                            key={course.id}
-                            onMouseDown={(e) => e.preventDefault()}
-                            onSelect={() => {
-                              setSearchTerm(course.code)
-                              setOpen(false)
-                              inputRef.current?.focus()
-                              handleJumpToSelection(course.code, course.id)
-                            }}
-                            className="cursor-pointer"
-                          >
-                            <span className="font-medium">{getDisplayCode(course.code)}</span>
-                            <span className="ml-2 text-sm text-muted-foreground">{course.name}</span>
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-              {searchTerm && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
-                  onClick={() => {
-                    setSearchTerm("")
-                    inputRef.current?.focus()
-                  }}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
+    <>
+      <Card className="bg-white dark:bg-gray-800 shadow-md border-0">
+        <CardHeader className="flex flex-row items-start justify-between gap-3 pb-3">
+          <div className="space-y-1">
+            <CardTitle className="text-base font-semibold">Update Course Code Alias</CardTitle>
+            <CardDescription>Link an old course code to the current one so search, imports, and planning stay in sync.</CardDescription>
           </div>
-
-          {/* Status Filter and View Toggle */}
-          <div>
-            <Label className="text-sm font-medium mb-1 block">Filter & View Options</Label>
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant={filterStatus === "all" ? "default" : "outline"}
-                  onClick={() => setFilterStatus("all")}
-                  className="text-xs"
-                >
-                  All
-                </Button>
-                <Button
-                  variant={filterStatus === "pending" ? "default" : "outline"}
-                  onClick={() => setFilterStatus("pending")}
-                  className="text-xs bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800 hover:bg-yellow-500/20"
-                >
-                  Pending
-                </Button>
-                <Button
-                  variant={filterStatus === "active" ? "default" : "outline"}
-                  onClick={() => setFilterStatus("active")}
-                  className="text-xs bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800 hover:bg-blue-500/20"
-                >
-                  Active
-                </Button>
-                <Button
-                  variant={filterStatus === "passed" ? "default" : "outline"}
-                  onClick={() => setFilterStatus("passed")}
-                  className="text-xs bg-green-500/10 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800 hover:bg-green-500/20"
-                >
-                  Passed
-                </Button>
-                <Button
-                  variant={filterStatus === "future" ? "default" : "outline"}
-                  onClick={() => setFilterStatus("future")}
-                  className="text-xs bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-200 dark:border-purple-800 hover:bg-purple-500/20"
-                >
-                  Future
-                </Button>
-              </div>
-
-              <div className="flex justify-end">
-                <div className="flex border rounded-md overflow-hidden">
-                  <Button
-                    variant={viewMode === "card" ? "default" : "ghost"}
-                    size="sm"
-                    onClick={() => setViewMode("card")}
-                    className="rounded-none"
-                  >
-                    <Grid3X3 className="h-4 w-4 mr-1" />
-                    Card
-                  </Button>
-                  <Button
-                    variant={viewMode === "table" ? "default" : "ghost"}
-                    size="sm"
-                    onClick={() => setViewMode("table")}
-                    className="rounded-none"
-                  >
-                    <Table className="h-4 w-4 mr-1" />
-                    Table
-                  </Button>
-                </div>
-              </div>
-            </div>
+          <div className="flex items-center gap-2 mt-1">
+            <Button variant="outline" size="sm" className="h-9 text-sm sm:min-w-[170px]" onClick={() => setAliasListOpen(true)}>
+              View alias updates
+            </Button>
           </div>
-        </div>
-      </div>
-
-      <Collapsible open={aliasFormOpen} onOpenChange={setAliasFormOpen} className="bg-white dark:bg-gray-800 shadow-md rounded-lg">
-        <Card className="bg-transparent border-0 shadow-none">
-          <CardHeader className="flex flex-row items-start justify-between gap-3">
-            <div className="space-y-1">
-              <CardTitle>Update Course Code Alias</CardTitle>
-              <CardDescription>Link an old course code to the current one so search, imports, and planning stay in sync.</CardDescription>
-            </div>
-            <div className="flex items-center gap-2 mt-1">
-              <Button variant="outline" size="sm" onClick={() => setAliasListOpen(true)}>
-                View alias updates
-              </Button>
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm" className="gap-2">
-                  {aliasFormOpen ? "Hide" : "Show"}
-                  {aliasFormOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                </Button>
-              </CollapsibleTrigger>
-            </div>
-          </CardHeader>
-          <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
-            <CardContent className="space-y-2">
+        </CardHeader>
+        <CardContent className="space-y-2">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
             <div>
               <Label htmlFor="alias-input" className="text-sm font-medium mb-1 block">
@@ -1734,7 +1781,7 @@ const FilterAndSearchControls = ({
               />
             </div>
             <div className="flex items-end">
-              <Button type="button" className="w-full" onClick={handleAliasSave}>
+              <Button type="button" size="sm" className="h-9 text-sm w-full" onClick={handleAliasSave}>
                 Review alias change
               </Button>
             </div>
@@ -1743,10 +1790,8 @@ const FilterAndSearchControls = ({
           <p className="mt-1 text-xs text-muted-foreground">
             Saved aliases are remembered across tools so searches and schedule imports recognize old course codes.
           </p>
-            </CardContent>
-          </CollapsibleContent>
-        </Card>
-      </Collapsible>
+        </CardContent>
+      </Card>
 
       <Dialog
         open={confirmOpen}
@@ -1780,10 +1825,10 @@ const FilterAndSearchControls = ({
             </ul>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+            <Button size="sm" className="h-9 text-sm" variant="outline" onClick={() => setConfirmOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={confirmAliasSave} disabled={!pendingAlias}>
+            <Button size="sm" className="h-9 text-sm" onClick={confirmAliasSave} disabled={!pendingAlias}>
               Confirm and save
             </Button>
           </DialogFooter>
@@ -1799,7 +1844,7 @@ const FilterAndSearchControls = ({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button onClick={() => setMissingAliasDialogOpen(false)}>Got it</Button>
+            <Button size="sm" className="h-9 text-sm" onClick={() => setMissingAliasDialogOpen(false)}>Got it</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1853,13 +1898,13 @@ const FilterAndSearchControls = ({
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAliasListOpen(false)}>
+            <Button size="sm" className="h-9 text-sm" variant="outline" onClick={() => setAliasListOpen(false)}>
               Close
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   )
 }
 
@@ -1910,7 +1955,13 @@ const OverallProgress = ({
   }
 
   return (
-    <div className="p-4 bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-100 dark:border-gray-700 transition-all duration-300 ease-in-out">
+    <div
+      className={cn(
+        "rounded-lg border border-gray-100 bg-white p-4 shadow-md transition-all duration-300 ease-in-out dark:border-gray-700 dark:bg-gray-800",
+        isFloating &&
+          "border-blue-100/80 bg-white/95 shadow-xl backdrop-blur supports-[backdrop-filter]:bg-white/90 dark:border-slate-600 dark:bg-gray-900/95 dark:supports-[backdrop-filter]:bg-gray-900/90",
+      )}
+    >
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-semibold">Overall Program Progress</h2>
         <Button
@@ -2097,23 +2148,20 @@ const SaveLoadControls = ({
   triggerUploadDialog,
   setCourses,
   setSaveMessage,
+  onImportSuccessPrompt,
 }: SaveLoadControlsProps) => {
   // Ref for curriculum HTML import
   const htmlFileInputRef = useRef<HTMLInputElement>(null)
+  const saveFeedbackTimerRef = useRef<number | null>(null)
   const [highlightImport, setHighlightImport] = useState(false)
   const [resetDialogOpen, setResetDialogOpen] = useState(false)
+  const [showSavedNow, setShowSavedNow] = useState(false)
 
-
-  const [isExpanded, setIsExpanded] = useState(false)
-
-  // Auto-expand and highlight Import when navigated with #import hash
+  // Highlight Import when navigated with #import hash.
   useEffect(() => {
     try {
       const hash = typeof window !== 'undefined' ? window.location.hash : ""
       if (hash === "#import" || hash === "#import-curriculum") {
-        // open the accordion
-        setIsExpanded(true)
-        // after expansion animation, scroll to import and highlight
         setTimeout(() => {
           const el = document.getElementById("import-curriculum")
           if (el) {
@@ -2121,7 +2169,7 @@ const SaveLoadControls = ({
           }
           setHighlightImport(true)
           setTimeout(() => setHighlightImport(false), 2200)
-        }, 350)
+        }, 120)
       }
     } catch {}
   }, [])
@@ -2146,105 +2194,172 @@ const SaveLoadControls = ({
     setResetDialogOpen(false)
   }
 
+  const handleSaveNow = () => {
+    saveProgress()
+    setShowSavedNow(true)
+    if (saveFeedbackTimerRef.current) {
+      window.clearTimeout(saveFeedbackTimerRef.current)
+    }
+    saveFeedbackTimerRef.current = window.setTimeout(() => {
+      setShowSavedNow(false)
+      saveFeedbackTimerRef.current = null
+    }, 2200)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (saveFeedbackTimerRef.current) {
+        window.clearTimeout(saveFeedbackTimerRef.current)
+      }
+    }
+  }, [])
+
   return (
     <>
-      <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-        <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
-          <CollapsibleTrigger asChild>
-            <button type="button" className="flex justify-between items-center w-full cursor-pointer">
-              <h2 className="text-lg font-semibold">Save & Load Progress</h2>
-              <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-                {isExpanded ? "Hide" : "Show"} Options
-                {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-              </span>
-            </button>
-          </CollapsibleTrigger>
+        <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md space-y-3">
+          <h2 className="text-base font-semibold">Save & Load Progress</h2>
 
-          <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
-            <div className="mt-3">
-          <div className="flex flex-wrap gap-3">
-            <Button onClick={saveProgress} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700">
-              <Save className="h-4 w-4" />
-              Save Progress
-            </Button>
-            <Button onClick={downloadProgress} className="flex items-center gap-2">
-              <Download className="h-4 w-4" />
-              Download Progress
-            </Button>
-            <Button
-              onClick={triggerUploadDialog}
-              className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
-            >
-              <Upload className="h-4 w-4" />
-              Upload Progress
-            </Button>
-            {/* Import Curriculum (HTML) */}
-            <div
-              className={cn(
-                "relative rounded-md",
-                highlightImport && "ring-4 ring-indigo-300 animate-pulse"
-              )}
-              id="import-curriculum"
-            >
-              <input
-                type="file"
-                ref={htmlFileInputRef}
-                onChange={(e) => {
-                  const file = (e.target as HTMLInputElement).files?.[0]
-                  if (!file) return
-                  trackAnalyticsEvent("course_tracker.curriculum_import_file", { filename: file.name })
-                  const reader = new FileReader()
-                  reader.onload = (ev) => {
-                    try {
-                      const html = ev.target?.result as string
-                      const parsed = parseCurriculumHtml(html) as Course[]
-                      if (!parsed || parsed.length === 0) {
-                        trackAnalyticsEvent("course_tracker.curriculum_import_failed", { reason: "no_courses" })
-                        setSaveMessage("No courses found in the provided HTML file")
-                        setTimeout(() => setSaveMessage(null), 3000)
-                        return
-                      }
-                      const hydrated = hydrateCourses(parsed as Course[])
-                      registerExternalCourses(hydrated)
-                      setCourses(hydrated)
-                      saveCourseStatuses(hydrated)
-                      trackAnalyticsEvent("course_tracker.curriculum_import_success", { courseCount: hydrated.length })
-                      setSaveMessage("Curriculum imported successfully")
-                      setTimeout(() => setSaveMessage(null), 3000)
-                    } catch (err) {
-                      console.error(err)
-                      trackAnalyticsEvent("course_tracker.curriculum_import_failed", { reason: "parse_error" })
-                      setSaveMessage("Failed to parse curriculum HTML file")
-                      setTimeout(() => setSaveMessage(null), 3000)
-                    }
+          <input
+            type="file"
+            ref={htmlFileInputRef}
+            onChange={(e) => {
+              const file = (e.target as HTMLInputElement).files?.[0]
+              if (!file) return
+              trackAnalyticsEvent("course_tracker.curriculum_import_file", { filename: file.name })
+              const reader = new FileReader()
+              reader.onload = (ev) => {
+                try {
+                  const html = ev.target?.result as string
+                  const parsed = parseCurriculumHtml(html) as Course[]
+                  if (!parsed || parsed.length === 0) {
+                    trackAnalyticsEvent("course_tracker.curriculum_import_failed", { reason: "no_courses" })
+                    setSaveMessage("No courses found in the provided HTML file")
+                    setTimeout(() => setSaveMessage(null), 3000)
+                    return
                   }
-                  reader.readAsText(file)
+                  const hydrated = hydrateCourses(parsed as Course[])
+                  registerExternalCourses(hydrated)
+                  setCourses(hydrated)
+                  saveCourseStatuses(hydrated)
+                  trackAnalyticsEvent("course_tracker.curriculum_import_success", { courseCount: hydrated.length })
+                  onImportSuccessPrompt({
+                    title: "Curriculum imported",
+                    description: "Curriculum file loaded successfully. Dismiss this prompt to continue and see progress rewards.",
+                  })
+                } catch (err) {
+                  console.error(err)
+                  trackAnalyticsEvent("course_tracker.curriculum_import_failed", { reason: "parse_error" })
+                  setSaveMessage("Failed to parse curriculum HTML file")
+                  setTimeout(() => setSaveMessage(null), 3000)
+                }
+              }
+              reader.readAsText(file)
 
-                  // reset input so same file can be re-selected
-                  ;(e.target as HTMLInputElement).value = ""
-                }}
-                accept=".html,.htm"
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                aria-label="Import curriculum HTML file"
-              />
-              <Button
-                className={cn(
-                  "flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 transition-transform",
-                  highlightImport && "scale-105"
-                )}
-              >
-                <Upload className="h-4 w-4" />
-                Import Curriculum (HTML)
+              // reset input so same file can be re-selected
+              ;(e.target as HTMLInputElement).value = ""
+            }}
+            accept=".html,.htm"
+            className="hidden"
+            aria-label="Import curriculum HTML file"
+          />
+
+          <div className="space-y-2">
+            <div className="flex flex-col gap-3 rounded-md border border-border/60 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium">Save Progress</p>
+                <p className="text-xs text-muted-foreground">Store your latest course statuses in this browser.</p>
+              </div>
+              <Button size="sm" onClick={handleSaveNow} className="h-9 text-sm gap-2 sm:min-w-[170px]">
+                <AnimatePresence mode="wait" initial={false}>
+                  {showSavedNow ? (
+                    <motion.span
+                      key="saved"
+                      className="inline-flex items-center gap-2"
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.2, ease: "easeOut" }}
+                    >
+                      <CheckCircle className="h-4 w-4" />
+                      Saved just now.
+                    </motion.span>
+                  ) : (
+                    <motion.span
+                      key="default"
+                      className="inline-flex items-center gap-2"
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.2, ease: "easeOut" }}
+                    >
+                      <Save className="h-4 w-4" />
+                      Save now
+                    </motion.span>
+                  )}
+                </AnimatePresence>
               </Button>
             </div>
-            <Button
-              onClick={() => setResetDialogOpen(true)}
-              variant="destructive"
-              className="flex items-center gap-2"
+
+            <div className="flex flex-col gap-3 rounded-md border border-border/60 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium">Download Backup</p>
+                <p className="text-xs text-muted-foreground">Export your progress file so you can keep a manual backup.</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={downloadProgress} className="h-9 text-sm gap-2 sm:min-w-[170px]">
+                <Download className="h-4 w-4" />
+                Download
+              </Button>
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-md border border-border/60 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium">Upload Backup</p>
+                <p className="text-xs text-muted-foreground">Restore your saved progress from a downloaded backup file.</p>
+              </div>
+              <Button size="sm" onClick={triggerUploadDialog} className="h-9 text-sm gap-2 sm:min-w-[170px] bg-green-600 hover:bg-green-700">
+                <Upload className="h-4 w-4" />
+                Upload
+              </Button>
+            </div>
+
+            <div
+              id="import-curriculum"
+              className={cn(
+                "flex flex-col gap-3 rounded-md border border-border/60 p-3 transition-all sm:flex-row sm:items-center sm:justify-between",
+                highlightImport && "ring-2 ring-indigo-300",
+              )}
             >
-              <RefreshCw className="h-4 w-4" />
-              Reset All Progress
-            </Button>
+              <div>
+                <p className="text-sm font-medium">Import Curriculum (HTML)</p>
+                <p className="text-xs text-muted-foreground">Load courses from a curriculum HTML file before tracking statuses.</p>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => htmlFileInputRef.current?.click()}
+                className={cn("h-9 text-sm gap-2 sm:min-w-[170px] bg-indigo-600 hover:bg-indigo-700", highlightImport && "scale-[1.02]")}
+              >
+                <Upload className="h-4 w-4" />
+                Choose file
+              </Button>
+            </div>
+
+            <div className="pt-1 border-t border-border/60">
+              <div className="mt-2 flex flex-col gap-3 rounded-md border border-red-200/70 p-3 dark:border-red-900/50 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium text-red-700 dark:text-red-300">Reset All Progress</p>
+                  <p className="text-xs text-muted-foreground">Set every course back to pending and clear recorded attempts.</p>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => setResetDialogOpen(true)}
+                  variant="destructive"
+                  className="h-9 text-sm gap-2 sm:min-w-[170px]"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Reset all
+                </Button>
+              </div>
+            </div>
           </div>
 
           {saveMessage && (
@@ -2254,10 +2369,8 @@ const SaveLoadControls = ({
               <AlertDescription>{saveMessage}</AlertDescription>
             </Alert>
           )}
-            </div>
-          </CollapsibleContent>
         </div>
-      </Collapsible>
+
       <Dialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
       <DialogContent>
         <DialogHeader>
@@ -2268,10 +2381,10 @@ const SaveLoadControls = ({
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setResetDialogOpen(false)}>
+          <Button size="sm" className="h-9 text-sm" variant="outline" onClick={() => setResetDialogOpen(false)}>
             Keep Current Progress
           </Button>
-          <Button variant="destructive" onClick={confirmResetAll}>
+          <Button size="sm" className="h-9 text-sm" variant="destructive" onClick={confirmResetAll}>
             Reset Everything
           </Button>
         </DialogFooter>
@@ -2285,7 +2398,6 @@ const SaveLoadControls = ({
 const AcademicTimeline = ({
   startYear,
   handleStartYearChange,
-  academicYears,
   expectedGraduation,
   currentYearLevel,
   onCurrentYearLevelChange,
@@ -2294,8 +2406,8 @@ const AcademicTimeline = ({
   yearLevelOptions,
   onExtendYearOptions,
 }: AcademicTimelineProps) => {
-  const [isExpanded, setIsExpanded] = useState(false)
   const [inputValue, setInputValue] = useState<string>(String(startYear))
+  const [isPlannerHover, setIsPlannerHover] = useState(false)
 
   // Keep local input in sync with prop changes
   useEffect(() => {
@@ -2303,132 +2415,114 @@ const AcademicTimeline = ({
   }, [startYear])
 
   return (
-    <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-      <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
-                <GraduationCap className="h-5 w-5" />
-                Academic Timeline
-              </h2>
-              <div className="flex flex-wrap items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <Label htmlFor="start-year" className="whitespace-nowrap">
-                    Starting Year:
-                  </Label>
-                  <Input
-                    id="start-year"
-                    type="text" /* use text + inputMode to show numeric keyboard on mobile without spinner */
-                    value={inputValue}
-                    onChange={(e) => setInputValue(e.target.value)}
-                    onBlur={() => handleStartYearChange(inputValue)}
-                    className="w-24"
-                    inputMode="numeric" /* prefer numeric keypad on mobile */
-                    pattern="\\d*" /* allow digits only on some mobile browsers */
-                    placeholder="2025"
-                  />
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Label className="whitespace-nowrap">Current Year:</Label>
-                  <Select
-                    value={String(currentYearLevel)}
-                    onValueChange={(value) => {
-                      if (value === "extend") {
-                        onExtendYearOptions()
-                        return
-                      }
-                      const parsed = Number.parseInt(value, 10)
-                      if (!Number.isNaN(parsed)) {
-                        onCurrentYearLevelChange(parsed)
-                      }
-                    }}
-                  >
-                    <SelectTrigger className="w-32">
-                      <SelectValue placeholder="Year" />
-                    </SelectTrigger>
-                    <SelectContent className="z-[14000]" position="popper">
-                      {yearLevelOptions.map((year) => (
-                        <SelectItem key={year} value={String(year)}>
-                          Year {year}
-                        </SelectItem>
-                      ))}
-                      <SelectItem value="extend" className="text-emerald-600 font-semibold">
-                        Year {yearLevelOptions.length + 1} +
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Label className="whitespace-nowrap">Current Term:</Label>
-                  <Select value={currentTerm} onValueChange={(value: TermName) => onCurrentTermChange(value)}>
-                    <SelectTrigger className="w-32">
-                      <SelectValue placeholder="Term" />
-                    </SelectTrigger>
-                    <SelectContent className="z-[14000]" position="popper">
-                      {["Term 1", "Term 2", "Term 3"].map((term) => (
-                        <SelectItem key={term} value={term}>
-                          {term}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-4">
-              <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-md">
-                <p className="text-blue-700 dark:text-blue-300 font-medium">Expected Graduation: {expectedGraduation}</p>
-              </div>
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm">
-                  {isExpanded ? "Hide" : "Show"} Details
-                </Button>
-              </CollapsibleTrigger>
-            </div>
-          </div>
-
-      {/* Academic Years Table (Expandable) */}
-      <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
-        <div className="mt-4 overflow-x-auto">
-          <table className="min-w-full border-collapse">
-            <thead>
-              <tr className="bg-gray-100 dark:bg-gray-700">
-                <th className="border border-gray-200 dark:border-gray-600 px-3 py-2 text-left">Year</th>
-                <th className="border border-gray-200 dark:border-gray-600 px-3 py-2 text-left">Term 1</th>
-                <th className="border border-gray-200 dark:border-gray-600 px-3 py-2 text-left">Term 2</th>
-                <th className="border border-gray-200 dark:border-gray-600 px-3 py-2 text-left">Term 3</th>
-              </tr>
-            </thead>
-            <tbody>
-              {academicYears.map((academicYear) => (
-                <tr key={academicYear.year} className="hover:bg-gray-50 dark:hover:bg-gray-800">
-                  <td className="border border-gray-200 dark:border-gray-600 px-3 py-2">Year {academicYear.year}</td>
-                  <td className="border border-gray-200 dark:border-gray-600 px-3 py-2">S.Y. {academicYear.term1}</td>
-                  <td className="border border-gray-200 dark:border-gray-600 px-3 py-2">S.Y. {academicYear.term2}</td>
-                  <td className="border border-gray-200 dark:border-gray-600 px-3 py-2">S.Y. {academicYear.term3}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </CollapsibleContent>
-
-      {/* Academic Planner Link */}
-      <div className="mt-4">
-        <Button asChild variant="outline" className="flex items-center gap-2 bg-transparent">
-          <Link href="/academic-planner">
-            <Calendar className="h-4 w-4" />
-            Open Academic Planner
+    <div className="mb-6 rounded-lg border border-slate-200/80 bg-white p-3 shadow-sm dark:border-slate-700/80 dark:bg-gray-800/95">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <h2 className="flex items-center gap-2 text-base font-semibold leading-none">
+          <GraduationCap className="h-4.5 w-4.5" />
+          Academic Timeline
+        </h2>
+        <Button
+          asChild
+          variant="outline"
+          size="sm"
+          className="group h-8 w-full justify-start border-blue-200/80 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 hover:bg-blue-100 hover:text-blue-800 dark:border-blue-700/70 dark:bg-blue-900/25 dark:text-blue-300 dark:hover:bg-blue-900/40 dark:hover:text-blue-200 sm:w-auto"
+        >
+          <Link
+            href="/academic-planner"
+            className="inline-flex items-center gap-1.5"
+            onMouseEnter={() => setIsPlannerHover(true)}
+            onMouseLeave={() => setIsPlannerHover(false)}
+            onFocus={() => setIsPlannerHover(true)}
+            onBlur={() => setIsPlannerHover(false)}
+          >
+            <Calendar className="h-3.5 w-3.5" />
+            <span className="relative inline-block max-w-full overflow-hidden text-left leading-none sm:min-w-[14.5rem]">
+              <motion.span
+                className="block truncate"
+                animate={{ opacity: isPlannerHover ? 0 : 1, y: isPlannerHover ? -6 : 0 }}
+                transition={{ duration: 0.25, ease: "easeInOut" }}
+              >
+                Expected Graduation: {expectedGraduation}
+              </motion.span>
+              <motion.span
+                className="pointer-events-none absolute inset-0 truncate"
+                animate={{ opacity: isPlannerHover ? 1 : 0, y: isPlannerHover ? 0 : 6 }}
+                transition={{ duration: 0.25, ease: "easeInOut" }}
+              >
+                Open Academic Planner
+              </motion.span>
+            </span>
           </Link>
         </Button>
       </div>
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className="space-y-1">
+          <Label htmlFor="start-year" className="text-xs font-medium text-muted-foreground">
+            Starting Year
+          </Label>
+          <Input
+            id="start-year"
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onBlur={() => handleStartYearChange(inputValue)}
+            className="h-8 w-full text-sm"
+            inputMode="numeric"
+            pattern="\\d*"
+            placeholder="2025"
+          />
+        </div>
+
+        <div className="space-y-1">
+          <Label className="text-xs font-medium text-muted-foreground">Current Year</Label>
+          <Select
+            value={String(currentYearLevel)}
+            onValueChange={(value) => {
+              if (value === "extend") {
+                onExtendYearOptions()
+                return
+              }
+              const parsed = Number.parseInt(value, 10)
+              if (!Number.isNaN(parsed)) {
+                onCurrentYearLevelChange(parsed)
+              }
+            }}
+          >
+            <SelectTrigger className="h-8 w-full text-sm">
+              <SelectValue placeholder="Year" />
+            </SelectTrigger>
+            <SelectContent className="z-[14000]" position="popper">
+              {yearLevelOptions.map((year) => (
+                <SelectItem key={year} value={String(year)}>
+                  Year {year}
+                </SelectItem>
+              ))}
+              <SelectItem value="extend" className="font-semibold text-emerald-600">
+                Year {yearLevelOptions.length + 1} +
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-1">
+          <Label className="text-xs font-medium text-muted-foreground">Current Term</Label>
+          <Select value={currentTerm} onValueChange={(value: TermName) => onCurrentTermChange(value)}>
+            <SelectTrigger className="h-8 w-full text-sm">
+              <SelectValue placeholder="Term" />
+            </SelectTrigger>
+            <SelectContent className="z-[14000]" position="popper">
+              {["Term 1", "Term 2", "Term 3"].map((term) => (
+                <SelectItem key={term} value={term}>
+                  {term}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
-    </Collapsible>
+
+    </div>
   )
 }
 
@@ -2471,13 +2565,15 @@ export default function CourseTracker() {
   const { theme } = useTheme()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
+  const [utilityDialogOpen, setUtilityDialogOpen] = useState(false)
+  const [importSuccessPrompt, setImportSuccessPrompt] = useState<{ title: string; description: string } | null>(null)
+  const [rewardOverlayDeferred, setRewardOverlayDeferred] = useState(false)
   const progressCardRef = useRef<HTMLDivElement>(null)
   const [mounted, setMounted] = useState(false)
   const [showJumpButton, setShowJumpButton] = useState(false)
   const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
   const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
   const [isProgressSticky, setIsProgressSticky] = useState(false)
-  const [stickyOffset, setStickyOffset] = useState(16)
   const [gradeModalCourseId, setGradeModalCourseId] = useState<string | null>(null)
   const [gradeModalForm, setGradeModalForm] = useState<GradeModalFormState>({ year: null, term: null, grade: "" })
   const [gradeModalError, setGradeModalError] = useState<string | null>(null)
@@ -2511,6 +2607,7 @@ export default function CourseTracker() {
   const [setupUploadStatus, setSetupUploadStatus] = useState<{ fileName: string; uploadedAt: number } | null>(null)
   const [prereqDialogState, setPrereqDialogState] = useState<PrerequisiteDialogState | null>(null)
   const [dependentRollbackDialogState, setDependentRollbackDialogState] = useState<DependentRollbackDialogState | null>(null)
+  const [bulkPrereqConfirmState, setBulkPrereqConfirmState] = useState<BulkPrereqConfirmState | null>(null)
   const [dependencyNoticeDismissed, setDependencyNoticeDismissed] = useState(false)
   const yearLevelOptions = useMemo(() => Array.from({ length: maxYearLevelOption }, (_, idx) => idx + 1), [maxYearLevelOption])
   const extendYearOptions = useCallback(() => {
@@ -2522,6 +2619,16 @@ export default function CourseTracker() {
   const completedTermsRef = useRef<Set<string>>(new Set())
   const overallCompletedRef = useRef(false)
   const overallRainActiveRef = useRef(false)
+
+  const showImportSuccessPrompt = useCallback((details: { title: string; description: string }) => {
+    setRewardOverlayDeferred(true)
+    setImportSuccessPrompt(details)
+  }, [])
+
+  const dismissImportSuccessPrompt = useCallback(() => {
+    setImportSuccessPrompt(null)
+    setRewardOverlayDeferred(false)
+  }, [])
 
   const syncProfileFromStorage = useCallback(() => {
     try {
@@ -2608,6 +2715,7 @@ export default function CourseTracker() {
 
   useEffect(() => {
     if (!coursesHydrated) return
+    if (rewardOverlayDeferred) return
 
     const years = Array.from(new Set(courses.map((course) => course.year).filter((y): y is number => Number.isFinite(y))))
       .sort((a, b) => a - b)
@@ -2768,7 +2876,7 @@ export default function CourseTracker() {
     completedYearsRef.current = currentCompletedYears
     completedTermsRef.current = currentCompletedTerms
     overallCompletedRef.current = overallComplete
-  }, [courses, coursesHydrated])
+  }, [courses, coursesHydrated, rewardOverlayDeferred])
 
   const scrollToPageTop = useCallback(() => {
     if (typeof window === "undefined") return
@@ -3257,68 +3365,16 @@ export default function CourseTracker() {
   }, [])
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof document === "undefined") return
-
-    const bannerSelector = "[data-install-banner]"
-    const baseOffset = 16
-    let resizeObserver: ResizeObserver | null = null
-    let mutationObserver: MutationObserver | null = null
-    let observedElement: Element | null = null
-
-    const applyOffset = (height: number) => {
-      const nextOffset = baseOffset + Math.round(height)
-      setStickyOffset((prev) => (Math.abs(prev - nextOffset) < 0.5 ? prev : nextOffset))
-    }
-
-    const updateMeasurements = () => {
-      const banner = document.querySelector(bannerSelector) as HTMLElement | null
-      const bannerHeight = banner ? banner.getBoundingClientRect().height : 0
-      applyOffset(bannerHeight)
-
-      if (banner && typeof ResizeObserver !== "undefined") {
-        if (observedElement !== banner) {
-          resizeObserver?.disconnect()
-          observedElement = banner
-          resizeObserver = new ResizeObserver(() => {
-            const nextHeight = banner.getBoundingClientRect().height
-            applyOffset(nextHeight)
-          })
-          resizeObserver.observe(banner)
-        }
-      } else if (!banner && observedElement) {
-        resizeObserver?.disconnect()
-        observedElement = null
-      }
-    }
-
-    updateMeasurements()
-    window.addEventListener("resize", updateMeasurements)
-
-    if (typeof MutationObserver !== "undefined") {
-      mutationObserver = new MutationObserver(() => {
-        updateMeasurements()
-      })
-      mutationObserver.observe(document.body, { childList: true, subtree: true })
-    }
-
-    return () => {
-      window.removeEventListener("resize", updateMeasurements)
-      resizeObserver?.disconnect()
-      mutationObserver?.disconnect()
-    }
-  }, [])
-
-  useEffect(() => {
     const handleScroll = () => {
       if (!progressCardRef.current) return
-      const { top } = progressCardRef.current.getBoundingClientRect()
-      setIsProgressSticky(top <= stickyOffset + 0.5)
+      const { bottom } = progressCardRef.current.getBoundingClientRect()
+      setIsProgressSticky(bottom <= 0)
     }
 
     handleScroll()
     window.addEventListener("scroll", handleScroll, { passive: true } as AddEventListenerOptions)
     return () => window.removeEventListener("scroll", handleScroll)
-  }, [stickyOffset])
+  }, [])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -4330,6 +4386,160 @@ export default function CourseTracker() {
   // Group the filtered courses for display
   const groupedFilteredCourses = useMemo<CoursesByYearAndTerm>(() => groupCourses(filteredCourses), [filteredCourses])
 
+  const activeVisibleCourseIds = useMemo(
+    () => filteredCourses.filter((course) => course.status === "active").map((course) => course.id),
+    [filteredCourses],
+  )
+
+  const futureVisibleCourseIds = useMemo(
+    () => filteredCourses.filter((course) => canTakeNext(course)).map((course) => course.id),
+    [filteredCourses, canTakeNext],
+  )
+
+  const applyBulkPassWithPrerequisiteCascade = useCallback((
+    prevCourses: Course[],
+    targetIds: Set<string>,
+  ): { updatedCourses: Course[]; updatedTargetCount: number; prerequisiteUpdateCount: number } => {
+    const byId = new Map(prevCourses.map((course) => [course.id, course]))
+    const resolveCourse = (id: string) => byId.get(id)
+    const prereqOverrides: Record<string, CourseStatus> = {}
+
+    targetIds.forEach((courseId) => {
+      const targetCourse = byId.get(courseId)
+      if (!targetCourse) return
+      const cascadeTree = buildCascadeNodes(targetCourse, "passed", resolveCourse, new Set([targetCourse.id]))
+      Object.assign(prereqOverrides, flattenCascadeOverrides(cascadeTree))
+    })
+
+    let updatedTargetCount = 0
+    let prerequisiteUpdateCount = 0
+
+    const updatedCourses = prevCourses.map((course) => {
+      if (targetIds.has(course.id)) {
+        if (course.status !== "passed") {
+          updatedTargetCount += 1
+          return { ...course, status: "passed" as CourseStatus }
+        }
+        return course
+      }
+
+      const overrideStatus = prereqOverrides[course.id]
+      if (overrideStatus && course.status !== overrideStatus) {
+        prerequisiteUpdateCount += 1
+        return { ...course, status: overrideStatus }
+      }
+
+      return course
+    })
+
+    return { updatedCourses, updatedTargetCount, prerequisiteUpdateCount }
+  }, [])
+
+  const getCoursesMarkedPassed = useCallback((
+    previousCourses: Course[],
+    nextCourses: Course[],
+  ): Array<{ id: string; code: string; name: string }> => {
+    const previousById = new Map(previousCourses.map((course) => [course.id, course]))
+    return nextCourses
+      .filter((course) => {
+        if (course.status !== "passed") return false
+        const before = previousById.get(course.id)
+        return Boolean(before) && before?.status !== "passed"
+      })
+      .map((course) => ({ id: course.id, code: course.code, name: course.name }))
+      .sort((a, b) => a.code.localeCompare(b.code))
+  }, [])
+
+  const commitBulkStatusUpdate = useCallback((updatedCourses: Course[], message: string) => {
+    setCourses(updatedCourses)
+    saveCourseStatuses(updatedCourses)
+    setSaveMessage(message)
+    setTimeout(() => setSaveMessage(null), 3000)
+  }, [])
+
+  const markVisibleActiveAsPassed = useCallback(() => {
+    if (filterStatus !== "active" || activeVisibleCourseIds.length === 0) return
+    const targetIds = new Set(activeVisibleCourseIds)
+    const result = applyBulkPassWithPrerequisiteCascade(courses, targetIds)
+    const updatedTargetCount = result.updatedTargetCount
+    const prerequisiteUpdateCount = result.prerequisiteUpdateCount
+    const nextMessage =
+      prerequisiteUpdateCount > 0
+        ? `Marked ${updatedTargetCount} active course(s) as passed and updated ${prerequisiteUpdateCount} prerequisite(s)`
+        : `Marked ${updatedTargetCount} active course(s) as passed`
+
+    if (prerequisiteUpdateCount > 0) {
+      const passedCourses = getCoursesMarkedPassed(courses, result.updatedCourses)
+      setBulkPrereqConfirmState({
+        title: "Confirm prerequisite updates",
+        description: `This action will automatically mark ${prerequisiteUpdateCount} prerequisite course(s) as Passed before marking selected active courses as Passed.`,
+        applyLabel: "Proceed with updates",
+        updatedCourses: result.updatedCourses,
+        successMessage: nextMessage,
+        passedCourses,
+      })
+    } else {
+      commitBulkStatusUpdate(result.updatedCourses, nextMessage)
+    }
+  }, [
+    filterStatus,
+    activeVisibleCourseIds,
+    applyBulkPassWithPrerequisiteCascade,
+    courses,
+    commitBulkStatusUpdate,
+    getCoursesMarkedPassed,
+  ])
+
+  const markVisibleFutureAsActive = useCallback(() => {
+    if (filterStatus !== "future" || futureVisibleCourseIds.length === 0) return
+    const targetIds = new Set(futureVisibleCourseIds)
+    const byId = new Map(courses.map((course) => [course.id, course]))
+    const resolveCourse = (id: string) => byId.get(id)
+    const prereqOverrides: Record<string, CourseStatus> = {}
+
+    // Future -> Active should still ensure prerequisites become Passed.
+    targetIds.forEach((courseId) => {
+      const targetCourse = byId.get(courseId)
+      if (!targetCourse) return
+      const cascadeTree = buildCascadeNodes(targetCourse, "passed", resolveCourse, new Set([targetCourse.id]))
+      Object.assign(prereqOverrides, flattenCascadeOverrides(cascadeTree))
+    })
+
+    const prerequisiteUpdates = Object.keys(prereqOverrides).length
+
+    const updatedCourses = courses.map((course) => {
+      if (targetIds.has(course.id) && course.status === "pending") {
+        return { ...course, status: "active" as CourseStatus }
+      }
+
+      const overrideStatus = prereqOverrides[course.id]
+      if (overrideStatus && course.status !== overrideStatus) {
+        return { ...course, status: overrideStatus }
+      }
+
+      return course
+    })
+
+    const nextMessage =
+      prerequisiteUpdates > 0
+        ? `Marked ${futureVisibleCourseIds.length} future course(s) as active and updated ${prerequisiteUpdates} prerequisite(s) to passed`
+        : `Marked ${futureVisibleCourseIds.length} future course(s) as active`
+
+    if (prerequisiteUpdates > 0) {
+      const passedCourses = getCoursesMarkedPassed(courses, updatedCourses)
+      setBulkPrereqConfirmState({
+        title: "Confirm prerequisite updates",
+        description: `This action will automatically mark ${prerequisiteUpdates} prerequisite course(s) as Passed before marking selected future courses as Active.`,
+        applyLabel: "Proceed with updates",
+        updatedCourses,
+        successMessage: nextMessage,
+        passedCourses,
+      })
+    } else {
+      commitBulkStatusUpdate(updatedCourses, nextMessage)
+    }
+  }, [filterStatus, futureVisibleCourseIds, courses, commitBulkStatusUpdate, getCoursesMarkedPassed])
+
   const openGroupsForCourses = useCallback((courseList: Course[]) => {
     if (!Array.isArray(courseList) || courseList.length === 0) return
 
@@ -4572,38 +4782,76 @@ export default function CourseTracker() {
   // Mark all courses in a specific year as passed
   const markYearAsPassed = (year: number, e: React.MouseEvent) => {
     e.stopPropagation() // Prevent triggering the collapsible
-    setCourses((prevCourses) => {
-      const yearCourses = prevCourses.filter((course) => course.year === year)
-      const passedCourses = yearCourses.filter((course) => course.status === "passed")
-      const allPassed = yearCourses.length === passedCourses.length
+    const yearCourses = courses.filter((course) => course.year === year)
+    const passedCourses = yearCourses.filter((course) => course.status === "passed")
+    const allPassed = yearCourses.length === passedCourses.length
 
-      const updatedCourses: Course[] = prevCourses.map((course: Course) =>
-        course.year === year ? { ...course, status: (allPassed ? "pending" : "passed") as CourseStatus } : course,
+    if (allPassed) {
+      const updatedCourses = courses.map((course: Course) =>
+        course.year === year ? { ...course, status: "pending" as CourseStatus } : course,
       )
+      commitBulkStatusUpdate(updatedCourses, `Marked Year ${year} courses as pending`)
+      return
+    }
 
-      // Save to localStorage
-      saveCourseStatuses(updatedCourses)
+    const result = applyBulkPassWithPrerequisiteCascade(courses, new Set(yearCourses.map((course) => course.id)))
+    const nextMessage =
+      result.prerequisiteUpdateCount > 0
+        ? `Marked Year ${year} courses as passed and updated ${result.prerequisiteUpdateCount} prerequisite(s)`
+        : `Marked Year ${year} courses as passed`
 
-      return updatedCourses
-    })
+    if (result.prerequisiteUpdateCount > 0) {
+      const passedCourses = getCoursesMarkedPassed(courses, result.updatedCourses)
+      setBulkPrereqConfirmState({
+        title: "Confirm prerequisite updates",
+        description: `This action will automatically mark ${result.prerequisiteUpdateCount} prerequisite course(s) as Passed before marking Year ${year} courses as Passed.`,
+        applyLabel: "Proceed with updates",
+        updatedCourses: result.updatedCourses,
+        successMessage: nextMessage,
+        passedCourses,
+      })
+      return
+    }
+
+    commitBulkStatusUpdate(result.updatedCourses, nextMessage)
   }
 
   // Toggle all courses in a specific term between passed and pending
   const markTermAsPassed = (year: number, term: string) => {
-    setCourses((prevCourses) => {
-      const termCourses = prevCourses.filter((course) => course.year === year && course.term === term)
-      const passedCourses = termCourses.filter((course) => course.status === "passed")
-      const allPassed = termCourses.length === passedCourses.length
+    const termCourses = courses.filter((course) => course.year === year && course.term === term)
+    const passedCourses = termCourses.filter((course) => course.status === "passed")
+    const allPassed = termCourses.length === passedCourses.length
 
-      const updatedCourses: Course[] = prevCourses.map((course: Course) =>
-        course.year === year && course.term === term ? { ...course, status: (allPassed ? "pending" : "passed") as CourseStatus } : course,
+    if (allPassed) {
+      const updatedCourses = courses.map((course: Course) =>
+        course.year === year && course.term === term
+          ? { ...course, status: "pending" as CourseStatus }
+          : course,
       )
+      commitBulkStatusUpdate(updatedCourses, `Marked Year ${year} ${term} courses as pending`)
+      return
+    }
 
-      // Save to localStorage
-      saveCourseStatuses(updatedCourses)
+    const result = applyBulkPassWithPrerequisiteCascade(courses, new Set(termCourses.map((course) => course.id)))
+    const nextMessage =
+      result.prerequisiteUpdateCount > 0
+        ? `Marked Year ${year} ${term} courses as passed and updated ${result.prerequisiteUpdateCount} prerequisite(s)`
+        : `Marked Year ${year} ${term} courses as passed`
 
-      return updatedCourses
-    })
+    if (result.prerequisiteUpdateCount > 0) {
+      const passedCourses = getCoursesMarkedPassed(courses, result.updatedCourses)
+      setBulkPrereqConfirmState({
+        title: "Confirm prerequisite updates",
+        description: `This action will automatically mark ${result.prerequisiteUpdateCount} prerequisite course(s) as Passed before marking Year ${year} ${term} courses as Passed.`,
+        applyLabel: "Proceed with updates",
+        updatedCourses: result.updatedCourses,
+        successMessage: nextMessage,
+        passedCourses,
+      })
+      return
+    }
+
+    commitBulkStatusUpdate(result.updatedCourses, nextMessage)
   }
 
   // Download course progress as JSON file
@@ -4774,8 +5022,10 @@ export default function CourseTracker() {
         }
 
         setSetupUploadStatus({ fileName, uploadedAt: Date.now() })
-        setSaveMessage("Course progress imported successfully")
-        setTimeout(() => setSaveMessage(null), 3000)
+        showImportSuccessPrompt({
+          title: "Backup uploaded",
+          description: "Backup file imported successfully. Dismiss this prompt to continue and see XP/level-up rewards.",
+        })
       } catch (error) {
         console.error("Error parsing course progress file:", error)
         setSaveMessage("Error importing course progress: Invalid file format")
@@ -4795,8 +5045,6 @@ export default function CourseTracker() {
   const saveProgress = () => {
     saveCourseStatuses(courses)
     saveTrackerPreferences({ startYear, currentYearLevel, currentTerm })
-    setSaveMessage("Course progress and timeline saved to browser storage")
-    setTimeout(() => setSaveMessage(null), 3000)
   }
 
   // Handle start year change
@@ -5086,7 +5334,47 @@ export default function CourseTracker() {
         <div className="p-4 md:p-6 lg:p-8 w-full max-w-[95rem] mx-auto font-sans">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <h1 className="text-2xl md:text-3xl font-bold text-center">Course Tracker</h1>
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <Dialog open={utilityDialogOpen} onOpenChange={setUtilityDialogOpen}>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                aria-label="Open course tracker tools"
+                className="rounded-full border-slate-300 bg-white/80 text-foreground hover:bg-white dark:border-white/40 dark:bg-white/10 dark:hover:bg-white/20"
+                onClick={() => setUtilityDialogOpen(true)}
+              >
+                <Menu className="h-5 w-5" />
+              </Button>
+              <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Course Tracker Tools</DialogTitle>
+                  <DialogDescription>
+                    Save, load, import, or reset progress and manage course code aliases in one place.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 pt-1">
+                  <SaveLoadControls
+                    saveProgress={saveProgress}
+                    downloadProgress={downloadProgress}
+                    saveMessage={saveMessage}
+                    triggerUploadDialog={triggerUploadDialog}
+                    setCourses={setCourses}
+                    setSaveMessage={setSaveMessage}
+                    onImportSuccessPrompt={showImportSuccessPrompt}
+                  />
+                  <CourseAliasControls
+                    courses={courses}
+                    onAddAliases={handleAddAliases}
+                    courseCodeAliases={courseCodeAliases}
+                    onRemoveAlias={handleRemoveAlias}
+                    onToggleAliasDisplay={handleToggleAliasDisplay}
+                  />
+                </div>
+              </DialogContent>
+            </Dialog>
+            <ThemeToggle />
+          </div>
         </div>
 
   {/* Non-CpE Student Notice */}
@@ -5110,6 +5398,27 @@ export default function CourseTracker() {
             </div>
           </Alert>
         )}
+
+        <Dialog
+          open={Boolean(importSuccessPrompt)}
+          onOpenChange={(open) => {
+            if (!open) dismissImportSuccessPrompt()
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{importSuccessPrompt?.title ?? "Import successful"}</DialogTitle>
+              <DialogDescription>
+                {importSuccessPrompt?.description ?? "Your file was imported successfully."}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button size="sm" className="h-9 text-sm" onClick={dismissImportSuccessPrompt}>
+                Continue
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={Boolean(prereqDialogState)} onOpenChange={(open) => (!open ? setPrereqDialogState(null) : null)}>
           <DialogContent className="max-w-2xl">
@@ -5161,6 +5470,66 @@ export default function CourseTracker() {
               </Button>
               <Button className="w-full sm:w-auto" onClick={confirmPrereqCascade}>
                 {prereqDialogActionLabel}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(bulkPrereqConfirmState)}
+          onOpenChange={(open) => {
+            if (!open) setBulkPrereqConfirmState(null)
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{bulkPrereqConfirmState?.title ?? "Confirm updates"}</DialogTitle>
+              <DialogDescription>
+                {bulkPrereqConfirmState?.description ?? "This action updates prerequisite courses before applying bulk status changes."}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2 text-sm">
+              <p className="font-medium text-slate-900 dark:text-slate-100">Courses that will be marked as Passed</p>
+              <div className="max-h-64 overflow-y-auto rounded-md border border-border/70 p-2">
+                {bulkPrereqConfirmState?.passedCourses?.length ? (
+                  <div className="space-y-1">
+                    {bulkPrereqConfirmState.passedCourses.map((course) => (
+                      <div
+                        key={course.id}
+                        className="flex items-start justify-between gap-2 rounded px-2 py-1 text-xs sm:text-sm"
+                      >
+                        <span className="font-semibold">{course.code}</span>
+                        <span className="text-right text-muted-foreground">{course.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="px-2 py-1 text-xs text-muted-foreground">No additional prerequisite courses will be changed.</p>
+                )}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                size="sm"
+                className="h-9 text-sm"
+                variant="outline"
+                onClick={() => setBulkPrereqConfirmState(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="h-9 text-sm"
+                onClick={() => {
+                  if (!bulkPrereqConfirmState) return
+                  commitBulkStatusUpdate(
+                    bulkPrereqConfirmState.updatedCourses,
+                    bulkPrereqConfirmState.successMessage,
+                  )
+                  setBulkPrereqConfirmState(null)
+                }}
+              >
+                {bulkPrereqConfirmState?.applyLabel ?? "Proceed"}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -5245,24 +5614,11 @@ export default function CourseTracker() {
           </DialogContent>
         </Dialog>
 
-        {/* Save/Load Progress Controls */}
-        <motion.div layout transition={{ layout: { duration: 0.25, ease: "easeInOut" } }}>
-          <SaveLoadControls
-            saveProgress={saveProgress}
-            downloadProgress={downloadProgress}
-            saveMessage={saveMessage}
-            triggerUploadDialog={triggerUploadDialog}
-            setCourses={setCourses}
-            setSaveMessage={setSaveMessage}
-          />
-        </motion.div>
-
         {/* Academic Year and Expected Graduation */}
         <motion.div layout transition={{ layout: { duration: 0.25, ease: "easeInOut" } }}>
           <AcademicTimeline
             startYear={startYear}
             handleStartYearChange={handleStartYearChange}
-            academicYears={academicYears}
             expectedGraduation={expectedGraduationLabel}
             currentYearLevel={currentYearLevel}
             onCurrentYearLevelChange={handleCurrentYearLevelChange}
@@ -5274,17 +5630,7 @@ export default function CourseTracker() {
         </motion.div>
 
         {/* Overall Progress */}
-        <motion.div
-          layout
-          transition={{ layout: { duration: 0.25, ease: "easeInOut" } }}
-          ref={progressCardRef}
-          className="sticky z-30 mb-8 transition-all duration-300 ease-in-out"
-          style={{
-            top: stickyOffset,
-            opacity: isProgressSticky ? 0.95 : 1,
-            transform: isProgressSticky ? "translateY(-4px)" : "translateY(0)",
-          }}
-        >
+        <div ref={progressCardRef} className="mb-8 transition-all duration-300 ease-in-out">
           <OverallProgress
             overallProgress={overallProgress}
             showDetailedProgress={showDetailedProgress}
@@ -5292,9 +5638,36 @@ export default function CourseTracker() {
             progressByYear={progressByYear}
             progressByTerm={progressByTerm}
             courses={courses}
-            isFloating={isProgressSticky}
+            isFloating={false}
           />
-        </motion.div>
+        </div>
+
+        <AnimatePresence>
+          {isProgressSticky && (
+            <motion.div
+              key="floating-overall-progress"
+              className="pointer-events-none fixed inset-x-0 top-0 z-[220]"
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+            >
+              <div className="mx-auto w-full max-w-[95rem] px-4 pt-2 md:px-6 lg:px-8">
+                <div className="pointer-events-auto">
+                  <OverallProgress
+                    overallProgress={overallProgress}
+                    showDetailedProgress={showDetailedProgress}
+                    setShowDetailedProgress={setShowDetailedProgress}
+                    progressByYear={progressByYear}
+                    progressByTerm={progressByTerm}
+                    courses={courses}
+                    isFloating={true}
+                  />
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <motion.div layout transition={{ layout: { duration: 0.25, ease: "easeInOut" } }}>
           {/* Filter and Search Controls */}
@@ -5307,11 +5680,11 @@ export default function CourseTracker() {
             setViewMode={setViewMode}
             courses={courses}
             onSearchSelect={revealSearchResults}
-            onAddAliases={handleAddAliases}
-            courseCodeAliases={courseCodeAliases}
-            onRemoveAlias={handleRemoveAlias}
-            onToggleAliasDisplay={handleToggleAliasDisplay}
             getDisplayCode={getDisplayCode}
+            activeVisibleCount={activeVisibleCourseIds.length}
+            futureVisibleCount={futureVisibleCourseIds.length}
+            onMarkAllActiveAsPassed={markVisibleActiveAsPassed}
+            onMarkAllFutureAsActive={markVisibleFutureAsActive}
           />
 
           {/* Course Display Area */}

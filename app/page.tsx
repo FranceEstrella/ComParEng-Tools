@@ -1491,8 +1491,8 @@ export default function Home() {
             </div>
 
             {/* Hero Section */}
-            <div className="text-center mb-8">
-              <p className="text-xl text-gray-600 dark:text-gray-300 max-w-3xl mx-auto">
+            <div className="text-center mb-5 md:mb-8">
+              <p className="text-base sm:text-lg md:text-xl text-gray-600 dark:text-gray-300 max-w-3xl mx-auto">
                 <span className="block">A collection of tools designed to help</span>
                 <span className="inline-flex items-center gap-2 justify-center mt-1">
                   <span className="typewriter" aria-live="polite">
@@ -1507,7 +1507,7 @@ export default function Home() {
             {/* Extension Installation Guide */}
             {showExtensionCard && (
               <Card
-                className={`relative mb-8 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 transition duration-300 ease-out transform ${isDismissingExtensionCard ? "opacity-0 -translate-y-2 scale-[0.98] pointer-events-none" : "opacity-100 translate-y-0 scale-100"}`}
+                className={`relative mb-5 md:mb-8 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 transition duration-300 ease-out transform ${isDismissingExtensionCard ? "opacity-0 -translate-y-2 scale-[0.98] pointer-events-none" : "opacity-100 translate-y-0 scale-100"}`}
               >
                 <button
                   type="button"
@@ -1540,7 +1540,7 @@ export default function Home() {
                       }}
                     >
                       <Download className="h-4 w-4" />
-                      Install Extension
+                      Install Extension on PC
                     </Button>
                     <Dialog>
                       <DialogTrigger asChild>
@@ -1630,114 +1630,51 @@ export default function Home() {
             />
 
             {/* Tools Section */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-8 mb-6 md:mb-8">
               {/* Course Tracker Card */}
-              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105 flex flex-col h-full">
-                <div className="bg-blue-700 dark:bg-blue-900 bg-gradient-to-r from-blue-600 to-blue-800 p-6">
-                  <BookOpen className="h-12 w-12 text-white mb-4" />
-                  <h2 className="text-2xl font-bold text-white">Course Tracker</h2>
-                  <p className="text-blue-100 mt-2">Track your academic progress through the CpE curriculum</p>
+              <Link
+                href="/course-tracker"
+                onClick={() => trackAnalyticsEvent("home.open_course_tracker_click")}
+                className="rounded-md md:rounded-lg shadow-md md:shadow-lg overflow-hidden transition-transform md:hover:transform md:hover:scale-105"
+              >
+                <div className="bg-blue-700 dark:bg-blue-900 bg-gradient-to-r from-blue-600 to-blue-800 p-3 md:p-6">
+                  <div className="flex items-center gap-2 md:block">
+                    <BookOpen className="h-5 w-5 md:h-12 md:w-12 text-white md:mb-4" />
+                    <h2 className="text-sm md:text-2xl font-bold text-white leading-tight">Course Tracker</h2>
+                  </div>
+                  <p className="hidden md:block text-blue-100 mt-2">Track your academic progress through the CpE curriculum</p>
                 </div>
-                <div className="p-6 flex flex-col flex-1">
-                  <ul className="space-y-2 mb-6 text-gray-700 dark:text-gray-300 flex-1">
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>Mark courses as Pending, Active, or Passed</span>
-                    </li>
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>View prerequisites and dependent courses</span>
-                    </li>
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>Track your progress through the curriculum</span>
-                    </li>
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>See which courses you can take next</span>
-                    </li>
-                  </ul>
-                  <Link
-                    href="/course-tracker"
-                    onClick={() => trackAnalyticsEvent("home.open_course_tracker_click")}
-                    className="block w-full bg-blue-600 hover:bg-blue-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors mt-auto"
-                  >
-                    Open Course Tracker
-                  </Link>
-                </div>
-              </div>
+              </Link>
 
               {/* Schedule Maker Card */}
-              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105 flex flex-col h-full">
-                <div className="bg-purple-700 dark:bg-purple-900 bg-gradient-to-r from-purple-600 to-purple-800 p-6">
-                  <Calendar className="h-12 w-12 text-white mb-4" />
-                  <h2 className="text-2xl font-bold text-white">Schedule Maker</h2>
-                  <p className="text-purple-100 mt-2">Create your perfect class schedule with ease</p>
+              <Link
+                href="/schedule-maker"
+                onClick={() => trackAnalyticsEvent("home.open_schedule_maker_click")}
+                className="rounded-md md:rounded-lg shadow-md md:shadow-lg overflow-hidden transition-transform md:hover:transform md:hover:scale-105"
+              >
+                <div className="bg-purple-700 dark:bg-purple-900 bg-gradient-to-r from-purple-600 to-purple-800 p-3 md:p-6">
+                  <div className="flex items-center gap-2 md:block">
+                    <Calendar className="h-5 w-5 md:h-12 md:w-12 text-white md:mb-4" />
+                    <h2 className="text-sm md:text-2xl font-bold text-white leading-tight">Schedule Maker</h2>
+                  </div>
+                  <p className="hidden md:block text-purple-100 mt-2">Create your perfect class schedule with ease</p>
                 </div>
-                <div className="p-6 flex flex-col flex-1">
-                  <ul className="space-y-2 mb-6 text-gray-700 dark:text-gray-300 flex-1">
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>View available course sections</span>
-                    </li>
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>Filter courses in your curriculum</span>
-                    </li>
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>Check for schedule conflicts</span>
-                    </li>
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>Optimize your weekly schedule</span>
-                    </li>
-                  </ul>
-                  <Link
-                    href="/schedule-maker"
-                    onClick={() => trackAnalyticsEvent("home.open_schedule_maker_click")}
-                    className="block w-full bg-purple-600 hover:bg-purple-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors mt-auto"
-                  >
-                    Open Schedule Maker
-                  </Link>
-                </div>
-              </div>
+              </Link>
 
               {/* Academic Planner Card */}
-              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden transition-transform hover:transform hover:scale-105 flex flex-col h-full">
-                <div className="bg-green-700 dark:bg-green-900 bg-gradient-to-r from-green-600 to-green-800 p-6">
-                  <GraduationCap className="h-12 w-12 text-white mb-4" />
-                  <h2 className="text-2xl font-bold text-white">Academic Planner</h2>
-                  <p className="text-green-100 mt-2">Plan your path to graduation efficiently</p>
+              <Link
+                href="/academic-planner"
+                onClick={() => trackAnalyticsEvent("home.open_academic_planner_click")}
+                className="rounded-md md:rounded-lg shadow-md md:shadow-lg overflow-hidden transition-transform md:hover:transform md:hover:scale-105"
+              >
+                <div className="bg-green-700 dark:bg-green-900 bg-gradient-to-r from-green-600 to-green-800 p-3 md:p-6">
+                  <div className="flex items-center gap-2 md:block">
+                    <GraduationCap className="h-5 w-5 md:h-12 md:w-12 text-white md:mb-4" />
+                    <h2 className="text-sm md:text-2xl font-bold text-white leading-tight">Academic Planner</h2>
+                  </div>
+                  <p className="hidden md:block text-green-100 mt-2">Plan your path to graduation efficiently</p>
                 </div>
-                <div className="p-6 flex flex-col flex-1">
-                  <ul className="space-y-2 mb-6 text-gray-700 dark:text-gray-300 flex-1">
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>Get personalized course recommendations</span>
-                    </li>
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>Optimize your remaining semesters</span>
-                    </li>
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>Identify courses needing petitions</span>
-                    </li>
-                    <li className="flex items-start">
-                      <span className="mr-2">•</span>
-                      <span>Estimate your graduation timeline</span>
-                    </li>
-                  </ul>
-                  <Link
-                    href="/academic-planner"
-                    onClick={() => trackAnalyticsEvent("home.open_academic_planner_click")}
-                    className="block w-full bg-green-600 hover:bg-green-700 text-white text-center font-bold py-3 px-4 rounded-lg transition-colors mt-auto"
-                  >
-                    Open Academic Planner
-                  </Link>
-                </div>
-              </div>
+              </Link>
             </div>
 
             {/* Patch Notes Section */}

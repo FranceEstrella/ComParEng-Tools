@@ -12,7 +12,7 @@ export default function CourseTrackerPage() {
 
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
-      <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-sky-50 via-white to-indigo-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
+      <div className="relative min-h-screen overflow-x-hidden bg-gradient-to-br from-sky-50 via-white to-indigo-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
         <div className="pointer-events-none absolute inset-0">
           <div className="absolute left-[10%] top-[-5%] h-48 w-48 rounded-full bg-sky-200 opacity-50 blur-3xl dark:bg-sky-800/40" />
           <div className="absolute right-[5%] top-[15%] h-56 w-56 rounded-full bg-indigo-200 opacity-50 blur-3xl dark:bg-indigo-800/40" />
