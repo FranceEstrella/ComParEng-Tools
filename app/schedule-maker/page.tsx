@@ -203,6 +203,28 @@ const formatTermYearLabel = (key: string): string => {
   return `${term} ${academicYear}`
 }
 
+const getAcademicYearStart = (academicYear: string): number => {
+  const [start] = (academicYear || "").split("-")
+  const parsed = Number.parseInt(start || "", 10)
+  return Number.isFinite(parsed) ? parsed : Number.NaN
+}
+
+const isEarlierTermYearKey = (candidateKey: string, referenceKey: string): boolean => {
+  const candidate = parseTermYearKey(candidateKey)
+  const reference = parseTermYearKey(referenceKey)
+  const candidateYear = getAcademicYearStart(candidate.academicYear)
+  const referenceYear = getAcademicYearStart(reference.academicYear)
+
+  if (Number.isNaN(candidateYear) || Number.isNaN(referenceYear)) return false
+  if (candidateYear !== referenceYear) return candidateYear < referenceYear
+
+  const candidateTermIdx = TERM_ORDER.indexOf(candidate.term as TermName)
+  const referenceTermIdx = TERM_ORDER.indexOf(reference.term as TermName)
+  if (candidateTermIdx === -1 || referenceTermIdx === -1) return false
+
+  return candidateTermIdx < referenceTermIdx
+}
+
 // Helper to calculate time slot position
 const getTimePosition = (time: string) => {
   const [hours, minutes] = time.split(':').map(Number)
@@ -2369,6 +2391,58 @@ export default function ScheduleMaker() {
       previousSessionTermYearKeyRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    if (!isClient) return
+    if (!versionStoreBootstrappedRef.current) return
+
+    setVersionStore((prev) => {
+      let autoLockedCount = 0
+      let changed = false
+      const nextStore: Record<string, TermYearVersionState> = { ...prev }
+
+      Object.entries(prev).forEach(([termYearKey, entry]) => {
+        if (!isEarlierTermYearKey(termYearKey, activeTermYearKey)) {
+          return
+        }
+
+        let entryChanged = false
+        const lockedVersions = entry.versions.map((version) => {
+          if (Boolean(version.isLocked)) {
+            return version
+          }
+
+          entryChanged = true
+          autoLockedCount += 1
+          return {
+            ...version,
+            isLocked: true,
+          }
+        })
+
+        if (!entryChanged) {
+          return
+        }
+
+        changed = true
+        nextStore[termYearKey] = {
+          ...entry,
+          versions: lockedVersions,
+        }
+      })
+
+      if (!changed) {
+        return prev
+      }
+
+      if (autoLockedCount > 0) {
+        setAutoLockedVersionsNotice({ open: true, count: autoLockedCount })
+      }
+
+      persistVersionStore(nextStore)
+      return nextStore
+    })
+  }, [activeTermYearKey, isClient, persistVersionStore])
 
   useEffect(() => {
     if (!isClient) return
