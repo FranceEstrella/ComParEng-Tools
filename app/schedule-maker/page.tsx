@@ -1051,6 +1051,10 @@ export default function ScheduleMaker() {
   const [showAutoSaveText, setShowAutoSaveText] = useState(true)
   const [lockVersionDialogOpen, setLockVersionDialogOpen] = useState(false)
   const [unlockVersionDialogOpen, setUnlockVersionDialogOpen] = useState(false)
+  const [autoLockedVersionsNotice, setAutoLockedVersionsNotice] = useState<{ open: boolean; count: number }>({
+    open: false,
+    count: 0,
+  })
   const [isCapturingImage, setIsCapturingImage] = useState(false)
   const [searchPanelVisible, setSearchPanelVisible] = useState<boolean>(false)
   const [mobileCoursesOpen, setMobileCoursesOpen] = useState(false)
@@ -1845,6 +1849,13 @@ export default function ScheduleMaker() {
       setVersionStore((prev) => {
         const entry = prev[activeTermYearKey]
         const versions = entry?.versions ?? []
+        const versionsWithAutoLock = versions.map((version) =>
+          Boolean(version.isLocked) ? version : { ...version, isLocked: true },
+        )
+        const autoLockedCount = versions.reduce(
+          (count, version) => (Boolean(version.isLocked) ? count : count + 1),
+          0,
+        )
         const nextId = `v${versions.length + 1}`
         const name = `Version ${String.fromCharCode(65 + versions.length)}`
         const basePayload = mode === "duplicate"
@@ -1869,7 +1880,7 @@ export default function ScheduleMaker() {
 
         const nextEntry: TermYearVersionState = {
           activeVersionId: nextId,
-          versions: [...versions, nextVersion],
+          versions: [...versionsWithAutoLock, nextVersion],
         }
 
         const nextStore = {
@@ -1883,6 +1894,9 @@ export default function ScheduleMaker() {
         setCourseDefaults(nextVersion.courseDefaults || {})
         setScheduleTitle(nextVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE)
         setScheduleTitleDraft(nextVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE)
+        if (autoLockedCount > 0) {
+          setAutoLockedVersionsNotice({ open: true, count: autoLockedCount })
+        }
         persistVersionStore(nextStore)
         return nextStore
       })
@@ -2628,14 +2642,32 @@ export default function ScheduleMaker() {
   }, [availableCourses])
 
   useEffect(() => {
+    if (!isClient) {
+      return
+    }
+
+    if (!versionStoreBootstrappedRef.current) {
+      return
+    }
+
     const entry = versionStore[activeTermYearKey]
     const activeVersion = entry?.versions?.find((version) => version.id === entry.activeVersionId) || entry?.versions?.[0]
+    if (!activeVersion) {
+      return
+    }
+
+    const isHydratedForActiveTerm =
+      hasHydratedVersionRef.current && hydratedTermYearKeyRef.current === activeTermYearKey
+    if (!isHydratedForActiveTerm) {
+      return
+    }
+
     if (activeVersion?.isLocked) {
       return
     }
 
     syncSelectedCoursesWithAvailable()
-  }, [activeTermYearKey, syncSelectedCoursesWithAvailable, versionStore])
+  }, [activeTermYearKey, isClient, syncSelectedCoursesWithAvailable, versionStore])
 
   // Enhanced conflict detection
   const hasScheduleConflict = (course: CourseSection): boolean => {
@@ -5945,6 +5977,33 @@ const renderScheduleView = () => {
               Cancel
             </Button>
             <Button onClick={handleConfirmUnlockAndRefresh}>Unlock &amp; refresh</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={autoLockedVersionsNotice.open}
+        onOpenChange={(open) => setAutoLockedVersionsNotice((prev) => ({ ...prev, open }))}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Previous schedules locked</DialogTitle>
+            <DialogDescription>
+              {autoLockedVersionsNotice.count === 1
+                ? "Your previous version was automatically saved and locked."
+                : `${autoLockedVersionsNotice.count} previous versions were automatically saved and locked.`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+            <p>
+              Locked versions stay unchanged when fresh course data is pulled, so your earlier schedules remain preserved.
+            </p>
+            <p>
+              You can still open any version. Use <span className="font-semibold">Unlock &amp; refresh</span> on a version if you want it to follow the latest data again.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setAutoLockedVersionsNotice((prev) => ({ ...prev, open: false }))}>Got it</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
