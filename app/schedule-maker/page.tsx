@@ -1698,6 +1698,38 @@ export default function ScheduleMaker() {
 
       if (!activeVersionId) return prev
 
+      const isHydratedForActiveTerm =
+        hasHydratedVersionRef.current && hydratedTermYearKeyRef.current === activeTermYearKey
+
+      // On refresh, ensure we first hydrate from the stored active version before
+      // trying to persist in-memory state, otherwise stale empty state can overwrite it.
+      if (!isHydratedForActiveTerm) {
+        const persistedActiveVersion = versions.find((version) => version.id === activeVersionId) || versions[0]
+        if (persistedActiveVersion) {
+          const persistedCourses = Array.isArray(persistedActiveVersion.selectedCourses)
+            ? persistedActiveVersion.selectedCourses
+            : []
+          const persistedCodes = normalizeSelectedCourseCodes(
+            persistedActiveVersion.selectedCourseCodes,
+            persistedCourses,
+          )
+
+          loadingVersionRef.current = true
+          setSelectedCourses(persistedCourses)
+          setSelectedCourseCodes(persistedCodes)
+          setCustomizations(persistedActiveVersion.customizations || {})
+          setCourseDefaults(persistedActiveVersion.courseDefaults || {})
+          const nextTitle = persistedActiveVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE
+          setScheduleTitle(nextTitle)
+          setScheduleTitleDraft(nextTitle)
+          hasHydratedVersionRef.current = true
+          hydratedTermYearKeyRef.current = activeTermYearKey
+          loadingVersionRef.current = false
+        }
+
+        return prev
+      }
+
       const activeVersion = versions.find((version) => version.id === activeVersionId)
       const activeCoursesChanged =
         JSON.stringify(activeVersion?.selectedCourses || []) !== JSON.stringify(selectedCourses)
