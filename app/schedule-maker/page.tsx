@@ -46,6 +46,8 @@ import {
   Search,
   ArrowLeft,
   ArrowUp,
+  Lock,
+  LockOpen,
 } from "lucide-react"
 import Link from "next/link"
 import { useTheme } from "next-themes"
@@ -165,6 +167,7 @@ const TERM_ORDER: TermName[] = ["Term 1", "Term 2", "Term 3"]
 
 const SCHEDULE_MAKER_PREFS_KEY = "scheduleMaker.preferences.v1"
 const SCHEDULE_MAKER_NEXT_STEPS_SEEN_KEY = "scheduleMaker.nextStepsSeen.v1"
+const SCHEDULE_MAKER_LAST_ACTIVE_TERM_KEY = "scheduleMaker.lastActiveTermYearKey.v1"
 
 const TERM_WINDOWS: { term: TermName; months: number[] }[] = [
   { term: "Term 1", months: [8, 9, 10, 11] },
@@ -186,6 +189,19 @@ const deriveAcademicYearLabel = (date = new Date()): string => {
 }
 
 const buildTermYearKey = (term: TermName, academicYear: string) => `${academicYear}::${term}`
+
+const parseTermYearKey = (key: string): { academicYear: string; term: TermName | string } => {
+  const [academicYear = "", term = ""] = (key || "").split("::")
+  return { academicYear, term }
+}
+
+const formatTermYearLabel = (key: string): string => {
+  const { academicYear, term } = parseTermYearKey(key)
+  if (!term && !academicYear) return ""
+  if (!academicYear) return term
+  if (!term) return academicYear
+  return `${term} ${academicYear}`
+}
 
 // Helper to calculate time slot position
 const getTimePosition = (time: string) => {
@@ -218,6 +234,27 @@ const getCourseNameAndCredits = (courseCode: string) => {
 
 const getSelectedCourseCanonicalCode = (course: SelectedCourse) => {
   return course.canonicalCode || getCanonicalCourseCode(course.courseCode)
+}
+
+const deriveSelectedCourseCodes = (courses: SelectedCourse[]): string[] => {
+  const next = new Set<string>()
+  courses.forEach((course) => {
+    const canonical = getSelectedCourseCanonicalCode(course)
+    if (canonical) next.add(canonical)
+  })
+  return Array.from(next)
+}
+
+const normalizeSelectedCourseCodes = (codes: unknown, courses: SelectedCourse[]): string[] => {
+  if (Array.isArray(codes) && codes.length > 0) {
+    const normalized = codes
+      .map((code) => (typeof code === "string" ? getCanonicalCourseCode(code) : ""))
+      .filter(Boolean)
+    if (normalized.length > 0) {
+      return Array.from(new Set(normalized))
+    }
+  }
+  return deriveSelectedCourseCodes(courses)
 }
 
 const buildCourseLookupKey = (courseCode: string, section: string) => {
@@ -321,9 +358,11 @@ interface ScheduleVersion {
   id: string
   name: string
   selectedCourses: SelectedCourse[]
+  selectedCourseCodes?: string[]
   customizations: Record<string, CourseCustomization>
    courseDefaults?: Record<string, CourseCustomization>
   scheduleTitle?: string
+  isLocked?: boolean
 }
 
 interface HistoryEntry {
@@ -332,6 +371,7 @@ interface HistoryEntry {
   timestamp: number
   state: {
     selectedCourses: SelectedCourse[]
+    selectedCourseCodes: string[]
     customizations: Record<string, CourseCustomization>
     courseDefaults: Record<string, CourseCustomization>
     scheduleTitle: string
@@ -758,8 +798,19 @@ export default function ScheduleMaker() {
   const lastAvailableHashRef = useRef<string>("")
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
   const pendingImportFollowUpRef = useRef<(() => void) | null>(null)
+  const legacyScheduleSeedRef = useRef<null | {
+    selectedCourses: SelectedCourse[]
+    selectedCourseCodes: string[]
+    customizations: Record<string, CourseCustomization>
+    courseDefaults: Record<string, CourseCustomization>
+    scheduleTitle: string
+  }>(null)
   const loadingVersionRef = useRef<boolean>(false)
   const hasHydratedVersionRef = useRef<boolean>(false)
+  const hydratedTermYearKeyRef = useRef<string | null>(null)
+  const previousTermYearKeyRef = useRef<string | null>(null)
+  const previousSessionTermYearKeyRef = useRef<string | null | undefined>(undefined)
+  const hasCheckedInitialReopenNoticeRef = useRef(false)
   const departmentColorCache = useRef<Map<string, string>>(new Map())
   const hasSeenNoDataSequenceRef = useRef(false)
   const [startDate, setStartDate] = useState<Date>(new Date())
@@ -982,7 +1033,18 @@ export default function ScheduleMaker() {
   const [versionNameDraft, setVersionNameDraft] = useState<string>("")
   const [hideActivateHover, setHideActivateHover] = useState<boolean>(false)
   const [errorDialogOpen, setErrorDialogOpen] = useState(false)
+  const [termSwitchNotice, setTermSwitchNotice] = useState<{
+    open: boolean
+    fromTermYearLabel: string
+    toTermYearLabel: string
+  }>({
+    open: false,
+    fromTermYearLabel: "",
+    toTermYearLabel: "",
+  })
   const [zoomLevel, setZoomLevel] = useState<number>(0)
+  const [lockVersionDialogOpen, setLockVersionDialogOpen] = useState(false)
+  const [unlockVersionDialogOpen, setUnlockVersionDialogOpen] = useState(false)
   const [isCapturingImage, setIsCapturingImage] = useState(false)
   const [searchPanelVisible, setSearchPanelVisible] = useState<boolean>(false)
   const [mobileCoursesOpen, setMobileCoursesOpen] = useState(false)
@@ -1072,11 +1134,12 @@ export default function ScheduleMaker() {
   const snapshotState = useCallback(
     () => ({
       selectedCourses: selectedCourses.map((c) => ({ ...c })),
+      selectedCourseCodes: [...selectedCourseCodes],
       customizations: { ...customizations },
       courseDefaults: { ...courseDefaults },
       scheduleTitle,
     }),
-    [customizations, courseDefaults, scheduleTitle, selectedCourses],
+    [customizations, courseDefaults, scheduleTitle, selectedCourseCodes, selectedCourses],
   )
 
   const pushHistory = useCallback((label: string) => {
@@ -1409,7 +1472,7 @@ export default function ScheduleMaker() {
       setHistoryIndex(newIndex)
       return trimmed
     })
-  }, [customizations, courseDefaults, scheduleTitle, selectedCourses, snapshotState])
+  }, [customizations, courseDefaults, scheduleTitle, selectedCourseCodes, selectedCourses, snapshotState])
 
   useEffect(() => {
     setImportExportMounted(true)
@@ -1484,6 +1547,7 @@ export default function ScheduleMaker() {
   // Load data from localStorage only on the client side
   const clearScheduleSelections = useCallback(() => {
     setSelectedCourses([])
+    setSelectedCourseCodes([])
     setCustomizations({})
     if (typeof window !== "undefined") {
       try {
@@ -1497,22 +1561,103 @@ export default function ScheduleMaker() {
   const ensureActiveVersion = useCallback(() => {
     setVersionStore((prev) => {
       const existing = prev[activeTermYearKey]
-      const baseVersion: ScheduleVersion = {
-        id: existing?.versions?.[0]?.id || "v1",
-        name: existing?.versions?.[0]?.name || "Version A",
-        selectedCourses,
-        customizations,
-        courseDefaults,
-        scheduleTitle,
+      const normalizedCurrentSelectedCodes = normalizeSelectedCourseCodes(selectedCourseCodes, selectedCourses)
+
+      if (!existing || !Array.isArray(existing.versions) || existing.versions.length === 0) {
+        const emptyVersion: ScheduleVersion = {
+          id: "v1",
+          name: "Version A",
+          selectedCourses: [],
+          selectedCourseCodes: [],
+          customizations: {},
+          courseDefaults: {},
+          scheduleTitle: DEFAULT_SCHEDULE_TITLE,
+          isLocked: false,
+        }
+
+        const nextStore = {
+          ...prev,
+          [activeTermYearKey]: {
+            activeVersionId: emptyVersion.id,
+            versions: [emptyVersion],
+          },
+        }
+
+        setSelectedCourses([])
+        setSelectedCourseCodes([])
+        setCustomizations({})
+        setCourseDefaults({})
+        setScheduleTitle(DEFAULT_SCHEDULE_TITLE)
+        setScheduleTitleDraft(DEFAULT_SCHEDULE_TITLE)
+        hasHydratedVersionRef.current = true
+        persistVersionStore(nextStore)
+        return nextStore
       }
 
-      const versions = existing?.versions?.length ? existing.versions : [baseVersion]
-      const activeVersionId = existing?.activeVersionId || versions[0].id
+      const versions = existing.versions
+      const activeVersionId =
+        existing.activeVersionId && versions.some((version) => version.id === existing.activeVersionId)
+          ? existing.activeVersionId
+          : versions[0]?.id
+
+      if (!activeVersionId) return prev
+
+      const activeVersion = versions.find((version) => version.id === activeVersionId)
+      const activeCoursesChanged =
+        JSON.stringify(activeVersion?.selectedCourses || []) !== JSON.stringify(selectedCourses)
+      const activeCodesChanged =
+        JSON.stringify(normalizeSelectedCourseCodes(activeVersion?.selectedCourseCodes, activeVersion?.selectedCourses || []).sort()) !==
+        JSON.stringify([...normalizedCurrentSelectedCodes].sort())
+      const activeCustomizationsChanged =
+        JSON.stringify(activeVersion?.customizations || {}) !== JSON.stringify(customizations || {})
+      const activeDefaultsChanged =
+        JSON.stringify(activeVersion?.courseDefaults || {}) !== JSON.stringify(courseDefaults || {})
+      const activeTitleChanged =
+        (activeVersion?.scheduleTitle || DEFAULT_SCHEDULE_TITLE) !== scheduleTitle
+
+      let normalizedAnyNonActiveVersion = false
+
       const normalizedVersions = versions.map((version) =>
-        version.id === activeVersionId
-          ? { ...version, selectedCourses, customizations, courseDefaults, scheduleTitle }
-          : version,
+        {
+          if (version.id === activeVersionId) {
+            return {
+              ...version,
+              selectedCourses,
+              selectedCourseCodes: normalizedCurrentSelectedCodes,
+              customizations,
+              courseDefaults,
+              scheduleTitle,
+              isLocked: Boolean(version.isLocked),
+            }
+          }
+
+          const normalizedCodes = normalizeSelectedCourseCodes(version.selectedCourseCodes, version.selectedCourses || [])
+          const wasNormalized =
+            JSON.stringify(normalizedCodes) !==
+            JSON.stringify(Array.isArray(version.selectedCourseCodes) ? version.selectedCourseCodes : [])
+
+          if (wasNormalized) {
+            normalizedAnyNonActiveVersion = true
+          }
+
+          return {
+            ...version,
+            selectedCourseCodes: normalizedCodes,
+            isLocked: Boolean(version.isLocked),
+          }
+        },
       )
+
+      const activeChanged =
+        activeCoursesChanged ||
+        activeCodesChanged ||
+        activeCustomizationsChanged ||
+        activeDefaultsChanged ||
+        activeTitleChanged
+
+      if (!activeChanged && !normalizedAnyNonActiveVersion && existing.activeVersionId === activeVersionId) {
+        return prev
+      }
 
       const nextStore = {
         ...prev,
@@ -1525,7 +1670,15 @@ export default function ScheduleMaker() {
       persistVersionStore(nextStore)
       return nextStore
     })
-  }, [activeTermYearKey, customizations, persistVersionStore, selectedCourses])
+  }, [
+    activeTermYearKey,
+    courseDefaults,
+    customizations,
+    persistVersionStore,
+    scheduleTitle,
+    selectedCourseCodes,
+    selectedCourses,
+  ])
 
   const setActiveVersion = useCallback(
     (versionId: string) => {
@@ -1535,8 +1688,13 @@ export default function ScheduleMaker() {
         const target = entry.versions.find((version) => version.id === versionId)
         if (!target) return prev
 
-        setSelectedCourses(target.selectedCourses.map(normalizeSelectedCourse))
+        const normalizedCourses = (target.selectedCourses || []).map(normalizeSelectedCourse)
+        const normalizedCodes = normalizeSelectedCourseCodes(target.selectedCourseCodes, normalizedCourses)
+
+        setSelectedCourses(normalizedCourses)
+        setSelectedCourseCodes(normalizedCodes)
         hasHydratedVersionRef.current = true
+        hydratedTermYearKeyRef.current = activeTermYearKey
         setCustomizations(target.customizations || {})
         setCourseDefaults(target.courseDefaults || {})
         const nextTitle = target.scheduleTitle || DEFAULT_SCHEDULE_TITLE
@@ -1562,20 +1720,23 @@ export default function ScheduleMaker() {
         const nextId = `v${versions.length + 1}`
         const name = `Version ${String.fromCharCode(65 + versions.length)}`
         const basePayload = mode === "duplicate"
-          ? { selectedCourses, customizations, courseDefaults }
+          ? { selectedCourses, selectedCourseCodes, customizations, courseDefaults }
           : {
               selectedCourses: [] as SelectedCourse[],
+              selectedCourseCodes: normalizeSelectedCourseCodes(selectedCourseCodes, selectedCourses),
               customizations: {} as Record<string, CourseCustomization>,
-              courseDefaults: {} as Record<string, CourseCustomization>,
+              courseDefaults,
             }
 
         const nextVersion: ScheduleVersion = {
           id: nextId,
           name,
           selectedCourses: basePayload.selectedCourses,
+          selectedCourseCodes: basePayload.selectedCourseCodes,
           customizations: basePayload.customizations,
           courseDefaults: basePayload.courseDefaults,
           scheduleTitle: mode === "duplicate" ? scheduleTitle : DEFAULT_SCHEDULE_TITLE,
+          isLocked: false,
         }
 
         const nextEntry: TermYearVersionState = {
@@ -1589,14 +1750,16 @@ export default function ScheduleMaker() {
         }
 
         setSelectedCourses(nextVersion.selectedCourses)
+        setSelectedCourseCodes(nextVersion.selectedCourseCodes || [])
         setCustomizations(nextVersion.customizations)
+        setCourseDefaults(nextVersion.courseDefaults || {})
         setScheduleTitle(nextVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE)
         setScheduleTitleDraft(nextVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE)
         persistVersionStore(nextStore)
         return nextStore
       })
     },
-    [activeTermYearKey, customizations, persistVersionStore, scheduleTitle, selectedCourses],
+    [activeTermYearKey, courseDefaults, customizations, persistVersionStore, scheduleTitle, selectedCourseCodes, selectedCourses],
   )
 
   const deleteVersion = useCallback(
@@ -1618,7 +1781,9 @@ export default function ScheduleMaker() {
 
         const activeVersion = filtered.find((version) => version.id === nextActive)
         if (activeVersion) {
-          setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
+          const normalizedCourses = (activeVersion.selectedCourses || []).map(normalizeSelectedCourse)
+          setSelectedCourses(normalizedCourses)
+          setSelectedCourseCodes(normalizeSelectedCourseCodes(activeVersion.selectedCourseCodes, normalizedCourses))
           setCustomizations(activeVersion.customizations || {})
           setCourseDefaults(activeVersion.courseDefaults || {})
           const nextTitle = activeVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE
@@ -1669,6 +1834,47 @@ export default function ScheduleMaker() {
     setVersionNameDraft("")
   }, [activeTermYearKey, editingVersionId, persistVersionStore, versionNameDraft])
 
+  const setActiveVersionLockState = useCallback(
+    (nextLocked: boolean) => {
+      setVersionStore((prev) => {
+        const entry = prev[activeTermYearKey]
+        if (!entry) return prev
+
+        const versions = entry.versions.map((version) =>
+          version.id === entry.activeVersionId ? { ...version, isLocked: nextLocked } : version,
+        )
+
+        const changed = entry.versions.some(
+          (version, index) => Boolean(version.isLocked) !== Boolean(versions[index].isLocked),
+        )
+
+        if (!changed) return prev
+
+        const nextStore = {
+          ...prev,
+          [activeTermYearKey]: {
+            ...entry,
+            versions,
+          },
+        }
+
+        persistVersionStore(nextStore)
+        return nextStore
+      })
+    },
+    [activeTermYearKey, persistVersionStore],
+  )
+
+  const handleConfirmLockVersion = useCallback(() => {
+    setActiveVersionLockState(true)
+    setLockVersionDialogOpen(false)
+  }, [setActiveVersionLockState])
+
+  const handleConfirmUnlockAndRefresh = useCallback(() => {
+    setActiveVersionLockState(false)
+    setUnlockVersionDialogOpen(false)
+  }, [setActiveVersionLockState])
+
   const openDeleteConfirm = useCallback((versionId: string, scope: "chip" | "expanded") => {
     setDeleteConfirm({ id: versionId, scope })
   }, [])
@@ -1703,23 +1909,25 @@ export default function ScheduleMaker() {
           ) {
             scheduleCurriculumMismatch = true
           } else {
-            if (parsed.selectedCourses) {
-              const normalizedCourses = (parsed.selectedCourses as SelectedCourse[]).map((stored) =>
-                normalizeSelectedCourse(stored),
-              )
-              setSelectedCourses(normalizedCourses)
-            }
-            if (parsed.customizations) {
-              setCustomizations(parsed.customizations || {})
-            }
-            if (parsed.courseDefaults) {
-              setCourseDefaults(parsed.courseDefaults || {})
+            const normalizedCourses = Array.isArray(parsed.selectedCourses)
+              ? (parsed.selectedCourses as SelectedCourse[]).map((stored) => normalizeSelectedCourse(stored))
+              : []
+            legacyScheduleSeedRef.current = {
+              selectedCourses: normalizedCourses,
+              selectedCourseCodes: normalizeSelectedCourseCodes(parsed.selectedCourseCodes, normalizedCourses),
+              customizations: (parsed.customizations || {}) as Record<string, CourseCustomization>,
+              courseDefaults: (parsed.courseDefaults || {}) as Record<string, CourseCustomization>,
+              scheduleTitle:
+                typeof parsed.scheduleTitle === "string" && parsed.scheduleTitle.trim() !== ""
+                  ? parsed.scheduleTitle.trim()
+                  : DEFAULT_SCHEDULE_TITLE,
             }
           }
         }
 
         if (scheduleCurriculumMismatch) {
           clearScheduleSelections()
+          legacyScheduleSeedRef.current = null
         }
         setCurriculumSignature(storedSignature)
 
@@ -1739,19 +1947,91 @@ export default function ScheduleMaker() {
     try {
       const raw = localStorage.getItem("scheduleMakerVersionsV1")
       if (!raw) {
+        const legacySeed = legacyScheduleSeedRef.current
+        if (legacySeed) {
+          const migratedVersion: ScheduleVersion = {
+            id: "v1",
+            name: "Version A",
+            selectedCourses: legacySeed.selectedCourses,
+            selectedCourseCodes: legacySeed.selectedCourseCodes,
+            customizations: legacySeed.customizations,
+            courseDefaults: legacySeed.courseDefaults,
+            scheduleTitle: legacySeed.scheduleTitle,
+            isLocked: false,
+          }
+          const migratedStore: Record<string, TermYearVersionState> = {
+            [activeTermYearKey]: {
+              activeVersionId: migratedVersion.id,
+              versions: [migratedVersion],
+            },
+          }
+          setVersionStore(migratedStore)
+          setSelectedCourses(migratedVersion.selectedCourses)
+          setSelectedCourseCodes(migratedVersion.selectedCourseCodes || [])
+          setCustomizations(migratedVersion.customizations || {})
+          setCourseDefaults(migratedVersion.courseDefaults || {})
+          const nextTitle = migratedVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE
+          setScheduleTitle(nextTitle)
+          setScheduleTitleDraft(nextTitle)
+          persistVersionStore(migratedStore)
+          legacyScheduleSeedRef.current = null
+          return
+        }
         ensureActiveVersion()
         return
       }
       const parsed = JSON.parse(raw)
       if (parsed && typeof parsed === "object") {
-        setVersionStore(parsed)
-        const entry = parsed[activeTermYearKey]
+        const normalizedStore = Object.entries(parsed as Record<string, TermYearVersionState>).reduce<
+          Record<string, TermYearVersionState>
+        >((acc, [termYearKey, value]) => {
+          const versionsRaw = Array.isArray(value?.versions) ? value.versions : []
+          const versions = versionsRaw.map((version, idx) => {
+            const normalizedCourses = Array.isArray(version?.selectedCourses)
+              ? version.selectedCourses.map(normalizeSelectedCourse)
+              : []
+            const normalizedCodes = normalizeSelectedCourseCodes(version?.selectedCourseCodes, normalizedCourses)
+            return {
+              id: version?.id || `v${idx + 1}`,
+              name: version?.name || `Version ${String.fromCharCode(65 + idx)}`,
+              selectedCourses: normalizedCourses,
+              selectedCourseCodes: normalizedCodes,
+              customizations: version?.customizations || {},
+              courseDefaults: version?.courseDefaults || {},
+              scheduleTitle: version?.scheduleTitle || DEFAULT_SCHEDULE_TITLE,
+              isLocked: Boolean(version?.isLocked),
+            }
+          })
+
+          if (versions.length === 0) {
+            return acc
+          }
+
+          const activeVersionId =
+            value?.activeVersionId && versions.some((version) => version.id === value.activeVersionId)
+              ? value.activeVersionId
+              : versions[0].id
+
+          acc[termYearKey] = {
+            activeVersionId,
+            versions,
+          }
+          return acc
+        }, {})
+
+        setVersionStore(normalizedStore)
+        const entry = normalizedStore[activeTermYearKey]
         const activeId = entry?.activeVersionId
         const activeVersion = entry?.versions?.find((v: ScheduleVersion) => v.id === activeId) || entry?.versions?.[0]
         if (activeVersion) {
-          setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
+          const normalizedCourses = (activeVersion.selectedCourses || []).map(normalizeSelectedCourse)
+          setSelectedCourses(normalizedCourses)
+          setSelectedCourseCodes(normalizeSelectedCourseCodes(activeVersion.selectedCourseCodes, normalizedCourses))
           setCustomizations(activeVersion.customizations || {})
           setCourseDefaults(activeVersion.courseDefaults || {})
+          const nextTitle = activeVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE
+          setScheduleTitle(nextTitle)
+          setScheduleTitleDraft(nextTitle)
         }
       }
     } catch (err) {
@@ -1774,6 +2054,7 @@ export default function ScheduleMaker() {
           JSON.stringify({
             version: 1,
             selectedCourses,
+            selectedCourseCodes,
             customizations,
             courseDefaults,
             scheduleTitle,
@@ -1784,9 +2065,9 @@ export default function ScheduleMaker() {
         console.error("Error saving to localStorage:", err)
       }
     }
-  }, [selectedCourses, customizations, courseDefaults, isClient, curriculumSignature, scheduleTitle])
+  }, [selectedCourses, selectedCourseCodes, customizations, courseDefaults, isClient, curriculumSignature, scheduleTitle])
 
-  const normalizeSelectedCourse = (course: any): SelectedCourse => {
+  const normalizeSelectedCourse = useCallback((course: any): SelectedCourse => {
     const rangeSource = course?.meetingTime ?? `${course?.timeStart ?? ""}-${course?.timeEnd ?? ""}`
     const derivedRange = parseTimeRange(rangeSource)
     const canonicalCode =
@@ -1846,7 +2127,7 @@ export default function ScheduleMaker() {
       displayTime: course?.displayTime ?? cleanTimeString(course?.meetingTime ?? `${timeStart}-${timeEnd}`),
       displayRoom: course?.displayRoom ?? cleanRoomString(course?.room ?? ""),
     } as SelectedCourse
-  }
+  }, [])
 
   useEffect(() => {
     if (!isClient) return
@@ -1862,29 +2143,46 @@ export default function ScheduleMaker() {
       entry.versions.find((version) => version.id === entry.activeVersionId) || entry.versions[0]
     if (!activeVersion) return
 
-    const currentCourseKeys = JSON.stringify(
-      selectedCourses.map((course) => `${course.courseCode}-${course.section}`),
-    )
-    const versionCourseKeys = JSON.stringify(
-      activeVersion.selectedCourses.map((course) => `${course.courseCode}-${course.section}`),
-    )
+    const normalizedVersionCourses = (activeVersion.selectedCourses || []).map(normalizeSelectedCourse)
+    const normalizedVersionCodes = normalizeSelectedCourseCodes(activeVersion.selectedCourseCodes, normalizedVersionCourses)
+    const isHydratedForActiveTerm =
+      hasHydratedVersionRef.current && hydratedTermYearKeyRef.current === activeTermYearKey
 
-    const shouldHydrateFromVersion =
-      selectedCourses.length === 0 &&
-      activeVersion.selectedCourses.length > 0 &&
-      !hasHydratedVersionRef.current
-
-    if (shouldHydrateFromVersion) {
+    // Critical for term/year switching: always hydrate target term/version first.
+    // Without this guard, current in-memory state can overwrite the newly selected term.
+    if (!isHydratedForActiveTerm) {
       loadingVersionRef.current = true
-      hasHydratedVersionRef.current = true
-      setSelectedCourses(activeVersion.selectedCourses.map(normalizeSelectedCourse))
+      setSelectedCourses(normalizedVersionCourses)
+      setSelectedCourseCodes(normalizedVersionCodes)
       setCustomizations(activeVersion.customizations || {})
       setCourseDefaults(activeVersion.courseDefaults || {})
+      const nextTitle = activeVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE
+      setScheduleTitle(nextTitle)
+      setScheduleTitleDraft(nextTitle)
+      hasHydratedVersionRef.current = true
+      hydratedTermYearKeyRef.current = activeTermYearKey
       loadingVersionRef.current = false
       return
     }
 
-    if (currentCourseKeys !== versionCourseKeys) {
+    const normalizedCurrentCodes = normalizeSelectedCourseCodes(selectedCourseCodes, selectedCourses)
+
+    if (JSON.stringify(selectedCourseCodes) !== JSON.stringify(normalizedCurrentCodes)) {
+      setSelectedCourseCodes(normalizedCurrentCodes)
+      return
+    }
+
+    const currentCourseKeys = JSON.stringify(
+      selectedCourses.map((course) => `${course.courseCode}-${course.section}`),
+    )
+    const versionCourseKeys = JSON.stringify(
+      normalizedVersionCourses.map((course) => `${course.courseCode}-${course.section}`),
+    )
+
+    const currentSelectedCodes = JSON.stringify([...normalizedCurrentCodes].sort())
+    const versionSelectedCodes = JSON.stringify([...normalizedVersionCodes].sort())
+
+    if (currentCourseKeys !== versionCourseKeys || currentSelectedCodes !== versionSelectedCodes) {
       ensureActiveVersion()
       return
     }
@@ -1900,7 +2198,7 @@ export default function ScheduleMaker() {
       const versionDefaultsStr = JSON.stringify(activeVersion.courseDefaults || {})
       if (currentDefaultsStr !== versionDefaultsStr) {
         ensureActiveVersion()
-      } else if (selectedCourses.length === 0 && activeVersion.selectedCourses.length === 0) {
+      } else if (selectedCourses.length === 0 && normalizedVersionCourses.length === 0 && normalizedCurrentCodes.length === 0) {
         hasHydratedVersionRef.current = true
       }
     }
@@ -1910,13 +2208,89 @@ export default function ScheduleMaker() {
     ensureActiveVersion,
     isClient,
     normalizeSelectedCourse,
+    selectedCourseCodes,
     selectedCourses,
     courseDefaults,
     versionStore,
   ])
 
   useEffect(() => {
-    hasHydratedVersionRef.current = false
+    if (typeof window === "undefined") return
+    try {
+      previousSessionTermYearKeyRef.current = localStorage.getItem(SCHEDULE_MAKER_LAST_ACTIVE_TERM_KEY)
+    } catch {
+      previousSessionTermYearKeyRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isClient) return
+    if (hasCheckedInitialReopenNoticeRef.current) return
+    if (previousSessionTermYearKeyRef.current === undefined) return
+
+    hasCheckedInitialReopenNoticeRef.current = true
+
+    const previousSessionKey = previousSessionTermYearKeyRef.current
+    if (!previousSessionKey || previousSessionKey === activeTermYearKey) return
+
+    const previousEntry = versionStore[previousSessionKey]
+    const hasSavedSchedule = Boolean(
+      previousEntry?.versions?.some((version) => {
+        const versionCourses = Array.isArray(version.selectedCourses) ? version.selectedCourses : []
+        const versionCodes = normalizeSelectedCourseCodes(version.selectedCourseCodes, versionCourses)
+        return versionCourses.length > 0 || versionCodes.length > 0
+      }),
+    )
+
+    if (!hasSavedSchedule) return
+
+    setTermSwitchNotice({
+      open: true,
+      fromTermYearLabel: formatTermYearLabel(previousSessionKey),
+      toTermYearLabel: formatTermYearLabel(activeTermYearKey),
+    })
+  }, [activeTermYearKey, isClient, versionStore])
+
+  useEffect(() => {
+    if (!isClient) return
+
+    const previousKey = previousTermYearKeyRef.current
+    if (!previousKey) {
+      previousTermYearKeyRef.current = activeTermYearKey
+      return
+    }
+
+    if (previousKey === activeTermYearKey) {
+      return
+    }
+
+    const previousEntry = versionStore[previousKey]
+    const hasSavedSchedule = Boolean(
+      previousEntry?.versions?.some((version) => {
+        const versionCourses = Array.isArray(version.selectedCourses) ? version.selectedCourses : []
+        const versionCodes = normalizeSelectedCourseCodes(version.selectedCourseCodes, versionCourses)
+        return versionCourses.length > 0 || versionCodes.length > 0
+      }),
+    )
+
+    if (hasSavedSchedule) {
+      setTermSwitchNotice({
+        open: true,
+        fromTermYearLabel: formatTermYearLabel(previousKey),
+        toTermYearLabel: formatTermYearLabel(activeTermYearKey),
+      })
+    }
+
+    previousTermYearKeyRef.current = activeTermYearKey
+  }, [activeTermYearKey, isClient, versionStore])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      localStorage.setItem(SCHEDULE_MAKER_LAST_ACTIVE_TERM_KEY, activeTermYearKey)
+    } catch {
+      // ignore persistence issues
+    }
   }, [activeTermYearKey])
 
   // Convert 24-hour time to 12-hour format
@@ -2041,11 +2415,8 @@ export default function ScheduleMaker() {
     }
   }
 
-  useEffect(() => {
-    console.log('[syncEffect] Running - availableCourses count:', availableCourses.length, 'selectedCourses count:', selectedCourses.length)
-    
+  const syncSelectedCoursesWithAvailable = useCallback(() => {
     if (availableCourses.length === 0) {
-      console.log('[syncEffect] No available courses, returning')
       return
     }
 
@@ -2053,14 +2424,10 @@ export default function ScheduleMaker() {
     availableCourses.forEach((course) => {
       const key = buildCourseLookupKey(course.courseCode, course.section)
       lookup.set(key, course)
-      console.log('[syncEffect] Added to lookup:', key)
     })
 
     setSelectedCourses((prev) => {
-      console.log('[syncEffect] State update callback - prev length:', prev.length)
-      
       if (prev.length === 0) {
-        console.log('[syncEffect] No selected courses, returning')
         return prev
       }
 
@@ -2068,11 +2435,8 @@ export default function ScheduleMaker() {
 
       const updated = prev.map((selected) => {
         const key = buildCourseLookupKey(selected.canonicalCode || selected.courseCode, selected.section)
-        console.log('[syncEffect] Looking for key:', key, 'exists in lookup:', lookup.has(key))
-        
         const latest = lookup.get(key)
         if (!latest) {
-          console.log('[syncEffect] Not found in lookup, keeping original')
           return selected
         }
 
@@ -2106,11 +2470,9 @@ export default function ScheduleMaker() {
           selected.displayRoom !== displayRoom
 
         if (!needsUpdate) {
-          console.log('[syncEffect] No update needed for', key)
           return selected
         }
 
-        console.log('[syncEffect] Updating', key)
         changed = true
         return {
           ...selected,
@@ -2128,10 +2490,19 @@ export default function ScheduleMaker() {
         }
       })
 
-      console.log('[syncEffect] Changed:', changed, 'returning length:', updated.length)
       return changed ? updated : prev
     })
-  }, [availableCourses, setSelectedCourses])
+  }, [availableCourses])
+
+  useEffect(() => {
+    const entry = versionStore[activeTermYearKey]
+    const activeVersion = entry?.versions?.find((version) => version.id === entry.activeVersionId) || entry?.versions?.[0]
+    if (activeVersion?.isLocked) {
+      return
+    }
+
+    syncSelectedCoursesWithAvailable()
+  }, [activeTermYearKey, syncSelectedCoursesWithAvailable, versionStore])
 
   // Enhanced conflict detection
   const hasScheduleConflict = (course: CourseSection): boolean => {
@@ -4149,6 +4520,11 @@ export default function ScheduleMaker() {
 
   const activeVersionState = versionStore[activeTermYearKey]
   const versions = activeVersionState?.versions ?? []
+  const activeVersion =
+    activeVersionState?.versions?.find((version) => version.id === activeVersionState.activeVersionId) ||
+    activeVersionState?.versions?.[0] ||
+    null
+  const isActiveVersionLocked = Boolean(activeVersion?.isLocked)
 
   const lastReportedVersionCountRef = useRef<Record<string, number>>({})
   useEffect(() => {
@@ -4720,7 +5096,9 @@ const downloadScheduleImage = async () => {
     pendingHistoryLabelRef.current = null
     historyIndexRef.current = index
     setHistoryIndex(index)
-    setSelectedCourses(entry.state.selectedCourses.map((c) => ({ ...c })))
+    const restoredCourses = entry.state.selectedCourses.map((c) => ({ ...c }))
+    setSelectedCourses(restoredCourses)
+    setSelectedCourseCodes(normalizeSelectedCourseCodes(entry.state.selectedCourseCodes, restoredCourses))
     setCustomizations({ ...entry.state.customizations })
     setCourseDefaults({ ...entry.state.courseDefaults })
     setScheduleTitle(entry.state.scheduleTitle)
@@ -5313,6 +5691,14 @@ const renderScheduleView = () => {
                       <Button
                         variant="outline"
                         className="h-9 w-full justify-start gap-2 text-sm"
+                        onClick={() => (isActiveVersionLocked ? setUnlockVersionDialogOpen(true) : setLockVersionDialogOpen(true))}
+                      >
+                        {isActiveVersionLocked ? <LockOpen className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                        {isActiveVersionLocked ? "Unlock & refresh" : "Save & lock"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="h-9 w-full justify-start gap-2 text-sm"
                         onClick={openSolarOSESWindow}
                       >
                         <ExternalLink className="h-3.5 w-3.5" /> Add to SOLAR-OSES
@@ -5354,6 +5740,78 @@ const renderScheduleView = () => {
             <Button className="w-full sm:w-auto" onClick={() => dismissMobilePrompt(false)}>
               Continue on this device
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={termSwitchNotice.open}
+        onOpenChange={(open) =>
+          setTermSwitchNotice((prev) => (prev.open === open ? prev : { ...prev, open }))
+        }
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Previous term schedule saved</DialogTitle>
+            <DialogDescription>
+              Your schedule from {termSwitchNotice.fromTermYearLabel || "the previous term"} is safely saved.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            You are now viewing {termSwitchNotice.toTermYearLabel || "a different term"}. You can go back anytime by selecting the previous term from the Term dropdown.
+          </p>
+          <DialogFooter>
+            <Button onClick={() => setTermSwitchNotice((prev) => ({ ...prev, open: false }))}>Got it</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={lockVersionDialogOpen} onOpenChange={setLockVersionDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Save and lock this version?</DialogTitle>
+            <DialogDescription>
+              Locking keeps this version stable even when new course data is pulled.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+            <p>
+              While locked, section time and room updates from incoming course data will not overwrite your current schedule blocks.
+            </p>
+            <p>
+              You can still switch terms/versions. To apply latest pulled data again, use <span className="font-semibold">Unlock &amp; refresh</span>.
+            </p>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setLockVersionDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmLockVersion}>Save &amp; lock</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={unlockVersionDialogOpen} onOpenChange={setUnlockVersionDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Unlock and refresh this version?</DialogTitle>
+            <DialogDescription>
+              Unlocking allows this version to sync with the latest pulled section data.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+            <p>
+              Refresh may update schedule blocks when matching sections now have different meeting time, room, or slot info.
+            </p>
+            <p>
+              Use this when you want this version to follow the newest extracted data for the selected term.
+            </p>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setUnlockVersionDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmUnlockAndRefresh}>Unlock &amp; refresh</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -7230,6 +7688,14 @@ const renderScheduleView = () => {
                 </Button>
                 <Button variant="outline" className="h-9 w-full justify-start gap-2 text-sm" onClick={openIcsDialog}>
                   <Calendar className="h-3.5 w-3.5" /> Export to calendar
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-9 w-full justify-start gap-2 text-sm"
+                  onClick={() => (isActiveVersionLocked ? setUnlockVersionDialogOpen(true) : setLockVersionDialogOpen(true))}
+                >
+                  {isActiveVersionLocked ? <LockOpen className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                  {isActiveVersionLocked ? "Unlock & refresh" : "Save & lock"}
                 </Button>
                 <Button
                   variant="outline"
