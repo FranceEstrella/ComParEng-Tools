@@ -1562,7 +1562,28 @@ export default function ScheduleMaker() {
     if (preferences?.currentYearLevel && Number.isFinite(preferences.currentYearLevel)) {
       setCurrentYearLevel(preferences.currentYearLevel)
     }
-    if (preferences?.currentTerm) {
+
+    let restoredScheduleTermYear = false
+    if (typeof window !== "undefined") {
+      try {
+        const storedTermYearKey = window.localStorage.getItem(SCHEDULE_MAKER_LAST_ACTIVE_TERM_KEY)
+        if (storedTermYearKey) {
+          const { academicYear, term } = parseTermYearKey(storedTermYearKey)
+          if (TERM_ORDER.includes(term as TermName)) {
+            setCurrentTerm(term as TermName)
+            restoredScheduleTermYear = true
+          }
+          if (academicYear && /^\d{4}-\d{4}$/.test(academicYear)) {
+            setAcademicYearLabel(academicYear)
+            restoredScheduleTermYear = true
+          }
+        }
+      } catch {
+        // ignore malformed persisted term-year key
+      }
+    }
+
+    if (!restoredScheduleTermYear && preferences?.currentTerm) {
       const normalized = (preferences.currentTerm as TermName) || deriveTermFromDate()
       setCurrentTerm(normalized)
     }
