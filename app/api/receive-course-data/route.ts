@@ -34,24 +34,48 @@ export async function POST(request: Request) {
     }
 
     // Validate each course object has the required properties
-    const isValid = courseData.every(
+    const invalidCourseIndex = courseData.findIndex(
       (course) =>
-        typeof course.courseCode === "string" &&
-        typeof course.section === "string" &&
-        typeof course.classSize === "string" &&
-        typeof course.remainingSlots === "string" &&
-        typeof course.meetingDays === "string" &&
-        typeof course.meetingTime === "string" &&
-        typeof course.room === "string" &&
-        typeof course.hasSlots === "boolean",
+        !(typeof course.courseCode === "string" &&
+          typeof course.section === "string" &&
+          typeof course.classSize === "string" &&
+          typeof course.remainingSlots === "string" &&
+          typeof course.meetingDays === "string" &&
+          typeof course.meetingTime === "string" &&
+          typeof course.room === "string" &&
+          typeof course.hasSlots === "boolean" &&
+          typeof course.term === "string" &&
+          typeof course.schoolYear === "string" &&
+          course.term.trim().length > 0 &&
+          course.schoolYear.trim().length > 0),
     )
+
+    const isValid = invalidCourseIndex === -1
 
     if (!isValid) {
       return NextResponse.json(
         {
           success: false,
           error:
-            "Each course must have courseCode, section, classSize, remainingSlots, meetingDays, meetingTime, room, and hasSlots properties",
+            "Each course must have courseCode, section, classSize, remainingSlots, meetingDays, meetingTime, room, hasSlots, term, and schoolYear properties",
+          invalidCourseIndex,
+          invalidCourseSample: invalidCourseIndex >= 0 ? courseData[invalidCourseIndex] : null,
+        },
+        { status: 400, headers },
+      )
+    }
+
+    const firstTerm = courseData[0]?.term?.trim()
+    const firstSchoolYear = courseData[0]?.schoolYear?.trim()
+    const hasMixedTermYear = courseData.some(
+      (course) => course.term.trim() !== firstTerm || course.schoolYear.trim() !== firstSchoolYear,
+    )
+
+    if (hasMixedTermYear) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "All rows in one payload must have the same term and schoolYear.",
         },
         { status: 400, headers },
       )

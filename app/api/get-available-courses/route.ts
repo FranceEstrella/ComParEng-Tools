@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { getCourseDataSnapshot } from "@/lib/course-storage"
 
-export async function GET() {
+export async function GET(request: Request) {
   // Set CORS headers
   const headers = {
     "Access-Control-Allow-Origin": "*",
@@ -12,7 +12,11 @@ export async function GET() {
   }
 
   try {
-    const snapshot = getCourseDataSnapshot()
+    const requestUrl = new URL(request.url)
+    const term = requestUrl.searchParams.get("term") || ""
+    const schoolYear = requestUrl.searchParams.get("schoolYear") || ""
+
+    const snapshot = getCourseDataSnapshot(term, schoolYear)
     const stored: any[] = Array.isArray(snapshot.data) ? snapshot.data : []
 
     // Log the data being returned
@@ -26,6 +30,8 @@ export async function GET() {
         lastUpdated: snapshot.updatedAt || null,
         expiresAt: snapshot.expiresAt || null,
         isExpired: snapshot.isExpired,
+        term: snapshot.term || null,
+        schoolYear: snapshot.schoolYear || null,
       },
       { headers },
     )

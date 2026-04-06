@@ -188,6 +188,52 @@ const deriveAcademicYearLabel = (date = new Date()): string => {
   return `${startYear}-${startYear + 1}`
 }
 
+const normalizeFetchedTerm = (value: unknown): TermName | null => {
+  if (typeof value !== "string") return null
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return null
+
+  if (
+    normalized === "1" ||
+    normalized === "1st" ||
+    normalized.includes("term 1") ||
+    normalized.includes("term1") ||
+    normalized.includes("1st term")
+  ) {
+    return "Term 1"
+  }
+
+  if (
+    normalized === "2" ||
+    normalized === "2nd" ||
+    normalized.includes("term 2") ||
+    normalized.includes("term2") ||
+    normalized.includes("2nd term")
+  ) {
+    return "Term 2"
+  }
+
+  if (
+    normalized === "3" ||
+    normalized === "3rd" ||
+    normalized.includes("term 3") ||
+    normalized.includes("term3") ||
+    normalized.includes("3rd term")
+  ) {
+    return "Term 3"
+  }
+
+  return null
+}
+
+const normalizeFetchedSchoolYear = (value: unknown): string | null => {
+  if (typeof value !== "string") return null
+  const compact = value.replace(/\s+/g, "")
+  const match = compact.match(/^(\d{4})-(\d{4})$/)
+  if (!match) return null
+  return `${match[1]}-${match[2]}`
+}
+
 const buildTermYearKey = (term: TermName, academicYear: string) => `${academicYear}::${term}`
 
 const parseTermYearKey = (key: string): { academicYear: string; term: TermName | string } => {
@@ -294,6 +340,8 @@ interface CourseSection {
   meetingTime: string
   room: string
   hasSlots: boolean
+  term: string
+  schoolYear: string
 }
 
 interface ActiveCourse {
@@ -514,6 +562,8 @@ interface ApplyAvailableCoursesOptions {
   skipTimestamp?: boolean
   forceUpdate?: boolean
   isSampleData?: boolean
+  fetchedTerm?: TermName | null
+  fetchedSchoolYear?: string | null
 }
 
 interface ExportedSelectedCourse {
@@ -562,6 +612,8 @@ const buildCourseSignature = (course: CourseSection) => {
     course.remainingSlots || "",
     course.hasSlots ? "1" : "0",
     course.room || "",
+    course.term || "",
+    course.schoolYear || "",
   ]
     .map((segment) => segment.toString().trim().toUpperCase())
     .join("|")
@@ -572,6 +624,8 @@ const computeCourseSetHash = (courses: CourseSection[]) => {
   return courses.map(buildCourseSignature).join("::")
 }
 
+const SAMPLE_TERM = deriveTermFromDate()
+const SAMPLE_SCHOOL_YEAR = deriveAcademicYearLabel()
 
 // Sample data for available courses - used as fallback
 const sampleAvailableCourses = [
@@ -584,6 +638,8 @@ const sampleAvailableCourses = [
     meetingTime: "07:00:00-08:50:00 / 07:00:00-08:50:00",
     room: "ONLINE / ONLINE",
     hasSlots: true,
+    term: SAMPLE_TERM,
+    schoolYear: SAMPLE_SCHOOL_YEAR,
   },
   {
     courseCode: "CPE0011L",
@@ -594,6 +650,8 @@ const sampleAvailableCourses = [
     meetingTime: "09:00:00-11:50:00",
     room: "F904",
     hasSlots: true,
+    term: SAMPLE_TERM,
+    schoolYear: SAMPLE_SCHOOL_YEAR,
   },
   {
     courseCode: "CPE0033L",
@@ -604,6 +662,8 @@ const sampleAvailableCourses = [
     meetingTime: "07:00:00-09:50:00 / 07:00:00-09:50:00",
     room: "E609 / E609",
     hasSlots: true,
+    term: SAMPLE_TERM,
+    schoolYear: SAMPLE_SCHOOL_YEAR,
   },
   {
     courseCode: "CPE0039L",
@@ -614,6 +674,8 @@ const sampleAvailableCourses = [
     meetingTime: "14:00:00-16:50:00",
     room: "F1103",
     hasSlots: true,
+    term: SAMPLE_TERM,
+    schoolYear: SAMPLE_SCHOOL_YEAR,
   },
   {
     courseCode: "COE0049",
@@ -624,6 +686,8 @@ const sampleAvailableCourses = [
     meetingTime: "11:00:00-12:20:00 / 11:00:00-12:20:00",
     room: "ONLINE / ASYNCH",
     hasSlots: true,
+    term: SAMPLE_TERM,
+    schoolYear: SAMPLE_SCHOOL_YEAR,
   },
   {
     courseCode: "COE0019",
@@ -634,6 +698,8 @@ const sampleAvailableCourses = [
     meetingTime: "11:00:00-12:50:00 / 11:00:00-12:50:00",
     room: "F712 / F712",
     hasSlots: true,
+    term: SAMPLE_TERM,
+    schoolYear: SAMPLE_SCHOOL_YEAR,
   },
 ]
 const QuickNavigation = ({ showBackToTop = false }: { showBackToTop?: boolean }) => {
@@ -4332,10 +4398,16 @@ export default function ScheduleMaker() {
           }
         })
 
+        const fetchedTerm = normalizeFetchedTerm(result.term) ?? normalizeFetchedTerm(payload[0]?.term)
+        const fetchedSchoolYear =
+          normalizeFetchedSchoolYear(result.schoolYear) ?? normalizeFetchedSchoolYear(payload[0]?.schoolYear)
+
         return {
           data: payload,
           lastUpdated: parseTimestamp(result.lastUpdated),
           expired: Boolean(result.isExpired),
+          fetchedTerm,
+          fetchedSchoolYear,
         }
       } catch (err: any) {
         lastError = err
@@ -4451,6 +4523,15 @@ export default function ScheduleMaker() {
       const hasCourses = normalized.length > 0 && !options.isSampleData
       setHasRealCourseData(hasCourses)
 
+      if (hasCourses) {
+        if (options.fetchedTerm && options.fetchedTerm !== currentTerm) {
+          setCurrentTerm(options.fetchedTerm)
+        }
+        if (options.fetchedSchoolYear && options.fetchedSchoolYear !== academicYearLabel) {
+          setAcademicYearLabel(options.fetchedSchoolYear)
+        }
+      }
+
       if (!options.skipTimestamp) {
         if (options.lastUpdated) {
           setLastUpdated(new Date(options.lastUpdated))
@@ -4473,7 +4554,7 @@ export default function ScheduleMaker() {
         setError(null)
       }
     },
-    [setAvailableCourses, setError, setLastUpdated, setHasRealCourseData],
+    [academicYearLabel, currentTerm, setAvailableCourses, setError, setLastUpdated, setHasRealCourseData],
   )
 
   // Fetch both available courses and active courses
@@ -4506,6 +4587,8 @@ export default function ScheduleMaker() {
         } else {
           applyAvailableCourses(result.data, {
             lastUpdated: result.lastUpdated,
+            fetchedTerm: result.fetchedTerm,
+            fetchedSchoolYear: result.fetchedSchoolYear,
           })
         }
 
