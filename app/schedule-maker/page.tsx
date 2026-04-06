@@ -809,6 +809,8 @@ export default function ScheduleMaker() {
   const hasHydratedVersionRef = useRef<boolean>(false)
   const hydratedTermYearKeyRef = useRef<string | null>(null)
   const versionStoreBootstrappedRef = useRef<boolean>(false)
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const autoSaveCollapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const previousTermYearKeyRef = useRef<string | null>(null)
   const previousSessionTermYearKeyRef = useRef<string | null | undefined>(undefined)
   const hasCheckedInitialReopenNoticeRef = useRef(false)
@@ -1044,6 +1046,9 @@ export default function ScheduleMaker() {
     toTermYearLabel: "",
   })
   const [zoomLevel, setZoomLevel] = useState<number>(0)
+  const [autoSaveStatus, setAutoSaveStatus] = useState<"saving" | "saved" | "error">("saved")
+  const [autoSaveAt, setAutoSaveAt] = useState<Date | null>(null)
+  const [showAutoSaveText, setShowAutoSaveText] = useState(true)
   const [lockVersionDialogOpen, setLockVersionDialogOpen] = useState(false)
   const [unlockVersionDialogOpen, setUnlockVersionDialogOpen] = useState(false)
   const [isCapturingImage, setIsCapturingImage] = useState(false)
@@ -1184,14 +1189,69 @@ export default function ScheduleMaker() {
     }))
   }, [])
 
+  const autoSaveLabel = useMemo(() => {
+    if (autoSaveStatus === "error") return "Autosave failed"
+    if (autoSaveStatus === "saving") return "Saving..."
+    if (!autoSaveAt) return "Saved"
+    return `Saved ${autoSaveAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+  }, [autoSaveAt, autoSaveStatus])
+
+  const scheduleAutoSaveCollapse = useCallback((delayMs = 5000) => {
+    if (autoSaveCollapseTimerRef.current) {
+      clearTimeout(autoSaveCollapseTimerRef.current)
+      autoSaveCollapseTimerRef.current = null
+    }
+
+    autoSaveCollapseTimerRef.current = setTimeout(() => {
+      setShowAutoSaveText(false)
+      autoSaveCollapseTimerRef.current = null
+    }, delayMs)
+  }, [])
+
+  const handleAutoSaveIndicatorClick = useCallback(() => {
+    if (autoSaveStatus !== "saved" || !autoSaveAt) return
+    setShowAutoSaveText(true)
+    scheduleAutoSaveCollapse(5000)
+  }, [autoSaveAt, autoSaveStatus, scheduleAutoSaveCollapse])
+
+  const autoSaveIndicatorAriaLabel = useMemo(() => {
+    if (autoSaveStatus === "saving") return "Schedule is being auto-saved"
+    if (autoSaveStatus === "error") return "Schedule autosave failed"
+    if (!autoSaveAt) return "Schedule auto-saved"
+    return `Schedule auto-saved at ${autoSaveAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+  }, [autoSaveAt, autoSaveStatus])
+
   const persistVersionStore = useCallback((next: Record<string, TermYearVersionState>) => {
     if (typeof window === "undefined") return
+
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+      autoSaveTimerRef.current = null
+    }
+
+    if (autoSaveCollapseTimerRef.current) {
+      clearTimeout(autoSaveCollapseTimerRef.current)
+      autoSaveCollapseTimerRef.current = null
+    }
+
+    setAutoSaveStatus("saving")
+    setShowAutoSaveText(true)
+
     try {
       localStorage.setItem("scheduleMakerVersionsV1", JSON.stringify(next))
+      autoSaveTimerRef.current = setTimeout(() => {
+        setAutoSaveAt(new Date())
+        setAutoSaveStatus("saved")
+        setShowAutoSaveText(true)
+        scheduleAutoSaveCollapse(5000)
+        autoSaveTimerRef.current = null
+      }, 160)
     } catch (err) {
       console.error("Failed to persist version store", err)
+      setAutoSaveStatus("error")
+      setShowAutoSaveText(true)
     }
-  }, [])
+  }, [scheduleAutoSaveCollapse])
 
   const [scheduleMakerPrefsLoaded, setScheduleMakerPrefsLoaded] = useState(false)
 
@@ -1312,6 +1372,20 @@ export default function ScheduleMaker() {
     const storedNotice = localStorage.getItem(STALE_IMPORT_NOTICE_STORAGE_KEY)
     if (storedNotice) {
       setStaleImportNotice(storedNotice)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current)
+        autoSaveTimerRef.current = null
+      }
+
+      if (autoSaveCollapseTimerRef.current) {
+        clearTimeout(autoSaveCollapseTimerRef.current)
+        autoSaveCollapseTimerRef.current = null
+      }
     }
   }, [])
 
@@ -7138,7 +7212,49 @@ const renderScheduleView = () => {
             {isCompactViewport && (
               <Card className="mb-2 bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50 lg:hidden">
                 <CardHeader className="py-3">
-                  <CardTitle className="text-sm font-semibold">Versions</CardTitle>
+                  <div className="flex items-center justify-between gap-3">
+                    <CardTitle className="text-sm font-semibold">Versions</CardTitle>
+                    <button
+                      type="button"
+                      onClick={handleAutoSaveIndicatorClick}
+                      aria-label={autoSaveIndicatorAriaLabel}
+                      title={autoSaveIndicatorAriaLabel}
+                      className="inline-flex min-h-5 min-w-5 items-center justify-end"
+                      disabled={autoSaveStatus !== "saved" || showAutoSaveText}
+                    >
+                      <AnimatePresence mode="wait" initial={false}>
+                        {autoSaveStatus === "saved" && !showAutoSaveText ? (
+                          <motion.span
+                            key="autosave-check-compact"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.2, ease: "easeInOut" }}
+                            className="inline-flex items-center"
+                          >
+                            <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
+                          </motion.span>
+                        ) : (
+                          <motion.span
+                            key={`autosave-text-compact-${autoSaveStatus}-${autoSaveLabel}`}
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.2, ease: "easeInOut" }}
+                            className={`text-[11px] font-medium ${
+                              autoSaveStatus === "error"
+                                ? "text-rose-600 dark:text-rose-300"
+                                : autoSaveStatus === "saving"
+                                ? "text-amber-600 dark:text-amber-300"
+                                : "text-emerald-600 dark:text-emerald-300"
+                            }`}
+                          >
+                            {autoSaveLabel}
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
+                    </button>
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-2 pt-0 text-sm">
                   <div className="flex flex-wrap items-center justify-center gap-2">
@@ -7335,7 +7451,49 @@ const renderScheduleView = () => {
           >
             <Card className="flex flex-col bg-white/60 shadow-sm backdrop-blur-sm dark:bg-slate-900/50">
               <CardHeader className="flex items-start justify-start py-3">
-                <CardTitle className="text-base font-semibold text-left">Versions</CardTitle>
+                <div className="flex w-full items-center justify-between gap-3">
+                  <CardTitle className="text-base font-semibold text-left">Versions</CardTitle>
+                  <button
+                    type="button"
+                    onClick={handleAutoSaveIndicatorClick}
+                    aria-label={autoSaveIndicatorAriaLabel}
+                    title={autoSaveIndicatorAriaLabel}
+                    className="inline-flex min-h-5 min-w-5 items-center justify-end"
+                    disabled={autoSaveStatus !== "saved" || showAutoSaveText}
+                  >
+                    <AnimatePresence mode="wait" initial={false}>
+                      {autoSaveStatus === "saved" && !showAutoSaveText ? (
+                        <motion.span
+                          key="autosave-check-desktop"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2, ease: "easeInOut" }}
+                          className="inline-flex items-center"
+                        >
+                          <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+                        </motion.span>
+                      ) : (
+                        <motion.span
+                          key={`autosave-text-desktop-${autoSaveStatus}-${autoSaveLabel}`}
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2, ease: "easeInOut" }}
+                          className={`text-xs font-medium ${
+                            autoSaveStatus === "error"
+                              ? "text-rose-600 dark:text-rose-300"
+                              : autoSaveStatus === "saving"
+                              ? "text-amber-600 dark:text-amber-300"
+                              : "text-emerald-600 dark:text-emerald-300"
+                          }`}
+                        >
+                          {autoSaveLabel}
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
+                  </button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-3 pt-0 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
