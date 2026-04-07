@@ -6599,7 +6599,7 @@ export default function CourseTracker() {
           </DialogContent>
         </Dialog>
 
-        <Dialog open={Boolean(gradeModalCourseId)} onOpenChange={(open) => (!open ? closeGradeModal() : null)}>
+        <Dialog modal={false} open={Boolean(gradeModalCourseId)} onOpenChange={(open) => (!open ? closeGradeModal() : null)}>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>
@@ -6643,7 +6643,7 @@ export default function CourseTracker() {
                           <SelectTrigger className="mt-1 h-9 text-sm">
                             <SelectValue placeholder="Year" />
                           </SelectTrigger>
-                          <SelectContent>
+                          <SelectContent className="z-[15000]" position="popper">
                             {gradeModalYearOptions.map((yearOption) => (
                               <SelectItem key={`modal-year-${yearOption}`} value={String(yearOption)}>
                                 Year {yearOption}
@@ -6662,7 +6662,7 @@ export default function CourseTracker() {
                           <SelectTrigger className="mt-1 h-9 text-sm">
                             <SelectValue placeholder="Term" />
                           </SelectTrigger>
-                          <SelectContent>
+                          <SelectContent className="z-[15000]" position="popper">
                             {gradeModalTermOptions.map((termOption) => (
                               <SelectItem key={`modal-term-${termOption}`} value={termOption}>
                                 {termOption}
@@ -6680,7 +6680,7 @@ export default function CourseTracker() {
                                 <SelectTrigger className="h-9 text-sm">
                                   <SelectValue placeholder="Choose" />
                                 </SelectTrigger>
-                                <SelectContent>
+                                <SelectContent className="z-[15000]" position="popper">
                                   {gradeModalGradeOptions.map((option) => (
                                     <SelectItem key={`modal-grade-${option.value}`} value={option.value}>
                                       {option.label}
