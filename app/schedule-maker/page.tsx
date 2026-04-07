@@ -4311,7 +4311,7 @@ export default function ScheduleMaker() {
     setNoDataDialogPaused(true)
   }
 
-  const COMPARENG_EXTENSION_ID = "gehelkdgojjkhknhelkfmenoligihjml"
+  const COMPARENG_EXTENSION_ID = "fdfappahfelppgjnpbobconjogebpiml"
 
   const deriveLikelyRegularBlockSection = useCallback((courses: SelectedCourse[]): string => {
     const counts = new Map<string, number>()
