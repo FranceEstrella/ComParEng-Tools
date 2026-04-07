@@ -312,7 +312,6 @@ const deriveSelectedCourseCodes = (courses: SelectedCourse[]): string[] => {
   })
   return Array.from(next)
 }
-
 const normalizeSelectedCourseCodes = (codes: unknown, courses: SelectedCourse[]): string[] => {
   if (Array.isArray(codes) && codes.length > 0) {
     const normalized = codes
@@ -4298,16 +4297,81 @@ export default function ScheduleMaker() {
     setNoDataDialogPaused(true)
   }
 
-  const openSolarOSESWindow = useCallback(() => {
-    if (typeof window === "undefined") return
-    trackAnalyticsEvent("schedule_maker.open_solar_oses_click")
-    const url = "https://solar.feutech.edu.ph/course/registration"
-    const features = "noopener,noreferrer,width=1280,height=900,left=120,top=80"
-    const popup = window.open(url, "_blank", features)
-    if (popup && typeof popup.focus === "function") {
-      popup.focus()
+  const COMPARENG_EXTENSION_ID = "gehelkdgojjkhknhelkfmenoligihjml"
+
+  const deriveLikelyRegularBlockSection = useCallback((courses: SelectedCourse[]): string => {
+    const counts = new Map<string, number>()
+
+    courses.forEach((course) => {
+      const section = (course.section || "").trim().toUpperCase()
+      if (!section) return
+      counts.set(section, (counts.get(section) || 0) + 1)
+    })
+
+    if (counts.size === 0) return ""
+
+    let winner = ""
+    let max = -1
+    counts.forEach((count, section) => {
+      if (count > max) {
+        winner = section
+        max = count
+      }
+    })
+
+    return winner
+  }, [])
+
+  const sendRegularBlockToExtension = useCallback(async (blockSection: string) => {
+    if (typeof window === "undefined") return false
+
+    const runtime = (window as any)?.chrome?.runtime
+    if (!runtime?.sendMessage) return false
+
+    const payload = {
+      action: "setOSESBlockEnrollmentRequest",
+      data: {
+        isRegular: true,
+        studentType: "regular",
+        blockSection,
+      },
+    }
+
+    try {
+      const response = await new Promise<any>((resolve) => {
+        runtime.sendMessage(COMPARENG_EXTENSION_ID, payload, (result: any) => {
+          if ((window as any)?.chrome?.runtime?.lastError) {
+            resolve({ success: false, message: (window as any).chrome.runtime.lastError.message })
+            return
+          }
+          resolve(result)
+        })
+      })
+
+      return Boolean(response?.success)
+    } catch {
+      return false
     }
   }, [])
+
+  const openSolarOSESWindow = useCallback(async () => {
+    if (typeof window === "undefined") return
+    trackAnalyticsEvent("schedule_maker.open_solar_oses_click")
+
+    if (regularStudentDetected) {
+      const likelyBlock = deriveLikelyRegularBlockSection(selectedCourses)
+      if (likelyBlock) {
+        const pushed = await sendRegularBlockToExtension(likelyBlock)
+        trackAnalyticsEvent(pushed ? "schedule_maker.uses_extension_block_payload_success" : "schedule_maker.uses_extension_block_payload_failed")
+      }
+    }
+
+    const url = "https://solar.feutech.edu.ph/course/registration"
+    const tab = window.open(url, "_blank")
+    if (tab && typeof tab.focus === "function") {
+      tab.focus()
+    }
+  }, [deriveLikelyRegularBlockSection, regularStudentDetected, selectedCourses, sendRegularBlockToExtension])
 
   const handleNoDataDialogToggle = (checked: boolean) => {
     setHideNoDataDialog(checked)
