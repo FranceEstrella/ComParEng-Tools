@@ -162,6 +162,8 @@ const GROUP_LABELS: Record<GroupByOption, string> = {
 }
 
 type TermName = "Term 1" | "Term 2" | "Term 3"
+type SolarOSESStudentType = "regular" | "irregular"
+type SolarOSESStudentTypeOverride = "auto" | SolarOSESStudentType
 
 const TERM_ORDER: TermName[] = ["Term 1", "Term 2", "Term 3"]
 
@@ -1155,6 +1157,7 @@ export default function ScheduleMaker() {
   const [regularStudentNoticeOpen, setRegularStudentNoticeOpen] = useState(false)
   const [regularStudentNoticeDontShowAgain, setRegularStudentNoticeDontShowAgain] = useState(false)
   const [regularStudentNoticeDismissedSession, setRegularStudentNoticeDismissedSession] = useState(false)
+  const [solarOSESStudentTypeOverride, setSolarOSESStudentTypeOverride] = useState<SolarOSESStudentTypeOverride>("auto")
 
   const [sameSectionFeatureEnabled, setSameSectionFeatureEnabled] = useState(true)
   const [rememberSameSectionAddDecision, setRememberSameSectionAddDecision] = useState<"confirm" | null>(null)
@@ -1412,13 +1415,19 @@ export default function ScheduleMaker() {
   }, [])
 
   const persistScheduleMakerPreferences = useCallback(
-    (overrides?: Partial<{ sameSectionFeatureEnabled: boolean; rememberSameSectionAddDecision: "confirm" | null; regularStudentNoticeDismissed: boolean }>) => {
+    (overrides?: Partial<{
+      sameSectionFeatureEnabled: boolean
+      rememberSameSectionAddDecision: "confirm" | null
+      regularStudentNoticeDismissed: boolean
+      solarOSESStudentTypeOverride: SolarOSESStudentTypeOverride
+    }>) => {
       if (typeof window === "undefined") return
       try {
         const next = {
           sameSectionFeatureEnabled,
           rememberSameSectionAddDecision,
           regularStudentNoticeDismissed: regularStudentNoticeDontShowAgain,
+          solarOSESStudentTypeOverride,
           ...(overrides || {}),
         }
         window.localStorage.setItem(SCHEDULE_MAKER_PREFS_KEY, JSON.stringify(next))
@@ -1426,7 +1435,7 @@ export default function ScheduleMaker() {
         // ignore
       }
     },
-    [rememberSameSectionAddDecision, regularStudentNoticeDontShowAgain, sameSectionFeatureEnabled],
+    [rememberSameSectionAddDecision, regularStudentNoticeDontShowAgain, sameSectionFeatureEnabled, solarOSESStudentTypeOverride],
   )
 
   const getTermIndex = useCallback((term: string | undefined | null) => {
@@ -1627,6 +1636,11 @@ export default function ScheduleMaker() {
 
       const dismissed = (prefs as any).regularStudentNoticeDismissed
       if (typeof dismissed === "boolean") setRegularStudentNoticeDontShowAgain(dismissed)
+
+      const oSESStudentTypeOverride = (prefs as any).solarOSESStudentTypeOverride
+      if (oSESStudentTypeOverride === "auto" || oSESStudentTypeOverride === "regular" || oSESStudentTypeOverride === "irregular") {
+        setSolarOSESStudentTypeOverride(oSESStudentTypeOverride)
+      }
     }
 
     setScheduleMakerPrefsLoaded(true)
@@ -4322,20 +4336,39 @@ export default function ScheduleMaker() {
     return winner
   }, [])
 
-  const sendRegularBlockToExtension = useCallback(async (blockSection: string) => {
+  const sendOSESStudentTypeToExtension = useCallback(
+    async (studentType: SolarOSESStudentType, courses: SelectedCourse[], blockSection?: string) => {
     if (typeof window === "undefined") return false
 
     const runtime = (window as any)?.chrome?.runtime
     if (!runtime?.sendMessage) return false
 
-    const payload = {
-      action: "setOSESBlockEnrollmentRequest",
-      data: {
-        isRegular: true,
-        studentType: "regular",
-        blockSection,
-      },
-    }
+    const selectedCourseSections = courses
+      .map((course) => ({
+        courseCode: (course.courseCode || "").trim().toUpperCase(),
+        section: normalizeSection(course.section),
+      }))
+      .filter((course) => Boolean(course.courseCode && course.section))
+
+    const payload =
+      studentType === "regular"
+        ? {
+            action: "setOSESBlockEnrollmentRequest",
+            data: {
+              isRegular: true,
+              studentType: "regular",
+              selectedCourses: selectedCourseSections,
+              ...(blockSection ? { blockSection } : {}),
+            },
+          }
+        : {
+            action: "setOSESIrregularEnrollmentRequest",
+            data: {
+              isIrregular: true,
+              studentType: "irregular",
+              courses: selectedCourseSections,
+            },
+          }
 
     try {
       const response = await new Promise<any>((resolve) => {
@@ -4352,18 +4385,32 @@ export default function ScheduleMaker() {
     } catch {
       return false
     }
-  }, [])
+  }, [normalizeSection])
+
+  const resolvedSolarOSESStudentType = useMemo<SolarOSESStudentType>(() => {
+    if (solarOSESStudentTypeOverride === "auto") {
+      return regularStudentDetected ? "regular" : "irregular"
+    }
+    return solarOSESStudentTypeOverride
+  }, [regularStudentDetected, solarOSESStudentTypeOverride])
 
   const openSolarOSESWindow = useCallback(async () => {
     if (typeof window === "undefined") return
     trackAnalyticsEvent("schedule_maker.open_solar_oses_click")
 
-    if (regularStudentDetected) {
+    if (resolvedSolarOSESStudentType === "regular") {
       const likelyBlock = deriveLikelyRegularBlockSection(selectedCourses)
       if (likelyBlock) {
-        const pushed = await sendRegularBlockToExtension(likelyBlock)
+        const pushed = await sendOSESStudentTypeToExtension("regular", selectedCourses, likelyBlock)
         trackAnalyticsEvent(pushed ? "schedule_maker.uses_extension_block_payload_success" : "schedule_maker.uses_extension_block_payload_failed")
       }
+    } else {
+      const pushed = await sendOSESStudentTypeToExtension("irregular", selectedCourses)
+      trackAnalyticsEvent(
+        pushed
+          ? "schedule_maker.uses_extension_irregular_payload_success"
+          : "schedule_maker.uses_extension_irregular_payload_failed",
+      )
     }
 
     const url = "https://solar.feutech.edu.ph/course/registration"
@@ -4371,7 +4418,7 @@ export default function ScheduleMaker() {
     if (tab && typeof tab.focus === "function") {
       tab.focus()
     }
-  }, [deriveLikelyRegularBlockSection, regularStudentDetected, selectedCourses, sendRegularBlockToExtension])
+  }, [deriveLikelyRegularBlockSection, resolvedSolarOSESStudentType, selectedCourses, sendOSESStudentTypeToExtension])
 
   const handleNoDataDialogToggle = (checked: boolean) => {
     setHideNoDataDialog(checked)
@@ -6952,6 +6999,28 @@ const renderScheduleView = () => {
                 }}
                 aria-label="Toggle auto-add same-section courses"
               />
+            </div>
+
+            <div className="space-y-2 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-800/60">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Developer: SOLAR-OSES student type</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Choose whether Add to SOLAR-OSES should behave as regular or irregular. Auto follows detected progress.
+                </p>
+              </div>
+              <Select
+                value={solarOSESStudentTypeOverride}
+                onValueChange={(value) => setSolarOSESStudentTypeOverride(value as SolarOSESStudentTypeOverride)}
+              >
+                <SelectTrigger aria-label="Select SOLAR-OSES student type mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="z-[11001]">
+                  <SelectItem value="auto">Auto (detected)</SelectItem>
+                  <SelectItem value="regular">Always regular</SelectItem>
+                  <SelectItem value="irregular">Always irregular</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter className="gap-2 sm:gap-0">
