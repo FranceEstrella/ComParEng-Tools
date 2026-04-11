@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server"
 import { getCourseDataSnapshot } from "@/lib/course-storage"
+import { buildCorsHeaders } from "@/lib/api-cors"
 
 export async function GET(request: Request) {
-  // Set CORS headers
+  const corsHeaders = buildCorsHeaders(request)
   const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Accept",
+    ...corsHeaders,
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
   }
@@ -48,15 +47,12 @@ export async function GET(request: Request) {
 }
 
 // Handle OPTIONS requests for CORS preflight
-export async function OPTIONS() {
+export async function OPTIONS(request: Request) {
+  const corsHeaders = buildCorsHeaders(request)
   return NextResponse.json(
     {},
     {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Accept",
-      },
+      headers: corsHeaders,
     },
   )
 }
