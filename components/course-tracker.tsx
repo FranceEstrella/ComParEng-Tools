@@ -76,6 +76,8 @@ import { trackAnalyticsEvent } from "@/lib/analytics-client"
 const APP_VERSION = orderedPatchNotes[0]?.version ?? "Dev"
 const GAMIFICATION_STORAGE_KEY = "courseTracker.gamification.v1"
 const PROFILE_STORAGE_KEY = "courseTracker.profile.v1"
+const GRADE_IMPORT_HISTORY_STORAGE_KEY = "courseTracker.gradeImportHistory.v1"
+const COMPARENG_EXTENSION_ID = "fdfappahfelppgjnpbobconjogebpiml"
 const TERM_BADGE_XP_BY_YEAR: Record<number, number> = {
   1: 600,
   2: 900,
@@ -282,6 +284,9 @@ interface GradeAttempt {
   term: TermName
   grade: string
   recordedAt: string
+  sourceSchoolYear?: string
+  sourcePortalTermLabel?: string
+  sourceChronologicalIndex?: number
 }
 
 // Course interface
@@ -403,6 +408,31 @@ interface ProfileState {
   cardColor: string
 }
 
+interface ImportedGradeAttempt {
+  courseCode: string
+  finalGrade: string
+  schoolYear: string
+  portalTermLabel: string
+  term: string
+  chronologicalIndex: number
+}
+
+interface ImportedGradePayload {
+  runId: string
+  extractedAt: number
+  attempts: ImportedGradeAttempt[]
+  summary?: {
+    processedTerms?: number
+    stoppedAt?: string
+    extractedCount?: number
+  }
+}
+
+interface UnmatchedGradeGroup {
+  sourceCode: string
+  attempts: ImportedGradeAttempt[]
+}
+
 // --- Subcomponent Prop Types ---
 interface FilterAndSearchControlsProps {
   searchTerm: string
@@ -473,12 +503,26 @@ interface GradeModalFormState {
 
 interface TranscriptEntry {
   id: string
+  courseId: string
   courseCode: string
   courseName: string
   units: number
+  curriculumYear: number
+  curriculumTerm: TermName
   year: number
   term: TermName
   grade: string
+  recordedAt: string
+  sourceSchoolYear?: string
+  sourcePortalTermLabel?: string
+  sourceChronologicalIndex?: number
+}
+
+type TranscriptExportMode = "chronological" | "latestByCurriculum"
+
+const TRANSCRIPT_EXPORT_MODE_LABELS: Record<TranscriptExportMode, string> = {
+  chronological: "Current format (all attempts)",
+  latestByCurriculum: "Latest grades only, grouped by curriculum",
 }
 
 interface PlannerSavedPlanSemester {
@@ -979,13 +1023,23 @@ const sanitizeGradeAttempts = (attempts?: GradeAttempt[]): GradeAttempt[] => {
       if (typeof attempt?.year !== "number" || !attempt?.term) return null
       const normalizedGrade = normalizeGradeValue(attempt.grade)
       if (!normalizedGrade) return null
-      return {
+      const sanitized: GradeAttempt = {
         id: attempt?.id || generateAttemptId(),
         year: attempt.year,
         term: sanitizeTermName(attempt.term as string),
         grade: normalizedGrade,
         recordedAt: attempt.recordedAt || new Date().toISOString(),
       }
+      if (typeof attempt.sourceSchoolYear === "string") {
+        sanitized.sourceSchoolYear = attempt.sourceSchoolYear
+      }
+      if (typeof attempt.sourcePortalTermLabel === "string") {
+        sanitized.sourcePortalTermLabel = attempt.sourcePortalTermLabel
+      }
+      if (typeof attempt.sourceChronologicalIndex === "number" && Number.isFinite(attempt.sourceChronologicalIndex)) {
+        sanitized.sourceChronologicalIndex = attempt.sourceChronologicalIndex
+      }
+      return sanitized
     })
     .filter((attempt): attempt is GradeAttempt => attempt !== null)
     .sort((a, b) => compareYearTerm(a.year, a.term, b.year, b.term))
@@ -2617,8 +2671,29 @@ export default function CourseTracker() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const [utilityDialogOpen, setUtilityDialogOpen] = useState(false)
+  const [gradeImportRunning, setGradeImportRunning] = useState(false)
+  const [gradeImportFetchedSuccess, setGradeImportFetchedSuccess] = useState(false)
+  const [gradeImportStartedAt, setGradeImportStartedAt] = useState(0)
+  const [gradeImportError, setGradeImportError] = useState<string | null>(null)
+  const [gradeImportSummaryOpen, setGradeImportSummaryOpen] = useState(false)
+  const [gradeImportSummary, setGradeImportSummary] = useState<{
+    extracted: number
+    matched: number
+    unmatched: number
+    runId: string
+  } | null>(null)
+  const [gradeImportBaseStartYear, setGradeImportBaseStartYear] = useState<number | null>(null)
+  const [gradeImportExtractedAttempts, setGradeImportExtractedAttempts] = useState<ImportedGradeAttempt[]>([])
+  const [unmatchedGradeGroups, setUnmatchedGradeGroups] = useState<UnmatchedGradeGroup[]>([])
+  const [unmatchedGradeMapping, setUnmatchedGradeMapping] = useState<Record<string, string>>({})
+  const [activeUnmatchedMappingPicker, setActiveUnmatchedMappingPicker] = useState<string | null>(null)
+  const [unmatchedGradeSearch, setUnmatchedGradeSearch] = useState<Record<string, string>>({})
+  const [gradeImportSoundEnabled, setGradeImportSoundEnabled] = useState(true)
+  const [unmappedRewardsWarningOpen, setUnmappedRewardsWarningOpen] = useState(false)
+  const [pendingUnmappedRewardsWarning, setPendingUnmappedRewardsWarning] = useState(false)
   const [importSuccessPrompt, setImportSuccessPrompt] = useState<{ title: string; description: string } | null>(null)
   const [rewardOverlayDeferred, setRewardOverlayDeferred] = useState(false)
+  const [autoImportRewardDeferred, setAutoImportRewardDeferred] = useState(false)
   const progressCardRef = useRef<HTMLDivElement>(null)
   const [mounted, setMounted] = useState(false)
   const [showJumpButton, setShowJumpButton] = useState(false)
@@ -2641,8 +2716,11 @@ export default function CourseTracker() {
   const [pendingPassDowngrade, setPendingPassDowngrade] = useState<PendingPassDowngrade | null>(null)
   const [transcriptModalOpen, setTranscriptModalOpen] = useState(false)
   const [transcriptStep, setTranscriptStep] = useState<"details" | "review">("details")
+  const [transcriptExportMode, setTranscriptExportMode] = useState<TranscriptExportMode>("chronological")
   const [transcriptForm, setTranscriptForm] = useState({ studentName: "", studentNumber: "" })
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
+  const transcriptNameInputRef = useRef<HTMLInputElement | null>(null)
+  const transcriptNumberInputRef = useRef<HTMLInputElement | null>(null)
   const [noGradesDialogOpen, setNoGradesDialogOpen] = useState(false)
   const [trackerSetupDialogOpen, setTrackerSetupDialogOpen] = useState(false)
   const [setupStartYearInput, setSetupStartYearInput] = useState<string>(() => String(new Date().getFullYear()))
@@ -2667,6 +2745,9 @@ export default function CourseTracker() {
   }, [])
 
   const completionInitRef = useRef(false)
+  const gradeImportHistoryHydratedRef = useRef(false)
+  const lastHandledGradeRunIdRef = useRef("")
+  const gradeAlertToneRef = useRef<number | null>(null)
   const completedYearsRef = useRef<Set<number>>(new Set())
   const completedTermsRef = useRef<Set<string>>(new Set())
   const overallCompletedRef = useRef(false)
@@ -2681,6 +2762,111 @@ export default function CourseTracker() {
     setImportSuccessPrompt(null)
     setRewardOverlayDeferred(false)
   }, [])
+
+  const shouldDeferRewardOverlay = rewardOverlayDeferred || autoImportRewardDeferred
+
+  const importedAttemptsByTermYear = useMemo(() => {
+    const parseStart = (schoolYear: string) => {
+      const match = String(schoolYear || "").match(/(20\d{2})\s*[-/]\s*(20\d{2})/)
+      if (match) return Number.parseInt(match[1], 10)
+      const compact = String(schoolYear || "").match(/(20\d{2})(20\d{2})/)
+      if (compact) return Number.parseInt(compact[1], 10)
+      const single = String(schoolYear || "").match(/^(20\d{2})$/)
+      if (single) return Number.parseInt(single[1], 10)
+      return NaN
+    }
+
+    const normalizeCodeForLookup = (value: string) => {
+      const upper = String(value || "").trim().toUpperCase()
+      if (!upper) return ""
+      const collapsed = upper.replace(/[^A-Z0-9]/g, "")
+      return collapsed.replace(/^([A-Z]+)0+(\d+)$/, "$1$2")
+    }
+
+    const courseByCode = new Map<string, Course>()
+    const courseById = new Map<string, Course>()
+    const addCode = (rawCode: string, course: Course) => {
+      const key = normalizeCodeForLookup(rawCode)
+      if (!key || courseByCode.has(key)) return
+      courseByCode.set(key, course)
+    }
+
+    courses.forEach((course) => {
+      courseById.set(course.id, course)
+      addCode(course.code, course)
+      const canonical = resolveCanonicalCourseCode(course.code)
+      addCode(canonical, course)
+      getAliasesForCanonical(canonical).forEach((alias) => addCode(alias, course))
+    })
+
+    const grouped = new Map<
+      string,
+      {
+        schoolYear: string
+        termLabel: string
+        items: ImportedGradeAttempt[]
+        sortKey: number
+        totalWeightedGrade: number
+        totalUnits: number
+        gwaIncludedCount: number
+        gwaExcludedCount: number
+      }
+    >()
+
+    gradeImportExtractedAttempts.forEach((attempt) => {
+      const schoolYear = String(attempt.schoolYear || "").trim() || "Unknown School Year"
+      const termLabel = String(attempt.portalTermLabel || attempt.term || "Unknown Term").trim() || "Unknown Term"
+      const key = `${schoolYear}::${termLabel}`
+      const yearStart = parseStart(schoolYear)
+      const fallbackSort = Number.isFinite(attempt.chronologicalIndex) ? attempt.chronologicalIndex : 0
+      const sortKey = Number.isFinite(yearStart) ? yearStart * 10_000 + fallbackSort : 9_999_999 + fallbackSort
+
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          schoolYear,
+          termLabel,
+          items: [],
+          sortKey,
+          totalWeightedGrade: 0,
+          totalUnits: 0,
+          gwaIncludedCount: 0,
+          gwaExcludedCount: 0,
+        })
+      }
+      const target = grouped.get(key)
+      if (!target) return
+
+      const codeKey = normalizeCodeForLookup(attempt.courseCode)
+      const sourceRaw = String(attempt.courseCode || "").trim().toUpperCase()
+      const manuallyMappedCourseId = unmatchedGradeMapping[sourceRaw] || (codeKey ? unmatchedGradeMapping[codeKey] : "")
+      const matchedCourse = manuallyMappedCourseId
+        ? courseById.get(manuallyMappedCourseId)
+        : codeKey
+          ? courseByCode.get(codeKey)
+          : undefined
+      const units = Number(matchedCourse?.credits || 0)
+      const gradeValue = Number.parseFloat(String(attempt.finalGrade || "").trim())
+
+      if (Number.isFinite(gradeValue) && units > 0) {
+        target.totalWeightedGrade += gradeValue * units
+        target.totalUnits += units
+        target.gwaIncludedCount += 1
+      } else {
+        target.gwaExcludedCount += 1
+      }
+
+      target.items.push(attempt)
+      target.sortKey = Math.min(target.sortKey, sortKey)
+    })
+
+    return Array.from(grouped.values())
+      .sort((a, b) => a.sortKey - b.sortKey)
+      .map((group) => ({
+        ...group,
+        gwa: group.totalUnits > 0 ? group.totalWeightedGrade / group.totalUnits : null,
+        items: [...group.items].sort((a, b) => (a.chronologicalIndex || 0) - (b.chronologicalIndex || 0)),
+      }))
+  }, [courses, gradeImportExtractedAttempts, unmatchedGradeMapping])
 
   const syncProfileFromStorage = useCallback(() => {
     try {
@@ -2756,6 +2942,72 @@ export default function CourseTracker() {
   }, [syncProfileFromStorage])
 
   useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const raw = window.localStorage.getItem(GRADE_IMPORT_HISTORY_STORAGE_KEY)
+      if (!raw) {
+        gradeImportHistoryHydratedRef.current = true
+        return
+      }
+
+      const parsed = JSON.parse(raw)
+      const summary = parsed?.summary
+      const extractedAttempts = Array.isArray(parsed?.extractedAttempts) ? parsed.extractedAttempts : []
+      const unmatchedGroups = Array.isArray(parsed?.unmatchedGroups) ? parsed.unmatchedGroups : []
+      const unmatchedMapping = parsed?.unmatchedMapping && typeof parsed.unmatchedMapping === "object"
+        ? parsed.unmatchedMapping
+        : {}
+
+      if (
+        summary &&
+        typeof summary.runId === "string" &&
+        Number.isFinite(summary.extracted) &&
+        Number.isFinite(summary.matched) &&
+        Number.isFinite(summary.unmatched)
+      ) {
+        setGradeImportSummary({
+          runId: summary.runId,
+          extracted: Number(summary.extracted),
+          matched: Number(summary.matched),
+          unmatched: Number(summary.unmatched),
+        })
+      }
+
+      setGradeImportExtractedAttempts(extractedAttempts)
+      setUnmatchedGradeGroups(unmatchedGroups)
+      setUnmatchedGradeMapping(unmatchedMapping)
+    } catch (error) {
+      console.error("Failed to load grade import history", error)
+    } finally {
+      gradeImportHistoryHydratedRef.current = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (!gradeImportHistoryHydratedRef.current) return
+
+    try {
+      if (!gradeImportSummary) {
+        window.localStorage.removeItem(GRADE_IMPORT_HISTORY_STORAGE_KEY)
+        return
+      }
+
+      const payload = {
+        summary: gradeImportSummary,
+        extractedAttempts: gradeImportExtractedAttempts,
+        unmatchedGroups: unmatchedGradeGroups,
+        unmatchedMapping: unmatchedGradeMapping,
+        savedAt: Date.now(),
+      }
+
+      window.localStorage.setItem(GRADE_IMPORT_HISTORY_STORAGE_KEY, JSON.stringify(payload))
+    } catch (error) {
+      console.error("Failed to save grade import history", error)
+    }
+  }, [gradeImportExtractedAttempts, gradeImportSummary, unmatchedGradeGroups, unmatchedGradeMapping])
+
+  useEffect(() => {
     const hasValue = expectedGraduationLabel && expectedGraduationLabel !== "N/A"
     if (!hasValue) return
     setProfileState((prev) => ({ ...prev, expectedGraduation: expectedGraduationLabel }))
@@ -2767,7 +3019,7 @@ export default function CourseTracker() {
 
   useEffect(() => {
     if (!coursesHydrated) return
-    if (rewardOverlayDeferred) return
+    if (shouldDeferRewardOverlay) return
 
     const years = Array.from(new Set(courses.map((course) => course.year).filter((y): y is number => Number.isFinite(y))))
       .sort((a, b) => a - b)
@@ -2928,7 +3180,7 @@ export default function CourseTracker() {
     completedYearsRef.current = currentCompletedYears
     completedTermsRef.current = currentCompletedTerms
     overallCompletedRef.current = overallComplete
-  }, [courses, coursesHydrated, rewardOverlayDeferred])
+  }, [courses, coursesHydrated, shouldDeferRewardOverlay])
 
   const scrollToPageTop = useCallback(() => {
     if (typeof window === "undefined") return
@@ -3087,6 +3339,566 @@ export default function CourseTracker() {
     },
     [ensureYearOption],
   )
+
+  const stopGradeImportAlertTone = useCallback(() => {
+    if (gradeAlertToneRef.current) {
+      window.clearInterval(gradeAlertToneRef.current)
+      gradeAlertToneRef.current = null
+    }
+  }, [])
+
+  const startGradeImportAlertTone = useCallback(() => {
+    if (!gradeImportSoundEnabled) return
+    if (gradeAlertToneRef.current) return
+
+    gradeAlertToneRef.current = window.setInterval(() => {
+      try {
+        const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext
+        if (!AudioCtx) return
+        const ctx = new AudioCtx()
+        const oscillator = ctx.createOscillator()
+        const gain = ctx.createGain()
+        oscillator.connect(gain)
+        gain.connect(ctx.destination)
+        oscillator.type = "sine"
+        oscillator.frequency.value = 880
+        gain.gain.value = 0.03
+        oscillator.start()
+        oscillator.stop(ctx.currentTime + 0.14)
+      } catch (error) {
+        console.error("Grade import alert tone failed", error)
+      }
+    }, 1200)
+  }, [gradeImportSoundEnabled])
+
+  const closeGradeImportSummary = useCallback((reason: "button" | "other" = "other") => {
+    const hasUnmatched = unmatchedGradeGroups.length > 0 || Number(gradeImportSummary?.unmatched || 0) > 0
+    setGradeImportSummaryOpen(false)
+    stopGradeImportAlertTone()
+    if (hasUnmatched) {
+      setPendingUnmappedRewardsWarning(true)
+    }
+    if (!hasUnmatched) {
+      setAutoImportRewardDeferred(false)
+    }
+  }, [gradeImportSummary?.unmatched, stopGradeImportAlertTone, unmatchedGradeGroups.length])
+
+  useEffect(() => {
+    if (!pendingUnmappedRewardsWarning) return
+
+    const anyOtherDialogOpen =
+      gradeImportSummaryOpen ||
+      trackerSetupDialogOpen ||
+      nextStepsDialogOpen ||
+      feedbackDialogOpen ||
+      utilityDialogOpen ||
+      Boolean(importSuccessPrompt) ||
+      gradeImportRunning ||
+      gradeImportFetchedSuccess ||
+      Boolean(prereqDialogState) ||
+      Boolean(dependentRollbackDialogState) ||
+      Boolean(bulkPrereqConfirmState) ||
+      Boolean(gradeModalCourseId) ||
+      Boolean(pendingGradeReplacement) ||
+      Boolean(pendingPassDowngrade) ||
+      transcriptModalOpen ||
+      noGradesDialogOpen
+
+    if (anyOtherDialogOpen) return
+
+    setUnmappedRewardsWarningOpen(true)
+    setPendingUnmappedRewardsWarning(false)
+  }, [
+    bulkPrereqConfirmState,
+    dependentRollbackDialogState,
+    feedbackDialogOpen,
+    gradeImportFetchedSuccess,
+    gradeImportRunning,
+    gradeImportSummaryOpen,
+    gradeModalCourseId,
+    importSuccessPrompt,
+    nextStepsDialogOpen,
+    noGradesDialogOpen,
+    pendingGradeReplacement,
+    pendingPassDowngrade,
+    pendingUnmappedRewardsWarning,
+    prereqDialogState,
+    trackerSetupDialogOpen,
+    transcriptModalOpen,
+    utilityDialogOpen,
+  ])
+
+  useEffect(() => {
+    const hasUnmatched = unmatchedGradeGroups.length > 0 || Number(gradeImportSummary?.unmatched || 0) > 0
+    if (hasUnmatched) return
+    setUnmappedRewardsWarningOpen(false)
+    setPendingUnmappedRewardsWarning(false)
+  }, [gradeImportSummary?.unmatched, unmatchedGradeGroups.length])
+
+  const normalizeCodeKey = useCallback((value: string) => {
+    return String(value || "")
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "")
+  }, [])
+
+  const parseSchoolYearStart = useCallback((schoolYear: string) => {
+    const match = String(schoolYear || "").match(/(20\d{2})\s*[-/]\s*(20\d{2})/)
+    if (match) return Number.parseInt(match[1], 10)
+    const compact = String(schoolYear || "").match(/(20\d{2})(20\d{2})/)
+    if (compact) return Number.parseInt(compact[1], 10)
+    const single = String(schoolYear || "").match(/^(20\d{2})$/)
+    if (single) return Number.parseInt(single[1], 10)
+    return NaN
+  }, [])
+
+  const findMatchingCourseId = useCallback(
+    (code: string, list: Course[]) => {
+      const toLooseKey = (value: string) => {
+        const normalized = normalizeCodeKey(value)
+        const match = normalized.match(/^([A-Z]+)0*(\d+)$/)
+        if (!match) return normalized
+        return `${match[1]}${Number.parseInt(match[2], 10)}`
+      }
+
+      const normalized = normalizeCodeKey(code)
+      if (!normalized) return ""
+
+      const direct = list.find((course) => normalizeCodeKey(course.code) === normalized)
+      if (direct) return direct.id
+
+      const loose = toLooseKey(code)
+      const byLoose = list.find((course) => toLooseKey(course.code) === loose)
+      if (byLoose) return byLoose.id
+
+      const canonical = resolveCanonicalCourseCode(code)
+      const canonicalKey = normalizeCodeKey(canonical)
+      const byCanonical = list.find((course) => normalizeCodeKey(resolveCanonicalCourseCode(course.code)) === canonicalKey)
+      if (byCanonical) return byCanonical.id
+
+      const canonicalLoose = toLooseKey(canonical)
+      const byCanonicalLoose = list.find((course) => toLooseKey(resolveCanonicalCourseCode(course.code)) === canonicalLoose)
+      if (byCanonicalLoose) return byCanonicalLoose.id
+
+      return ""
+    },
+    [normalizeCodeKey],
+  )
+
+  const applyImportedAttemptsToCourses = useCallback(
+    (
+      attempts: ImportedGradeAttempt[],
+      mappedCourseIdBySourceCode: Record<string, string>,
+      options?: { baseStartYear?: number },
+    ) => {
+      if (!attempts.length) return { matchedCount: 0 }
+      const effectiveStartYear =
+        typeof options?.baseStartYear === "number" && Number.isFinite(options.baseStartYear)
+          ? options.baseStartYear
+          : startYear
+
+      const grouped = new Map<string, ImportedGradeAttempt[]>()
+      attempts.forEach((attempt) => {
+        const sourceRaw = String(attempt.courseCode || "").trim().toUpperCase()
+        const sourceKey = normalizeCodeKey(sourceRaw)
+        const courseId = mappedCourseIdBySourceCode[sourceRaw] || mappedCourseIdBySourceCode[sourceKey]
+        if (!courseId) return
+        if (!grouped.has(courseId)) grouped.set(courseId, [])
+        grouped.get(courseId)?.push(attempt)
+      })
+
+      const matchedCount = Array.from(grouped.values()).reduce((sum, items) => sum + items.length, 0)
+      if (!grouped.size) return { matchedCount }
+
+      setCourses((prevCourses) => {
+        const nextCourses = prevCourses.map((course) => {
+          const updates = grouped.get(course.id)
+          if (!updates || updates.length === 0) return course
+
+          const nextAttempts = [...getGradeAttempts(course)]
+
+          updates.forEach((attempt) => {
+            const yearStart = parseSchoolYearStart(attempt.schoolYear)
+            const year = Number.isFinite(yearStart) ? Math.max(1, yearStart - effectiveStartYear + 1) : course.year
+            const term = sanitizeTermName(attempt.term || attempt.portalTermLabel)
+            const grade = normalizeGradeValue(attempt.finalGrade)
+            if (!grade) return
+            const existingIndex = nextAttempts.findIndex((item) => item.year === year && item.term === term)
+
+            const nextItem: GradeAttempt = {
+              id: existingIndex >= 0 ? nextAttempts[existingIndex].id : `${course.id}-${year}-${term}-import`,
+              year,
+              term,
+              grade,
+              recordedAt: new Date().toISOString(),
+              sourceSchoolYear: String(attempt.schoolYear || "").trim() || undefined,
+              sourcePortalTermLabel: String(attempt.portalTermLabel || attempt.term || "").trim() || undefined,
+              sourceChronologicalIndex:
+                typeof attempt.chronologicalIndex === "number" && Number.isFinite(attempt.chronologicalIndex)
+                  ? attempt.chronologicalIndex
+                  : undefined,
+            }
+
+            if (existingIndex >= 0) {
+              nextAttempts[existingIndex] = nextItem
+            } else {
+              nextAttempts.push(nextItem)
+            }
+          })
+
+          const sanitizedAttempts = sanitizeGradeAttempts(nextAttempts)
+          const latestAttempt = sanitizedAttempts[sanitizedAttempts.length - 1]
+          const latestPassing = getLatestPassingAttempt({ ...course, gradeAttempts: sanitizedAttempts })
+
+          return {
+            ...course,
+            gradeAttempts: sanitizedAttempts,
+            status: latestPassing ? "passed" : latestAttempt ? "active" : course.status,
+            lastTaken: latestPassing
+              ? { year: latestPassing.year, term: latestPassing.term }
+              : latestAttempt
+                ? { year: latestAttempt.year, term: latestAttempt.term }
+                : course.lastTaken ?? null,
+          }
+        })
+
+          saveCourseStatuses(nextCourses)
+          return nextCourses
+      })
+
+      return { matchedCount }
+    },
+    [normalizeCodeKey, parseSchoolYearStart, startYear],
+  )
+
+  const handleImportedGradePayload = useCallback(
+    (payload: ImportedGradePayload) => {
+      const attempts = Array.isArray(payload?.attempts) ? payload.attempts : []
+      if (!attempts.length) {
+        setAutoImportRewardDeferred(false)
+        return
+      }
+      setGradeImportExtractedAttempts(attempts)
+
+      const mappings: Record<string, string> = {}
+      const unmatchedMap = new Map<string, ImportedGradeAttempt[]>()
+
+      attempts.forEach((attempt) => {
+        const sourceRaw = String(attempt.courseCode || "").trim().toUpperCase()
+        const sourceKey = normalizeCodeKey(sourceRaw)
+        if (!sourceKey) return
+        const courseId = findMatchingCourseId(attempt.courseCode, courses)
+        if (courseId) {
+          mappings[sourceRaw] = courseId
+          mappings[sourceKey] = courseId
+          return
+        }
+        if (!unmatchedMap.has(sourceRaw)) unmatchedMap.set(sourceRaw, [])
+        unmatchedMap.get(sourceRaw)?.push(attempt)
+      })
+
+      const schoolYearStarts = attempts
+        .map((attempt) => parseSchoolYearStart(attempt.schoolYear))
+        .filter((value) => Number.isFinite(value)) as number[]
+      let derivedStartYear = startYear
+      let derivedYearLevel = currentYearLevel
+      if (schoolYearStarts.length > 0) {
+        const earliestStart = Math.min(...schoolYearStarts)
+        const latestStart = Math.max(...schoolYearStarts)
+        derivedYearLevel = Math.max(1, latestStart - earliestStart + 1)
+        derivedStartYear = earliestStart
+      }
+
+      const { matchedCount } = applyImportedAttemptsToCourses(attempts, mappings, {
+        baseStartYear: derivedStartYear,
+      })
+      const unmatchedGroups = Array.from(unmatchedMap.entries()).map(([sourceCode, groupAttempts]) => ({
+        sourceCode,
+        attempts: groupAttempts,
+      }))
+
+      if (schoolYearStarts.length > 0) {
+        setStartYear(derivedStartYear)
+        setSetupStartYearInput(String(derivedStartYear))
+        ensureYearOption(derivedYearLevel)
+        setCurrentYearLevel(derivedYearLevel)
+        setSetupYearLevel(derivedYearLevel)
+      }
+      setGradeImportBaseStartYear(derivedStartYear)
+
+      const latestAttemptByChronology = [...attempts].sort((a, b) => {
+        const aStart = parseSchoolYearStart(a.schoolYear)
+        const bStart = parseSchoolYearStart(b.schoolYear)
+        const yearDelta = (Number.isFinite(aStart) ? aStart : -1) - (Number.isFinite(bStart) ? bStart : -1)
+        if (yearDelta !== 0) return yearDelta
+        return (a.chronologicalIndex || 0) - (b.chronologicalIndex || 0)
+      })[attempts.length - 1]
+      let derivedTerm = currentTerm
+      if (latestAttemptByChronology?.term) {
+        derivedTerm = sanitizeTermName(latestAttemptByChronology.term)
+        setCurrentTerm(derivedTerm)
+        setSetupTerm(derivedTerm)
+      }
+
+      setUnmatchedGradeGroups(unmatchedGroups)
+      setUnmatchedGradeMapping({})
+      setGradeImportSummary({
+        extracted: attempts.length,
+        matched: matchedCount,
+        unmatched: unmatchedGroups.length,
+        runId: payload.runId,
+      })
+      setGradeImportSummaryOpen(true)
+
+      if (unmatchedGroups.length > 0) {
+        setSaveMessage(`Imported ${matchedCount} attempt(s). ${unmatchedGroups.length} course code(s) need manual mapping.`)
+      } else {
+        setSaveMessage(`Imported ${matchedCount} grade attempt(s) successfully.`)
+      }
+      setTimeout(() => setSaveMessage(null), 5000)
+
+      saveTrackerPreferences({
+        startYear: derivedStartYear,
+        currentYearLevel: derivedYearLevel,
+        currentTerm: derivedTerm,
+      })
+      stopGradeImportAlertTone()
+      if (document.hidden) {
+        startGradeImportAlertTone()
+      }
+    },
+    [
+      applyImportedAttemptsToCourses,
+      courses,
+      currentTerm,
+      currentYearLevel,
+      findMatchingCourseId,
+      normalizeCodeKey,
+      startGradeImportAlertTone,
+      startYear,
+      stopGradeImportAlertTone,
+    ],
+  )
+
+  const startAutoGradeImport = useCallback(async () => {
+    setGradeImportError(null)
+    setGradeImportFetchedSuccess(false)
+    setAutoImportRewardDeferred(true)
+
+    const runtime = (window as any)?.chrome?.runtime
+    if (!runtime?.sendMessage) {
+      setGradeImportError("Chrome extension runtime not detected. Open this page in Chrome with the extension installed.")
+      setAutoImportRewardDeferred(false)
+      return
+    }
+
+    const gradesPortalTab = window.open("https://solar.feutech.edu.ph/student/grades", "_blank")
+    if (gradesPortalTab && typeof gradesPortalTab.focus === "function") {
+      gradesPortalTab.focus()
+    }
+
+    const startedAt = Date.now()
+    setGradeImportStartedAt(startedAt)
+    setGradeImportRunning(true)
+
+    const sendStartRequest = () =>
+      new Promise<any>((resolve) => {
+        runtime.sendMessage(COMPARENG_EXTENSION_ID, { action: "startOSESGradeExtraction" }, (result: any) => {
+          if ((window as any)?.chrome?.runtime?.lastError) {
+            resolve({ success: false, message: (window as any).chrome.runtime.lastError.message })
+            return
+          }
+          resolve(result)
+        })
+      })
+
+    let response: any = { success: false, message: "Unable to start grade extraction." }
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      response = await sendStartRequest()
+      if (response?.success) break
+      await new Promise((resolve) => window.setTimeout(resolve, 1200))
+    }
+
+    if (!response?.success) {
+      setGradeImportRunning(false)
+      setGradeImportError(response?.message || "Failed to start grade extraction in extension.")
+      setAutoImportRewardDeferred(false)
+    }
+  }, [])
+
+  const openPreviousGradeImportSummary = useCallback(() => {
+    if (!gradeImportSummary) return
+    setGradeImportError(null)
+    setGradeImportSummaryOpen(true)
+  }, [gradeImportSummary])
+
+  const applyUnmatchedMappings = useCallback(() => {
+    if (!unmatchedGradeGroups.length) {
+      closeGradeImportSummary("other")
+      return
+    }
+
+    const mappedAttempts: ImportedGradeAttempt[] = []
+    const mappingBySource: Record<string, string> = {}
+
+    unmatchedGradeGroups.forEach((group) => {
+      const mappedId = unmatchedGradeMapping[group.sourceCode]
+      if (!mappedId) return
+      mappingBySource[group.sourceCode] = mappedId
+      mappedAttempts.push(...group.attempts)
+    })
+
+    const { matchedCount } = applyImportedAttemptsToCourses(mappedAttempts, mappingBySource, {
+      baseStartYear: gradeImportBaseStartYear ?? startYear,
+    })
+    const remaining = unmatchedGradeGroups.filter((group) => !unmatchedGradeMapping[group.sourceCode])
+    setUnmatchedGradeGroups(remaining)
+    setGradeImportSummary((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        matched: prev.matched + matchedCount,
+        unmatched: remaining.length,
+      }
+    })
+
+    setSaveMessage(
+      matchedCount > 0
+        ? `Mapped and imported ${matchedCount} additional attempt(s).`
+        : "No unmatched codes were mapped.",
+    )
+    setTimeout(() => setSaveMessage(null), 4000)
+
+  }, [
+    applyImportedAttemptsToCourses,
+    closeGradeImportSummary,
+    unmatchedGradeGroups,
+    unmatchedGradeMapping,
+    gradeImportBaseStartYear,
+    startYear,
+  ])
+
+  const startAutoGradeImportAgain = useCallback(() => {
+    closeGradeImportSummary("other")
+    startAutoGradeImport()
+  }, [closeGradeImportSummary, startAutoGradeImport])
+
+  const readLatestImportedGradePayload = useCallback((): ImportedGradePayload | null => {
+    if (typeof window === "undefined") return null
+
+    const parsePayload = (raw: string | null): ImportedGradePayload | null => {
+      if (!raw) return null
+      try {
+        const parsed = JSON.parse(raw)
+        const runId = String(parsed?.runId || "").trim()
+        const attempts = Array.isArray(parsed?.attempts) ? parsed.attempts : []
+        const extractedAt = Number(parsed?.extractedAt || 0)
+        if (!runId || !attempts.length || !Number.isFinite(extractedAt) || extractedAt <= 0) return null
+        return {
+          runId,
+          attempts,
+          extractedAt,
+          summary: parsed?.summary && typeof parsed.summary === "object" ? parsed.summary : undefined,
+        }
+      } catch {
+        return null
+      }
+    }
+
+    const modern = parsePayload(window.localStorage.getItem("comparengGradeAttemptsLatest"))
+    if (modern) return modern
+    return parsePayload(window.localStorage.getItem("gradeAttemptsPayload"))
+  }, [])
+
+  const consumeImportedGradePayload = useCallback(
+    (payload: ImportedGradePayload | null) => {
+      if (!gradeImportRunning || !payload) return false
+      if (payload.extractedAt < gradeImportStartedAt) return false
+      if (lastHandledGradeRunIdRef.current === payload.runId) return false
+
+      lastHandledGradeRunIdRef.current = payload.runId
+      setGradeImportFetchedSuccess(true)
+      window.setTimeout(() => {
+        setGradeImportRunning(false)
+        handleImportedGradePayload(payload)
+        setGradeImportFetchedSuccess(false)
+      }, 700)
+      return true
+    },
+    [gradeImportRunning, gradeImportStartedAt, handleImportedGradePayload],
+  )
+
+  useEffect(() => {
+    if (!gradeImportRunning) return
+
+    let busy = false
+
+    const tryConsumeLatest = async () => {
+      if (busy) return
+      busy = true
+      try {
+        const localPayload = readLatestImportedGradePayload()
+        consumeImportedGradePayload(localPayload)
+      } finally {
+        busy = false
+      }
+    }
+
+    const handleStorage = (event: StorageEvent) => {
+      if (
+        event.key &&
+        event.key !== "comparengGradeAttemptsLatest" &&
+        event.key !== "gradeAttemptsPayload"
+      ) {
+        return
+      }
+      void tryConsumeLatest()
+    }
+
+    const handleBridgeEvent = () => {
+      void tryConsumeLatest()
+    }
+
+    const handleBridgeMessage = (event: MessageEvent) => {
+      const data = event?.data
+      if (!data || data.source !== "compareng-course-data-extractor-extension") return
+      if (data.type !== "gradeAttemptsUpdated") return
+      void tryConsumeLatest()
+    }
+
+    // Immediate check in case payload landed before listeners were attached.
+    void tryConsumeLatest()
+    const intervalId = window.setInterval(() => {
+      void tryConsumeLatest()
+    }, 1500)
+    window.addEventListener("storage", handleStorage)
+    window.addEventListener("compareng:gradeAttemptsUpdated", handleBridgeEvent as EventListener)
+    window.addEventListener("message", handleBridgeMessage)
+
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener("storage", handleStorage)
+      window.removeEventListener("compareng:gradeAttemptsUpdated", handleBridgeEvent as EventListener)
+      window.removeEventListener("message", handleBridgeMessage)
+    }
+  }, [consumeImportedGradePayload, gradeImportRunning, readLatestImportedGradePayload])
+
+  useEffect(() => {
+    const stopTone = () => {
+      if (!document.hidden) stopGradeImportAlertTone()
+    }
+
+    document.addEventListener("visibilitychange", stopTone)
+    window.addEventListener("focus", stopTone)
+    return () => {
+      document.removeEventListener("visibilitychange", stopTone)
+      window.removeEventListener("focus", stopTone)
+    }
+  }, [stopGradeImportAlertTone])
+
+  useEffect(() => {
+    return () => stopGradeImportAlertTone()
+  }, [stopGradeImportAlertTone])
 
   // Calculate academic years and expected graduation
   const academicYears = useMemo(() => calculateAcademicYears(startYear), [startYear])
@@ -3490,6 +4302,24 @@ export default function CourseTracker() {
           (opt) => opt.year === course.lastTaken?.year && opt.term === course.lastTaken?.term,
         )
         if (stillValid) return course
+
+        // Preserve visible/latest imported history even if current timeline gating no longer allows that term.
+        const attempts = getGradeAttempts(course)
+        const fallbackAttempt = attempts.length > 0 ? attempts[attempts.length - 1] : null
+        if (fallbackAttempt) {
+          const alreadyFallback =
+            course.lastTaken?.year === fallbackAttempt.year && course.lastTaken?.term === fallbackAttempt.term
+          if (alreadyFallback) return course
+          hasChanges = true
+          return {
+            ...course,
+            lastTaken: {
+              year: fallbackAttempt.year,
+              term: fallbackAttempt.term,
+            },
+          }
+        }
+
         hasChanges = true
         return { ...course, lastTaken: null }
       })
@@ -3700,6 +4530,10 @@ export default function CourseTracker() {
     setRewardStage("new")
   }, [rewardQueue, rewardStepIndex])
 
+  const handleRewardOverlayBackdropClick = useCallback(() => {
+    dismissRewardOverlay()
+  }, [dismissRewardOverlay])
+
   useEffect(() => {
     if (typeof document === "undefined" || typeof window === "undefined") return
     if (!rewardOverlay?.open) return
@@ -3726,12 +4560,19 @@ export default function CourseTracker() {
       attempts.forEach((attempt) => {
         entries.push({
           id: `${course.id}-${attempt.id}`,
+          courseId: course.id,
           courseCode: course.code,
           courseName: course.name,
           units: course.credits,
+          curriculumYear: course.year,
+          curriculumTerm: sanitizeTermName(course.term),
           year: attempt.year,
           term: attempt.term,
           grade: attempt.grade,
+          recordedAt: attempt.recordedAt,
+          sourceSchoolYear: attempt.sourceSchoolYear,
+          sourcePortalTermLabel: attempt.sourcePortalTermLabel,
+          sourceChronologicalIndex: attempt.sourceChronologicalIndex,
         })
       })
     })
@@ -4201,6 +5042,7 @@ export default function CourseTracker() {
     }
     setTranscriptModalOpen(true)
     setTranscriptStep("details")
+    setTranscriptExportMode("chronological")
     setTranscriptError(null)
   }
 
@@ -4210,20 +5052,25 @@ export default function CourseTracker() {
     setTranscriptError(null)
   }
 
-  const handleTranscriptFieldChange = (field: "studentName" | "studentNumber", value: string) => {
-    setTranscriptForm((prev) => ({ ...prev, [field]: value }))
+  const getTranscriptDraftValues = () => {
+    const studentName = String(transcriptNameInputRef.current?.value ?? transcriptForm.studentName ?? "").trim()
+    const studentNumber = String(transcriptNumberInputRef.current?.value ?? transcriptForm.studentNumber ?? "").trim()
+    return { studentName, studentNumber }
   }
 
   const goToTranscriptReview = () => {
-    if (!transcriptFormValid) {
+    const draft = getTranscriptDraftValues()
+    const isValid = draft.studentName.length > 0 && draft.studentNumber.length > 0
+    if (!isValid) {
       setTranscriptError("Please complete both fields before continuing.")
       return
     }
+    setTranscriptForm(draft)
     setTranscriptStep("review")
     setTranscriptError(null)
   }
 
-  const handleGenerateTranscriptPdf = () => {
+  const handleGenerateTranscriptPdf = async () => {
     if (!transcriptFormValid) {
       setTranscriptStep("details")
       setTranscriptError("Please complete the student details first.")
@@ -4254,21 +5101,147 @@ export default function CourseTracker() {
       return ''
     }
 
-    const rowsHtml = transcriptEntries.length
-      ? transcriptEntries
-          .map(
-            (entry) => `
-              <tr>
-                <td><b>${escapeHtml(entry.courseCode)}</b></td>
-                <td>${escapeHtml(entry.courseName)}</td>
-                <td style="text-align:center;">${entry.units}</td>
-                <td>Year ${entry.year} • ${entry.term}</td>
-                <td style="text-align:center;">${escapeHtml(entry.grade || "")} ${gradeIcon(entry.grade)}</td>
-              </tr>
-            `,
-          )
-          .join("")
-      : '<tr><td colspan="5" style="text-align:center;">No grade attempts recorded yet.</td></tr>'
+    const chronologicalEntries = [...transcriptEntries].sort(
+      (a, b) => compareYearTerm(a.year, a.term, b.year, b.term) || a.courseCode.localeCompare(b.courseCode),
+    )
+    const extractionOrderedEntries = [...transcriptEntries].sort((a, b) => {
+      const aTs = Date.parse(a.recordedAt)
+      const bTs = Date.parse(b.recordedAt)
+      const aValid = Number.isFinite(aTs)
+      const bValid = Number.isFinite(bTs)
+      if (aValid && bValid && aTs !== bTs) return aTs - bTs
+      if (aValid && !bValid) return -1
+      if (!aValid && bValid) return 1
+      return compareYearTerm(a.year, a.term, b.year, b.term) || a.courseCode.localeCompare(b.courseCode)
+    })
+
+    const schoolYearLabelFor = (curriculumYear: number) => `S.Y. ${startYear + curriculumYear - 1}-${startYear + curriculumYear}`
+
+    const buildRowsHtml = (
+      entries: TranscriptEntry[],
+      includeYearTermColumn = true,
+      yearTermLabelBuilder?: (entry: TranscriptEntry) => string,
+    ) => {
+      if (!entries.length) {
+        const emptyColSpan = includeYearTermColumn ? 5 : 4
+        return `<tr><td colspan="${emptyColSpan}" style="text-align:center;">No grade attempts recorded yet.</td></tr>`
+      }
+
+      return entries
+        .map(
+          (entry) => `
+            <tr>
+              <td><b>${escapeHtml(entry.courseCode)}</b></td>
+              <td>${escapeHtml(entry.courseName)}</td>
+              <td style="text-align:center;">${entry.units}</td>
+              ${
+                includeYearTermColumn
+                  ? `<td>${escapeHtml(yearTermLabelBuilder ? yearTermLabelBuilder(entry) : `Year ${entry.year} • ${entry.term}`)}</td>`
+                  : ""
+              }
+              <td style="text-align:center;">${escapeHtml(entry.grade || "")} ${gradeIcon(entry.grade)}</td>
+            </tr>
+          `,
+        )
+        .join("")
+    }
+
+    const buildTableHtml = (
+      entries: TranscriptEntry[],
+      options: { includeYearTermColumn?: boolean; yearTermLabelBuilder?: (entry: TranscriptEntry) => string } = {},
+    ) => {
+      const includeYearTermColumn = options.includeYearTermColumn ?? true
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th>Course Code</th>
+              <th>Course Title</th>
+              <th>Units</th>
+              ${includeYearTermColumn ? "<th>Year & Term</th>" : ""}
+              <th>Grade</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${buildRowsHtml(entries, includeYearTermColumn, options.yearTermLabelBuilder)}
+          </tbody>
+        </table>
+      `
+    }
+
+    let sectionTitle = "Recorded Grades"
+    let sectionSubtitle = "All attempts in chronological order"
+    let sectionHtml = buildTableHtml(chronologicalEntries)
+    let totalEntriesLabel = String(transcriptEntries.length)
+
+    if (transcriptExportMode === "latestByCurriculum") {
+      sectionTitle = "Latest Grades by Curriculum"
+      sectionSubtitle = "Only the latest attempt per course, grouped by curriculum year and term sequence"
+
+      const latestEntries = courses
+        .map((course) => {
+          const attempts = getGradeAttempts(course)
+          if (!attempts.length) return null
+
+          const lastTakenAttempt = course.lastTaken
+            ? findAttemptForYearTerm(course, course.lastTaken.year, course.lastTaken.term)
+            : null
+          const selectedAttempt = lastTakenAttempt
+          if (!selectedAttempt) return null
+
+          return {
+            id: `${course.id}-${selectedAttempt.id}`,
+            courseId: course.id,
+            courseCode: course.code,
+            courseName: course.name,
+            units: course.credits,
+            curriculumYear: course.year,
+            curriculumTerm: sanitizeTermName(course.term),
+            year: selectedAttempt.year,
+            term: selectedAttempt.term,
+            grade: selectedAttempt.grade,
+            recordedAt: selectedAttempt.recordedAt,
+            sourceSchoolYear: selectedAttempt.sourceSchoolYear,
+            sourcePortalTermLabel: selectedAttempt.sourcePortalTermLabel,
+            sourceChronologicalIndex: selectedAttempt.sourceChronologicalIndex,
+          } as TranscriptEntry
+        })
+        .filter((entry): entry is TranscriptEntry => Boolean(entry))
+        .sort(
+        (a, b) =>
+          compareYearTerm(a.curriculumYear, a.curriculumTerm, b.curriculumYear, b.curriculumTerm) ||
+          a.courseCode.localeCompare(b.courseCode),
+        )
+
+      totalEntriesLabel = `${latestEntries.length} (latest per course)`
+
+      const grouped = new Map<string, { year: number; term: TermName; entries: TranscriptEntry[] }>()
+      latestEntries.forEach((entry) => {
+        const safeYear = Number.isFinite(entry.curriculumYear) ? entry.curriculumYear : 0
+        const safeTerm = sanitizeTermName(entry.curriculumTerm)
+        const key = `${safeYear}|${safeTerm}`
+        if (!grouped.has(key)) {
+          grouped.set(key, { year: safeYear, term: safeTerm, entries: [] })
+        }
+        grouped.get(key)?.entries.push(entry)
+      })
+
+      sectionHtml = Array.from(grouped.values())
+        .sort((a, b) => compareYearTerm(a.year, a.term, b.year, b.term))
+        .map((group) => {
+          const rows = [...group.entries].sort((a, b) => a.courseCode.localeCompare(b.courseCode))
+          const safeCurriculumYear = group.year > 0 ? group.year : 0
+          const schoolYearLabel = safeCurriculumYear > 0 ? schoolYearLabelFor(safeCurriculumYear) : null
+          return `
+            <h3>
+              ${safeCurriculumYear > 0 ? `Curriculum Year ${safeCurriculumYear} • ${group.term}` : `Curriculum Unspecified • ${group.term}`}
+              ${schoolYearLabel ? ` • ${escapeHtml(schoolYearLabel)}` : ""}
+            </h3>
+            ${buildTableHtml(rows)}
+          `
+        })
+        .join("")
+    }
 
     const academicStartLabel = `S.Y. ${startYear}-${startYear + 1}`
     const displayName = escapeHtml(transcriptForm.studentName.trim())
@@ -4327,26 +5300,26 @@ export default function CourseTracker() {
               margin: 24px 0 8px 0;
               color: #334155;
             }
+            h3 {
+              font-size: 14px;
+              margin: 18px 0 6px 0;
+              color: #334155;
+            }
             .meta {
               font-size: 13px;
               margin: 2px 0;
               color: #475569;
             }
             table {
-            style={{
-              width: "104px",
-              height: "104px",
-              padding: "12px",
-              borderRadius: "9999px",
-              backgroundImage:
-                "linear-gradient(135deg, rgba(255, 193, 94, 0.6), rgba(255, 166, 43, 0.4), rgba(255, 215, 128, 0.55))",
-              boxShadow:
-                "0 12px 28px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -6px 18px rgba(0,0,0,0.18)",
-              filter: "drop-shadow(0 12px 24px rgba(0,0,0,0.32))",
-            }}
+              width: 100%;
+              border-collapse: collapse;
               border-bottom: 1px solid #e2e8f0;
-            {renderRankIcon(rewardRankTier, "h-16 w-16", false)}
+            }
+            td {
+              border-bottom: 1px solid #e2e8f0;
+              padding: 10px 8px;
               text-align: left;
+              font-size: 13px;
             }
             th {
               background: #f1f5f9;
@@ -4384,23 +5357,12 @@ export default function CourseTracker() {
           <div class="meta"><strong>Current Standing:</strong> ${standing}</div>
           <div class="meta"><strong>Date Generated:</strong> ${escapeHtml(generatedAtLabel)}</div>
           <div class="meta"><strong>App Version:</strong> v${APP_VERSION}</div>
-          <div class="meta"><strong>Total Recorded Attempts:</strong> ${transcriptEntries.length}</div>
+          <div class="meta"><strong>Export Mode:</strong> ${escapeHtml(TRANSCRIPT_EXPORT_MODE_LABELS[transcriptExportMode])}</div>
+          <div class="meta"><strong>Total Included Entries:</strong> ${totalEntriesLabel}</div>
 
-          <h2>Recorded Grades</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Course Code</th>
-                <th>Course Title</th>
-                <th>Units</th>
-                <th>Year & Term</th>
-                <th>Grade</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rowsHtml}
-            </tbody>
-          </table>
+          <h2>${sectionTitle}</h2>
+          <p class="meta">${sectionSubtitle}</p>
+          ${sectionHtml}
 
           <p class="footer">* Save or print this page as PDF for your own record. Data is based on manual entries inside the Course Tracker.<br>ComParEng Tools &copy; 2025</p>
         </body>
@@ -4408,6 +5370,49 @@ export default function CourseTracker() {
     `)
 
     transcriptWindow.document.close()
+    const waitForTranscriptRender = async () => {
+      await new Promise<void>((resolve) => {
+        if (transcriptWindow.document.readyState === "complete") {
+          resolve()
+          return
+        }
+        transcriptWindow.addEventListener("load", () => resolve(), { once: true })
+      })
+
+      const imageElements = Array.from(transcriptWindow.document.images)
+      await Promise.all(
+        imageElements.map(
+          (img) =>
+            new Promise<void>((resolve) => {
+              if (img.complete) {
+                resolve()
+                return
+              }
+              img.addEventListener("load", () => resolve(), { once: true })
+              img.addEventListener("error", () => resolve(), { once: true })
+            }),
+        ),
+      )
+
+      const docWithFonts = transcriptWindow.document as Document & {
+        fonts?: { ready?: Promise<unknown> }
+      }
+      if (docWithFonts.fonts?.ready) {
+        try {
+          await docWithFonts.fonts.ready
+        } catch {
+          // ignore font readiness failures and continue printing
+        }
+      }
+
+      await new Promise<void>((resolve) => {
+        transcriptWindow.requestAnimationFrame(() => {
+          transcriptWindow.requestAnimationFrame(() => resolve())
+        })
+      })
+    }
+
+    await waitForTranscriptRender()
     transcriptWindow.focus()
     transcriptWindow.print()
     closeTranscriptModal()
@@ -5162,7 +6167,7 @@ export default function CourseTracker() {
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.25, ease: "easeOut" }}
-                  onClick={dismissRewardOverlay}
+                  onClick={handleRewardOverlayBackdropClick}
                 >
                   <motion.div
                     className="relative mx-4 w-full max-w-4xl overflow-hidden rounded-3xl border border-amber-200/20 bg-gradient-to-br from-amber-900/80 via-neutral-900 to-black px-6 py-10 text-center text-amber-50 shadow-[0_20px_120px_rgba(0,0,0,0.45)]"
@@ -5411,6 +6416,34 @@ export default function CourseTracker() {
         <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <h1 className="text-2xl md:text-3xl font-bold text-center">Course Tracker</h1>
           <div className="flex items-center gap-2">
+            {(() => {
+              const unmappedCount = Number(gradeImportSummary?.unmatched || 0)
+              const hasUnmapped = !gradeImportRunning && unmappedCount > 0
+              const importButtonLabel = gradeImportRunning
+                ? "Importing Grades..."
+                : hasUnmapped
+                  ? `${unmappedCount} course unmapped`
+                  : gradeImportSummary
+                    ? "View Previous Import Grades Summary"
+                    : "Auto Import Grades"
+
+              return (
+            <Button
+              type="button"
+              variant="outline"
+              className={cn(
+                "h-9 gap-2",
+                hasUnmapped &&
+                  "border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-500/80 dark:text-red-300 dark:hover:bg-red-900/25 animate-[pulse_2.6s_ease-in-out_infinite]",
+              )}
+              onClick={gradeImportSummary && !gradeImportRunning ? openPreviousGradeImportSummary : startAutoGradeImport}
+              disabled={gradeImportRunning}
+            >
+              <RefreshCw className={cn("h-4 w-4", gradeImportRunning && "animate-spin")} />
+              {importButtonLabel}
+            </Button>
+              )
+            })()}
             <Dialog open={utilityDialogOpen} onOpenChange={setUtilityDialogOpen}>
               <Button
                 type="button"
@@ -5457,6 +6490,50 @@ export default function CourseTracker() {
   <NonCpeNotice onReportIssue={() => setFeedbackDialogOpen(true)} />
   <FeedbackDialog open={feedbackDialogOpen} onOpenChange={setFeedbackDialogOpen} defaultSubject="Non-CpE curriculum import issue" />
 
+        {gradeImportError && (
+          <Alert className="mb-4 border-red-300 bg-red-50 text-red-800 dark:border-red-400/40 dark:bg-red-500/10 dark:text-red-100">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{gradeImportError}</AlertDescription>
+          </Alert>
+        )}
+
+        <Dialog
+          open={gradeImportRunning || gradeImportFetchedSuccess}
+          onOpenChange={() => {
+            // Keep status dialog controlled by import lifecycle.
+          }}
+        >
+          <DialogContent
+            className="max-w-md"
+            onInteractOutside={(event) => event.preventDefault()}
+            onEscapeKeyDown={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>{gradeImportFetchedSuccess ? "Progress fetched successfully" : "Auto Grade Import Running"}</DialogTitle>
+              <DialogDescription>
+                {gradeImportFetchedSuccess
+                  ? "We fetched your portal progress and are applying it to your Course Tracker now."
+                  : "Keep this tab open while we fetch your grade report. If the portal redirected unexpectedly, you can launch auto import again."}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="rounded-md border p-3 text-sm text-muted-foreground">
+              {gradeImportFetchedSuccess
+                ? "Successfully fetched your progress. Preparing import summary..."
+                : "Waiting for the extension to finish extracting and send your grades."}
+            </div>
+            <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={startAutoGradeImport}
+              >
+                <RefreshCw className={cn("mr-2 h-4 w-4", gradeImportRunning && !gradeImportFetchedSuccess && "animate-spin")} />
+                Launch Auto Import Again
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {shouldShowDependencyNotice && (
           <Alert className="mb-6 border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/10 dark:text-amber-100">
             <div className="flex w-full items-start gap-3">
@@ -5491,6 +6568,287 @@ export default function CourseTracker() {
             <DialogFooter>
               <Button size="sm" className="h-9 text-sm" onClick={dismissImportSuccessPrompt}>
                 Continue
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={gradeImportSummaryOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              closeGradeImportSummary("other")
+              return
+            }
+            setGradeImportSummaryOpen(true)
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Auto Grade Import Summary</DialogTitle>
+              <DialogDescription>
+                Review imported attempts and map unmatched course codes before applying all records.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Run ID</p>
+                  <p className="font-medium">{gradeImportSummary?.runId || "-"}</p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Extracted</p>
+                  <p className="font-medium">{gradeImportSummary?.extracted ?? 0}</p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Matched</p>
+                  <p className="font-medium">{gradeImportSummary?.matched ?? 0}</p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Unmatched</p>
+                  <p className="font-medium">{gradeImportSummary?.unmatched ?? 0}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <div>
+                  <p className="text-sm font-medium">Completion Sound Alert</p>
+                  <p className="text-xs text-muted-foreground">Play alert while tab is inactive and stop when focused.</p>
+                </div>
+                <Switch checked={gradeImportSoundEnabled} onCheckedChange={setGradeImportSoundEnabled} />
+              </div>
+
+              {importedAttemptsByTermYear.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-sm font-medium">Extracted Courses by Term/Year</p>
+                  <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
+                    {importedAttemptsByTermYear.map((group) => (
+                      <div key={`${group.schoolYear}-${group.termLabel}`} className="rounded-md border p-3">
+                        <p className="text-sm font-semibold">{group.termLabel} - {group.schoolYear}</p>
+                        <p className="text-xs text-muted-foreground">{group.items.length} extracted course(s)</p>
+                        {group.gwa !== null ? (
+                          <div className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
+                            <div className="rounded border px-2 py-1">
+                              <span className="text-muted-foreground">Term GWA</span>
+                              <p className="font-semibold">{group.gwa.toFixed(3)}</p>
+                            </div>
+                            <div className="rounded border px-2 py-1">
+                              <span className="text-muted-foreground">Total Weighted Grade</span>
+                              <p className="font-semibold">{group.totalWeightedGrade.toFixed(3)}</p>
+                            </div>
+                            <div className="rounded border px-2 py-1">
+                              <span className="text-muted-foreground">Total Units</span>
+                              <p className="font-semibold">{group.totalUnits.toFixed(1)}</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            No computable GWA for this term yet (missing numeric grade or matched units).
+                          </p>
+                        )}
+                        {group.gwaExcludedCount > 0 && (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Excluded from GWA: {group.gwaExcludedCount} record(s).
+                          </p>
+                        )}
+                        <div className="mt-2 space-y-1">
+                          {group.items.map((item, index) => (
+                            <div
+                              key={`${group.schoolYear}-${group.termLabel}-${item.courseCode}-${item.chronologicalIndex ?? index}-${item.finalGrade}`}
+                              className="flex items-center justify-between rounded border px-2 py-1 text-xs"
+                            >
+                              <span className="font-medium">{item.courseCode}</span>
+                              <span className="text-muted-foreground">Grade: {item.finalGrade}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {unmatchedGradeGroups.length > 0 ? (
+                <div className="space-y-3">
+                  <p className="text-sm font-medium">Unmatched Course Codes</p>
+                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                    {unmatchedGradeGroups.map((group) => (
+                      <div key={group.sourceCode} className="rounded-md border p-3">
+                        <p className="text-sm font-semibold">{group.sourceCode}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {group.attempts.length} attempt(s) will be imported once mapped.
+                        </p>
+                        {(() => {
+                          const selectedId = unmatchedGradeMapping[group.sourceCode]
+                          const selectedCourse = courses.find((course) => course.id === selectedId)
+                          const searchValue = unmatchedGradeSearch[group.sourceCode] ?? ""
+                          const normalizedSearch = searchValue.trim().toLowerCase()
+                          const filteredCourses = courses
+                            .filter((course) => {
+                              if (!normalizedSearch) return true
+                              const code = String(course.code || "").toLowerCase()
+                              const name = String(course.name || "").toLowerCase()
+                              return code.includes(normalizedSearch) || name.includes(normalizedSearch)
+                            })
+                            .sort((a, b) => String(a.code || "").localeCompare(String(b.code || "")))
+
+                          return (
+                            <div className="mt-2">
+                              <div className="relative">
+                                {activeUnmatchedMappingPicker === group.sourceCode && (
+                                  <div className="absolute bottom-full left-0 right-0 z-50 mb-1 max-h-56 overflow-y-auto rounded-md border bg-background p-1 shadow-md">
+                                    {filteredCourses.length === 0 ? (
+                                      <p className="px-2 py-2 text-xs text-muted-foreground">
+                                        No matching curriculum course found.
+                                      </p>
+                                    ) : (
+                                      <div className="space-y-1">
+                                        {filteredCourses.map((course) => {
+                                          const selected = selectedId === course.id
+                                          return (
+                                            <button
+                                              key={`${group.sourceCode}-${course.id}`}
+                                              type="button"
+                                              className={cn(
+                                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                                                selected && "bg-accent",
+                                              )}
+                                              onMouseDown={(event) => event.preventDefault()}
+                                              onClick={() => {
+                                                setUnmatchedGradeMapping((prev) => ({ ...prev, [group.sourceCode]: course.id }))
+                                                setUnmatchedGradeSearch((prev) => ({
+                                                  ...prev,
+                                                  [group.sourceCode]: `${course.code} - ${course.name}`,
+                                                }))
+                                                setActiveUnmatchedMappingPicker(null)
+                                              }}
+                                            >
+                                              <span className="truncate">{course.code} - {course.name}</span>
+                                              <CheckCircle
+                                                className={cn("ml-auto h-4 w-4", selected ? "opacity-100" : "opacity-0")}
+                                              />
+                                            </button>
+                                          )
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                <Input
+                                  value={searchValue}
+                                  onFocus={() => setActiveUnmatchedMappingPicker(group.sourceCode)}
+                                  onBlur={() => {
+                                    window.setTimeout(() => {
+                                      setActiveUnmatchedMappingPicker((prev) =>
+                                        prev === group.sourceCode ? null : prev,
+                                      )
+                                    }, 120)
+                                  }}
+                                  onChange={(event) => {
+                                    const value = event.target.value
+                                    setUnmatchedGradeSearch((prev) => ({ ...prev, [group.sourceCode]: value }))
+                                    setActiveUnmatchedMappingPicker(group.sourceCode)
+                                  }}
+                                  placeholder={
+                                    selectedCourse
+                                      ? `${selectedCourse.code} - ${selectedCourse.name}`
+                                      : "Search course code or name"
+                                  }
+                                  className="pr-10"
+                                />
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => {
+                                    setActiveUnmatchedMappingPicker((prev) =>
+                                      prev === group.sourceCode ? null : group.sourceCode,
+                                    )
+                                  }}
+                                  aria-label="Toggle course options"
+                                >
+                                  <ChevronDown className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          )
+                        })()}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">All extracted course codes matched your curriculum.</p>
+              )}
+            </div>
+
+            <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button
+                variant="outline"
+                onClick={startAutoGradeImportAgain}
+                className="w-full sm:w-auto"
+              >
+                Auto Import Grades Again
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => closeGradeImportSummary("button")}
+                className="w-full sm:w-auto"
+              >
+                Close
+              </Button>
+              {unmatchedGradeGroups.length > 0 && (
+                <Button onClick={applyUnmatchedMappings} className="w-full sm:w-auto">
+                  Apply Selected Mappings
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={unmappedRewardsWarningOpen}
+          onOpenChange={() => {
+            // Dedicated button only.
+          }}
+        >
+          <DialogContent
+            className="max-w-md"
+            onInteractOutside={(event) => event.preventDefault()}
+            onEscapeKeyDown={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>Unmapped Courses Need Attention</DialogTitle>
+              <DialogDescription>
+                Some imported courses are still unmapped. Reward progression is paused until all unmapped courses are
+                resolved and applied.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="rounded-md border border-amber-300 bg-amber-50/70 p-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+              Remaining unmapped course code(s): {Math.max(unmatchedGradeGroups.length, Number(gradeImportSummary?.unmatched || 0))}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={() => {
+                  setUnmappedRewardsWarningOpen(false)
+                  setGradeImportSummaryOpen(true)
+                }}
+              >
+                Map Remaining Courses
+              </Button>
+              <Button
+                type="button"
+                className="w-full sm:w-auto"
+                onClick={() => setUnmappedRewardsWarningOpen(false)}
+              >
+                I Understand
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -5557,7 +6915,10 @@ export default function CourseTracker() {
             if (!open) setBulkPrereqConfirmState(null)
           }}
         >
-          <DialogContent className="max-w-lg">
+          <DialogContent
+            className="max-w-xl w-[calc(100vw-2rem)]"
+            onInteractOutside={(event) => event.preventDefault()}
+          >
             <DialogHeader>
               <DialogTitle>{bulkPrereqConfirmState?.title ?? "Confirm updates"}</DialogTitle>
               <DialogDescription>
@@ -6161,16 +7522,34 @@ export default function CourseTracker() {
                                   : academicYear.term3
                               : ""
                             const showYearLabel = term === "Term 1"
+                            const termGwaTotals = termCourses.reduce(
+                              (acc, course) => {
+                                const lastTaken = course.lastTaken ?? null
+                                if (!lastTaken) return acc
+                                const latestAttempt = findAttemptForYearTerm(course, lastTaken.year, lastTaken.term)
+                                const numericGrade = Number.parseFloat(String(latestAttempt?.grade || "").trim())
+                                const units = Number(course.credits || 0)
+                                if (!Number.isFinite(numericGrade) || units <= 0) return acc
+                                acc.weighted += numericGrade * units
+                                acc.units += units
+                                return acc
+                              },
+                              { weighted: 0, units: 0 },
+                            )
+                            const termGwa = termGwaTotals.units > 0 ? termGwaTotals.weighted / termGwaTotals.units : null
 
                             return (
                               <React.Fragment key={`${year}-${term}`}>
                                 <tr className="bg-gray-100 dark:bg-gray-700">
-                                  <td colSpan={7} className="px-6 py-2 text-sm font-medium">
+                                  <td colSpan={6} className="px-6 py-2 text-sm font-medium">
                                     {showYearLabel && <div className="font-bold mb-1">{yearLabel}</div>}
                                     <div>
                                       {term}
                                       {academicYearStr ? ` • S.Y. ${academicYearStr}` : ""}
                                     </div>
+                                  </td>
+                                  <td className="px-6 py-2 text-sm font-semibold text-left whitespace-nowrap">
+                                    GWA: {termGwa !== null ? termGwa.toFixed(3) : "N/A"}
                                   </td>
                                 </tr>
                                 {termCourses.map((course: Course) => {
@@ -6183,10 +7562,27 @@ export default function CourseTracker() {
                                     currentTerm,
                                     courses,
                                   )
-                                  const yearOptions = Array.from(new Set(allowedYearTermOptions.map((option) => option.year)))
                                   const lastTaken = course.lastTaken ?? null
+                                  const recordedYearTermOptions = getGradeAttempts(course).map((attempt) => ({
+                                    year: attempt.year,
+                                    term: attempt.term,
+                                  }))
+                                  const mergedYearTermMap = new Map<string, YearTermOption>()
+                                  ;[...allowedYearTermOptions, ...recordedYearTermOptions].forEach((option) => {
+                                    mergedYearTermMap.set(`${option.year}::${option.term}`, option)
+                                  })
+                                  if (lastTaken) {
+                                    mergedYearTermMap.set(`${lastTaken.year}::${lastTaken.term}`, {
+                                      year: lastTaken.year,
+                                      term: lastTaken.term,
+                                    })
+                                  }
+                                  const visibleYearTermOptions = Array.from(mergedYearTermMap.values()).sort((a, b) =>
+                                    compareYearTerm(a.year, a.term, b.year, b.term),
+                                  )
+                                  const yearOptions = Array.from(new Set(visibleYearTermOptions.map((option) => option.year)))
                                   const termOptionsForYear = lastTaken
-                                    ? allowedYearTermOptions
+                                    ? visibleYearTermOptions
                                         .filter((option) => option.year === lastTaken.year)
                                         .map((option) => option.term)
                                     : []
@@ -6483,16 +7879,26 @@ export default function CourseTracker() {
                 </div>
               )}
             </div>
-            <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-between">
-              <Button
-                variant="outline"
-                className="w-full sm:w-auto gap-2"
-                onClick={handleSetupUploadClick}
-              >
-                <Upload className="h-4 w-4" />
-                Upload saved progress
-              </Button>
-              <Button className="w-full sm:w-auto" onClick={handleSetupSubmit}>
+            <DialogFooter className="flex flex-col gap-2">
+              <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap">
+                <Button
+                  variant="outline"
+                  className="w-full sm:w-auto gap-2"
+                  onClick={handleSetupUploadClick}
+                >
+                  <Upload className="h-4 w-4" />
+                  Upload saved progress
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full sm:w-auto gap-2"
+                  onClick={startAutoGradeImport}
+                >
+                  <RefreshCw className={cn("h-4 w-4", gradeImportRunning && "animate-spin")} />
+                  Auto Import Grades
+                </Button>
+              </div>
+              <Button className="w-full sm:w-auto sm:self-end" onClick={handleSetupSubmit}>
                 Save timeline
               </Button>
             </DialogFooter>
@@ -6913,8 +8319,8 @@ export default function CourseTracker() {
                   <Label htmlFor="transcript-name" className="text-sm font-medium">Student Name</Label>
                   <Input
                     id="transcript-name"
-                    value={transcriptForm.studentName}
-                    onChange={(e) => handleTranscriptFieldChange("studentName", e.target.value)}
+                    defaultValue={transcriptForm.studentName}
+                    ref={transcriptNameInputRef}
                     placeholder="Jane Doe"
                     className="mt-1"
                   />
@@ -6923,8 +8329,8 @@ export default function CourseTracker() {
                   <Label htmlFor="transcript-number" className="text-sm font-medium">Student Number</Label>
                   <Input
                     id="transcript-number"
-                    value={transcriptForm.studentNumber}
-                    onChange={(e) => handleTranscriptFieldChange("studentNumber", e.target.value)}
+                    defaultValue={transcriptForm.studentNumber}
+                    ref={transcriptNumberInputRef}
                     placeholder="2025-123456"
                     className="mt-1"
                   />
@@ -6933,6 +8339,28 @@ export default function CourseTracker() {
               </div>
             ) : (
               <div className="space-y-4">
+                <div>
+                  <Label htmlFor="transcript-export-mode" className="text-sm font-medium">Export format</Label>
+                  <Select
+                    value={transcriptExportMode}
+                    onValueChange={(value: TranscriptExportMode) => setTranscriptExportMode(value)}
+                  >
+                    <SelectTrigger id="transcript-export-mode" className="mt-1">
+                      <SelectValue placeholder="Choose export format" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="chronological">Current format (all attempts)</SelectItem>
+                      <SelectItem value="latestByCurriculum">Latest grades only, grouped by curriculum</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {transcriptExportMode === "chronological"
+                      ? "Includes every recorded attempt in chronological order."
+                      : "Includes only each course's latest recorded grade, grouped by curriculum year."
+                    }
+                  </p>
+                </div>
+
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="rounded-md border p-3">
                     <p className="text-xs text-muted-foreground">Student</p>
@@ -6964,7 +8392,12 @@ export default function CourseTracker() {
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-sm font-medium">Recorded Grades ({transcriptEntries.length})</p>
                     {transcriptEntries.length > 0 && (
-                      <span className="text-xs text-muted-foreground">Showing chronological order</span>
+                      <span className="text-xs text-muted-foreground">
+                        {transcriptExportMode === "chronological"
+                          ? "Showing chronological order"
+                          : "Preview still shows attempts list (PDF will include latest per course)"
+                        }
+                      </span>
                     )}
                   </div>
                   {transcriptEntries.length > 0 ? (
@@ -7014,7 +8447,7 @@ export default function CourseTracker() {
                 </Button>
               )}
               {transcriptStep === "details" ? (
-                <Button onClick={goToTranscriptReview} className="w-full sm:w-auto" disabled={!transcriptFormValid}>
+                <Button onClick={goToTranscriptReview} className="w-full sm:w-auto">
                   Review Details
                 </Button>
               ) : (
