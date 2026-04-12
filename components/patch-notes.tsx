@@ -310,22 +310,6 @@ const ConfettiOverlay = () => {
           />
         ))}
       </div>
-      <style jsx global>{`
-        @keyframes patchNotesConfetti {
-          0% {
-            transform: translate3d(0, -10%, 0) rotate(0deg);
-            opacity: 1;
-          }
-          100% {
-            transform: translate3d(var(--confetti-drift, 0px), 115vh, 0) rotate(540deg);
-            opacity: 0;
-          }
-        }
-        .patch-notes-confetti {
-          animation: patchNotesConfetti 2.2s ease-out forwards;
-          --confetti-drift: 0px;
-        }
-      `}</style>
     </>
   )
 }

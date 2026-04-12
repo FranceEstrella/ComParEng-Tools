@@ -1,6 +1,7 @@
 import type React from "react"
 import type { Metadata } from "next"
 import { Inter } from "next/font/google"
+import { headers } from "next/headers"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import NavbarWrapper from "@/components/navbar-wrapper"
@@ -66,15 +67,18 @@ export const metadata: Metadata = {
   },
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const requestHeaders = await headers()
+  const nonce = requestHeaders.get("x-csp-nonce") || undefined
+
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${inter.className} page-fade-in theme-transition pb-24 md:pb-0`}>
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
+        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} nonce={nonce}>
           <InstallBanner />
           <ServiceWorkerRegister />
           <NavbarWrapper />
