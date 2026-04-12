@@ -1,5 +1,6 @@
 import type React from "react"
 import type { Metadata } from "next"
+import type { Viewport } from "next"
 import { Inter } from "next/font/google"
 import { headers } from "next/headers"
 import "./globals.css"
@@ -37,10 +38,6 @@ export const metadata: Metadata = {
       { rel: "mask-icon", url: "/icon.svg", color: "#0f172a" },
     ],
   },
-  themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#0f172a" },
-    { media: "(prefers-color-scheme: dark)", color: "#0f172a" },
-  ],
   manifest: "/manifest.webmanifest",
   generator: "v0.dev",
   openGraph: {
@@ -65,6 +62,13 @@ export const metadata: Metadata = {
     description: "Course Tracker, Schedule Maker, and Academic Planner in one place.",
     images: ["/og-image.jpg"],
   },
+}
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#0f172a" },
+    { media: "(prefers-color-scheme: dark)", color: "#0f172a" },
+  ],
 }
 
 export default async function RootLayout({

@@ -11,6 +11,14 @@ const APP_SHELL = [
   "/android-icon-192x192.png"
 ]
 
+const offlineResponse = new Response("Offline", {
+  status: 503,
+  statusText: "Service Unavailable",
+  headers: {
+    "Content-Type": "text/plain; charset=utf-8",
+  },
+})
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting())
@@ -39,6 +47,10 @@ self.addEventListener("fetch", (event) => {
   }
 
   const url = new URL(request.url)
+  if (url.origin !== self.location.origin) {
+    return
+  }
+
   const acceptHeader = request.headers.get("Accept") || ""
   const isApiRequest = url.pathname.startsWith("/api/") || acceptHeader.includes("application/json")
   const isNavigationRequest =
@@ -46,7 +58,12 @@ self.addEventListener("fetch", (event) => {
     (acceptHeader.includes("text/html") && !url.pathname.startsWith("/_next"))
 
   if (isApiRequest) {
-    event.respondWith(fetch(request).catch(() => caches.match(request)))
+    event.respondWith(
+      fetch(request).catch(async () => {
+        const cached = await caches.match(request)
+        return cached || offlineResponse.clone()
+      })
+    )
     return
   }
 
@@ -58,7 +75,12 @@ self.addEventListener("fetch", (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {})
           return response
         })
-        .catch(() => caches.match(request).then((cached) => cached || caches.match("/")))
+        .catch(async () => {
+          const cached = await caches.match(request)
+          if (cached) return cached
+          const appShell = await caches.match("/")
+          return appShell || offlineResponse.clone()
+        })
     )
     return
   }
@@ -71,7 +93,7 @@ self.addEventListener("fetch", (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone)).catch(() => {})
           return response
         })
-        .catch(() => cachedResponse)
+        .catch(() => cachedResponse || offlineResponse.clone())
 
       return cachedResponse || fetchPromise
     })

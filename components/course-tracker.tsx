@@ -3703,25 +3703,52 @@ export default function CourseTracker() {
 
     const sendStartRequest = () =>
       new Promise<any>((resolve) => {
-        runtime.sendMessage(COMPARENG_EXTENSION_ID, { action: "startOSESGradeExtraction" }, (result: any) => {
-          if ((window as any)?.chrome?.runtime?.lastError) {
-            resolve({ success: false, message: (window as any).chrome.runtime.lastError.message })
-            return
-          }
-          resolve(result)
-        })
+        let settled = false
+        const finish = (value: any) => {
+          if (settled) return
+          settled = true
+          window.clearTimeout(timeoutId)
+          resolve(value)
+        }
+
+        const timeoutId = window.setTimeout(() => {
+          finish({ success: false, message: "Timed out waiting for extension response." })
+        }, 4000)
+
+        try {
+          runtime.sendMessage(COMPARENG_EXTENSION_ID, { action: "startOSESGradeExtraction" }, (result: any) => {
+            const runtimeError = (window as any)?.chrome?.runtime?.lastError
+            if (runtimeError) {
+              const rawMessage = String(runtimeError.message || "Extension response channel closed.")
+              const message = rawMessage.includes("message channel closed")
+                ? "Extension did not respond before the message channel closed. Keep the extension page active, then try again."
+                : rawMessage
+              finish({ success: false, message })
+              return
+            }
+            finish(result)
+          })
+        } catch (err: any) {
+          finish({ success: false, message: String(err?.message || "Failed to contact extension runtime.") })
+        }
       })
 
-    let response: any = { success: false, message: "Unable to start grade extraction." }
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      response = await sendStartRequest()
-      if (response?.success) break
-      await new Promise((resolve) => window.setTimeout(resolve, 1200))
-    }
+    try {
+      let response: any = { success: false, message: "Unable to start grade extraction." }
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        response = await sendStartRequest()
+        if (response?.success) break
+        await new Promise((resolve) => window.setTimeout(resolve, 1200))
+      }
 
-    if (!response?.success) {
+      if (!response?.success) {
+        setGradeImportRunning(false)
+        setGradeImportError(response?.message || "Failed to start grade extraction in extension.")
+        setAutoImportRewardDeferred(false)
+      }
+    } catch {
       setGradeImportRunning(false)
-      setGradeImportError(response?.message || "Failed to start grade extraction in extension.")
+      setGradeImportError("Failed to start grade extraction in extension.")
       setAutoImportRewardDeferred(false)
     }
   }, [])

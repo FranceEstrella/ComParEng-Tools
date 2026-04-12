@@ -37,6 +37,8 @@ const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
 >(({ className, children, hideCloseButton = false, onPointerDownOutside, onInteractOutside, ...props }, ref) => {
+  const ariaDescribedBy = props["aria-describedby"]
+
   const isReportTrigger = (target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) return false
     return Boolean(target.closest("[data-report-trigger]"))
@@ -69,6 +71,7 @@ const DialogContent = React.forwardRef<
       )}
       onPointerDownOutside={handlePointerDownOutside}
       onInteractOutside={handleInteractOutside}
+      aria-describedby={ariaDescribedBy ?? undefined}
       {...props}
     >
       {children}
