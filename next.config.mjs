@@ -5,7 +5,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const turbopackRoot = path.resolve(__dirname).replace(/\\/g, "/")
 const isDev = process.env.NODE_ENV !== "production"
-const scriptSrc = isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" : "script-src 'self'"
+const scriptSrc = isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" : "script-src 'self' 'unsafe-inline'"
 const contentSecurityPolicy = [
   "default-src 'self'",
   scriptSrc,
