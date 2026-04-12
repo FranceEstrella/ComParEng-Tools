@@ -122,7 +122,7 @@ export default function Navbar() {
       <div className="container mx-auto px-4 py-3">
         <div className="flex justify-between items-center">
           <div className="flex items-center space-x-4">
-            <Link href="/" className="text-xl font-bold">
+            <Link href="/" prefetch={false} className="text-xl font-bold">
               FEU Tech ComParEng Tools
             </Link>
           </div>
@@ -188,6 +188,7 @@ export default function Navbar() {
                 <Link
                   key={item.href}
                   href={item.href}
+                  prefetch={false}
                   className="relative inline-flex items-center px-2 py-1 text-white hover:text-blue-200"
                 >
                   {active && (
@@ -241,6 +242,7 @@ export default function Navbar() {
                   <Link
                     key={item.href}
                     href={item.href}
+                    prefetch={false}
                     onClick={() => setIsMenuOpen(false)}
                     className="relative inline-flex items-center px-2 py-1 text-white hover:text-blue-200"
                   >

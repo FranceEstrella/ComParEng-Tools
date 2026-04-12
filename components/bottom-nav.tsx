@@ -109,6 +109,7 @@ export default function BottomNav() {
                   <Link
                     key={item.href}
                     href={item.href}
+                    prefetch={false}
                     aria-current={isActive ? "page" : undefined}
                     className={cn(
                       "flex flex-col items-center gap-1 rounded-xl px-2 py-2 text-[11px] font-semibold leading-tight text-slate-600 transition-colors hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-slate-800/80",

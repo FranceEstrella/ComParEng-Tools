@@ -821,7 +821,11 @@ function parseDays(daysString: string): DayToken[] {
   const s = daysString.toUpperCase().replace(/[\s/]+/g, '');
 
   while (i < s.length) {
-    if (s[i] === 'M') {
+    // "SU" appears in extracted certification rows; treat it as non-schedulable.
+    if (s.slice(i, i + 2) === 'SU') {
+      i += 2;
+    }
+    else if (s[i] === 'M') {
       tokens.push('M');
       i++;
     } 
@@ -861,7 +865,7 @@ function parseDays(daysString: string): DayToken[] {
 
 // Day string validator
 function validateDayString(days: string): boolean {
-  const validPattern = /^([MTWFS]|TU|TH)+$/i;
+  const validPattern = /^([MTWFS]|TU|TH|SU)+$/i;
   return validPattern.test(days.replace(/[\s/]+/g, ''));
 }
 
@@ -1171,6 +1175,13 @@ export default function ScheduleMaker() {
         open: true
         primary: CourseSection
         matches: CourseSection[]
+      }
+  >(null)
+  const [nonSchedulableSelectionNotice, setNonSchedulableSelectionNotice] = useState<
+    | null
+    | {
+        courseCode: string
+        section: string
       }
   >(null)
   const [preferencesDialogOpen, setPreferencesDialogOpen] = useState(false)
@@ -3055,6 +3066,8 @@ export default function ScheduleMaker() {
 
     const { start, end, startMinutes, endMinutes } = parseTimeRange(course.meetingTime)
     const parsedDays = parseDays(course.meetingDays)
+    const normalizedDayValue = (course.meetingDays || "").toUpperCase().replace(/[\s/]+/g, "")
+    const isCertificationOnlyEntry = normalizedDayValue === "SU"
     const metadata = getCourseNameAndCredits(course.courseCode)
     
     console.log('[addCourse] Metadata:', { name: metadata.name, credits: metadata.credits })
@@ -3109,6 +3122,12 @@ export default function ScheduleMaker() {
 
     if (added) {
       pushHistory(`Added ${course.courseCode} ${course.section}`)
+      if (isCertificationOnlyEntry) {
+        setNonSchedulableSelectionNotice({
+          courseCode: course.courseCode,
+          section: course.section,
+        })
+      }
     }
   }
 
@@ -4109,9 +4128,11 @@ export default function ScheduleMaker() {
     const dtStamp = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z"
 
     const events = selectedCourses.flatMap((course, courseIndex) => {
-      const dayInfo = course.parsedDays.length
-        ? course.parsedDays.map(daysToWeekday)
-        : [{ weekday: 1, code: "MO" }]
+      if (course.parsedDays.length === 0) {
+        return []
+      }
+
+      const dayInfo = course.parsedDays.map(daysToWeekday)
 
       const customizationKey = `${course.courseCode}-${course.section}`
       const summary = getSelectedCourseDisplayTitle(course, customizations[customizationKey], getDisplayCode)
@@ -6813,6 +6834,32 @@ const renderScheduleView = () => {
             </Button>
             <Button onClick={confirmSameSectionAdd} className="w-full sm:w-auto">
               Add all matched courses
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(nonSchedulableSelectionNotice)}
+        onOpenChange={(open) => {
+          if (!open) setNonSchedulableSelectionNotice(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Added to selected list only</DialogTitle>
+            <DialogDescription>
+              {nonSchedulableSelectionNotice
+                ? `${getDisplayCode(nonSchedulableSelectionNotice.courseCode)} ${nonSchedulableSelectionNotice.section} is tagged as a certification entry.`
+                : "This entry is tagged as a certification item."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-slate-700 dark:text-slate-200">
+            <p>It will not be placed on the calendar view.</p>
+            <p>It will stay in your selected list and will still be included when you use auto-add to SOLAR-OSES.</p>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setNonSchedulableSelectionNotice(null)} className="w-full sm:w-auto">
+              Got it
             </Button>
           </DialogFooter>
         </DialogContent>

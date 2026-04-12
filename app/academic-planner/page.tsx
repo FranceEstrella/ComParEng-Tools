@@ -90,6 +90,7 @@ const QuickNavigation = ({
     <div className="hidden md:flex flex-col sm:flex-row gap-3 justify-center">
       <Link
         href="/"
+        prefetch={false}
         onClick={(event) => {
           onNavigate?.("/", event)
         }}
@@ -101,6 +102,7 @@ const QuickNavigation = ({
       </Link>
       <Link
         href="/schedule-maker"
+        prefetch={false}
         onClick={(event) => {
           onNavigate?.("/schedule-maker", event)
         }}
@@ -112,6 +114,7 @@ const QuickNavigation = ({
       </Link>
       <Link
         href="/course-tracker"
+        prefetch={false}
         onClick={(event) => {
           onNavigate?.("/course-tracker", event)
         }}
@@ -543,6 +546,8 @@ export default function AcademicPlanner() {
   const [currentTerm, setCurrentTerm] = useState<string>("Term 1")
   const [loading, setLoading] = useState(true)
   const [openSemesters, setOpenSemesters] = useState<{ [key: string]: boolean }>({})
+  const [expandingSemesterKey, setExpandingSemesterKey] = useState<string | null>(null)
+  const [planGenerationLoading, setPlanGenerationLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedCourses, setSelectedCourses] = useState<Set<string>>(new Set())
   const [bulkMoveDialogOpen, setBulkMoveDialogOpen] = useState(false)
@@ -634,6 +639,8 @@ export default function AcademicPlanner() {
   const [showJumpButton, setShowJumpButton] = useState(false)
   const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
   const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
+  const semesterToggleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const planGenerationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const resetMoveSelects = useCallback(() => {
     setMoveSelectResetCounter((prev) => prev + 1)
   }, [])
@@ -917,108 +924,116 @@ export default function AcademicPlanner() {
 
   // Load saved course statuses and available sections on component mount
   useEffect(() => {
+    let cancelled = false
+
     const loadData = async () => {
-      setLoading(true)
-
-      // Load course statuses
-      const savedCourses = loadCourseStatuses()
-      if (savedCourses) {
-        // Normalize saved courses by merging with initial course definitions to ensure stable fields
-        const baseById = new Map((initialCourses as any[]).map((c: any) => [c.id, c]))
-        const normalized: Course[] = savedCourses.map((c: any) => {
-          const base = baseById.get(c.id) || {}
-          return {
-            // Base first to provide defaults, then saved overrides
-            ...(base as any),
-            ...(c as any),
-            // Ensure required fields exist and are well-typed
-            prerequisites: Array.isArray(c.prerequisites)
-              ? c.prerequisites
-              : Array.isArray((base as any).prerequisites)
-              ? (base as any).prerequisites
-              : [],
-            description:
-              typeof c.description === "string" || c.description === null
-                ? c.description
-                : (base as any).description ?? null,
-            credits: Number.isFinite(c.credits) ? c.credits : (base as any).credits ?? 0,
-            year: Number.isFinite(c.year) ? c.year : (base as any).year ?? new Date().getFullYear(),
-            term:
-              typeof c.term === "string"
-                ? normalizeTermLabel(c.term)
-                : (typeof (base as any).term === "string" ? normalizeTermLabel((base as any).term) : "Term 1"),
-            status: (c.status as CourseStatus) ?? (base as any).status ?? "pending",
-          } as Course
-        })
-        setCourses(normalized)
-
-        // Get starting year from localStorage if available
-        const startYearFromStorage = localStorage.getItem("startYear")
-        if (startYearFromStorage) {
-          const parsedYear = Number.parseInt(startYearFromStorage)
-          if (!isNaN(parsedYear)) {
-            setStartYear(parsedYear)
-          }
-        }
+      if (!cancelled) {
+        setLoading(true)
       }
 
-      // Load available sections
       try {
-        const targets = ["https://compareng-tools.vercel.app/api/get-available-courses", "/api/get-available-courses"]
-        let fetched = false
-        let lastErr: any = null
+        // Load course statuses
+        const savedCourses = loadCourseStatuses()
+        if (savedCourses) {
+          // Normalize saved courses by merging with initial course definitions to ensure stable fields
+          const baseById = new Map((initialCourses as any[]).map((c: any) => [c.id, c]))
+          const normalized: Course[] = savedCourses.map((c: any) => {
+            const base = baseById.get(c.id) || {}
+            return {
+              // Base first to provide defaults, then saved overrides
+              ...(base as any),
+              ...(c as any),
+              // Ensure required fields exist and are well-typed
+              prerequisites: Array.isArray(c.prerequisites)
+                ? c.prerequisites
+                : Array.isArray((base as any).prerequisites)
+                ? (base as any).prerequisites
+                : [],
+              description:
+                typeof c.description === "string" || c.description === null
+                  ? c.description
+                  : (base as any).description ?? null,
+              credits: Number.isFinite(c.credits) ? c.credits : (base as any).credits ?? 0,
+              year: Number.isFinite(c.year) ? c.year : (base as any).year ?? new Date().getFullYear(),
+              term:
+                typeof c.term === "string"
+                  ? normalizeTermLabel(c.term)
+                  : (typeof (base as any).term === "string" ? normalizeTermLabel((base as any).term) : "Term 1"),
+              status: (c.status as CourseStatus) ?? (base as any).status ?? "pending",
+            } as Course
+          })
+          if (!cancelled) {
+            setCourses(normalized)
+          }
 
-        for (const url of targets) {
-          try {
-            const response = await fetch(url, {
-              method: "GET",
-              headers: {
-                Accept: "application/json",
-              },
-            })
-
-            console.log("API Response status:", response.status, "from", url)
-            if (!response.ok) {
-              throw new Error(`API returned status: ${response.status}`)
+          // Get starting year from localStorage if available
+          const startYearFromStorage = localStorage.getItem("startYear")
+          if (startYearFromStorage) {
+            const parsedYear = Number.parseInt(startYearFromStorage)
+            if (!isNaN(parsedYear)) {
+              if (!cancelled) {
+                setStartYear(parsedYear)
+              }
             }
-
-            const contentType = response.headers.get("content-type")
-            if (!contentType || !contentType.includes("application/json")) {
-              const textResponse = await response.text()
-              console.error("Non-JSON response:", textResponse)
-              throw new Error("API did not return JSON")
-            }
-
-            const result = await response.json()
-            if (!result.success) {
-              throw new Error(result.error || "Failed to fetch available courses")
-            }
-
-            setAvailableSections(Array.isArray(result.data) ? result.data : [])
-            fetched = true
-            break
-          } catch (err) {
-            lastErr = err
-            console.error(`Error fetching available sections from ${url}:`, err)
           }
         }
 
-        if (!fetched) {
-          throw lastErr || new Error("Failed to fetch available courses")
+        // Load available sections from same-origin endpoint to avoid client-side cross-origin failures.
+        const controller = new AbortController()
+        let response: Response
+        const fetchTimeout = setTimeout(() => controller.abort(), 10000)
+        try {
+          response = await fetch("/api/get-available-courses", {
+            method: "GET",
+            cache: "no-store",
+            signal: controller.signal,
+            headers: {
+              Accept: "application/json",
+            },
+          })
+        } finally {
+          clearTimeout(fetchTimeout)
+        }
+
+        if (!response.ok) {
+          throw new Error(`API returned status: ${response.status}`)
+        }
+
+        const contentType = response.headers.get("content-type")
+        if (!contentType || !contentType.includes("application/json")) {
+          throw new Error("API did not return JSON")
+        }
+
+        const result = await response.json()
+        if (!result.success) {
+          throw new Error(result.error || "Failed to fetch available courses")
+        }
+
+        if (!cancelled) {
+          setAvailableSections(Array.isArray(result.data) ? result.data : [])
         }
       } catch (err: any) {
-        console.error("Error fetching available sections:", err)
-        setError(
-          "Could not load available course sections. Using empty data for recommendations. Error: " + err.message,
-        )
-        setAvailableSections([])
+        console.error("Error loading planner data:", err)
+        if (!cancelled) {
+          setError(
+            "Could not load available course sections. Using empty data for recommendations. Error: " +
+              (err?.message || "Unknown error"),
+          )
+          setAvailableSections([])
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false)
+          setCoursesHydrated(true)
+        }
       }
-
-      setLoading(false)
-      setCoursesHydrated(true)
     }
 
     loadData()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -1098,15 +1113,61 @@ export default function AcademicPlanner() {
   // Generate graduation plan when courses or available sections change
   useEffect(() => {
     if (!loading && !planDirty && !planLocked) {
-      generateGraduationPlan()
+      if (planGenerationTimeoutRef.current) {
+        clearTimeout(planGenerationTimeoutRef.current)
+      }
+      setPlanGenerationLoading(true)
+      planGenerationTimeoutRef.current = setTimeout(() => {
+        try {
+          generateGraduationPlan()
+        } finally {
+          setPlanGenerationLoading(false)
+          planGenerationTimeoutRef.current = null
+        }
+      }, 0)
+    }
+
+    return () => {
+      if (planGenerationTimeoutRef.current) {
+        clearTimeout(planGenerationTimeoutRef.current)
+      }
     }
   }, [courses, availableSections, loading, currentYear, currentTerm, planDirty, planLocked])
+
   // Regenerate when priorities/locks change
   useEffect(() => {
     if (!loading && !planDirty && !planLocked) {
-      generateGraduationPlan()
+      if (planGenerationTimeoutRef.current) {
+        clearTimeout(planGenerationTimeoutRef.current)
+      }
+      setPlanGenerationLoading(true)
+      planGenerationTimeoutRef.current = setTimeout(() => {
+        try {
+          generateGraduationPlan()
+        } finally {
+          setPlanGenerationLoading(false)
+          planGenerationTimeoutRef.current = null
+        }
+      }, 0)
+    }
+
+    return () => {
+      if (planGenerationTimeoutRef.current) {
+        clearTimeout(planGenerationTimeoutRef.current)
+      }
     }
   }, [coursePriorities, lockedPlacements, loading, planDirty, planLocked])
+
+  useEffect(() => {
+    return () => {
+      if (semesterToggleTimeoutRef.current) {
+        clearTimeout(semesterToggleTimeoutRef.current)
+      }
+      if (planGenerationTimeoutRef.current) {
+        clearTimeout(planGenerationTimeoutRef.current)
+      }
+    }
+  }, [])
 
   // Detect conflicts whenever graduation plan changes
   useEffect(() => {
@@ -1903,44 +1964,85 @@ export default function AcademicPlanner() {
     setPendingNavigationHref(null)
   }, [])
 
-  // Convert day abbreviation to full day name
-  const getFullDayName = (day: string): string => {
-    switch (day) {
-      case "M":
-        return "Monday"
-      case "T":
-        return "Tuesday"
-      case "W":
-        return "Wednesday"
-      case "Th":
-        return "Thursday"
-      case "F":
-        return "Friday"
-      case "S":
-        return "Saturday"
-      default:
-        return day
-    }
+  const DAY_LABEL_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const
+
+  const DAY_TOKEN_TO_LABEL: Record<string, (typeof DAY_LABEL_ORDER)[number]> = {
+    m: "Monday",
+    mon: "Monday",
+    monday: "Monday",
+    t: "Tuesday",
+    tue: "Tuesday",
+    tues: "Tuesday",
+    tuesday: "Tuesday",
+    w: "Wednesday",
+    wed: "Wednesday",
+    weds: "Wednesday",
+    wednesday: "Wednesday",
+    th: "Thursday",
+    thu: "Thursday",
+    thur: "Thursday",
+    thurs: "Thursday",
+    thursday: "Thursday",
+    f: "Friday",
+    fri: "Friday",
+    friday: "Friday",
+    s: "Saturday",
+    sat: "Saturday",
+    saturday: "Saturday",
+    su: "Sunday",
+    sun: "Sunday",
+    sunday: "Sunday",
   }
 
-  // Parse days string (e.g., "MW" or "TTh") into array of days
-  const parseDays = (daysString: string): string[] => {
+  const normalizeMeetingDays = (daysString: string): string[] => {
     if (!daysString) return []
 
-    const days: string[] = []
-    let i = 0
+    const normalized = daysString
+      .replace(/&/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
 
-    while (i < daysString.length) {
-      if (i < daysString.length - 1 && daysString.substring(i, i + 2) === "Th") {
-        days.push("Th")
-        i += 2
-      } else {
-        days.push(daysString[i])
+    if (!normalized) return []
+
+    const found = new Set<string>()
+
+    const addDayFromToken = (token: string) => {
+      const cleaned = token.toLowerCase().replace(/[^a-z]/g, "")
+      if (!cleaned) return
+
+      const direct = DAY_TOKEN_TO_LABEL[cleaned]
+      if (direct) {
+        found.add(direct)
+        return
+      }
+
+      let i = 0
+      const compact = cleaned.toUpperCase()
+      while (i < compact.length) {
+        if (compact.slice(i, i + 2) === "TH") {
+          found.add("Thursday")
+          i += 2
+          continue
+        }
+
+        const char = compact[i]
+        if (char === "M") found.add("Monday")
+        else if (char === "T") found.add("Tuesday")
+        else if (char === "W") found.add("Wednesday")
+        else if (char === "F") found.add("Friday")
+        else if (char === "S") found.add("Saturday")
+        else if (char === "U") found.add("Sunday")
         i += 1
       }
     }
 
-    return days
+    normalized
+      .split(/[\/,|;\-]+|\s+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .forEach(addDayFromToken)
+
+    return DAY_LABEL_ORDER.filter((label) => found.has(label))
   }
 
   // Format a year into academic year string: accepts either a calendar year (e.g. 2025)
@@ -3611,12 +3713,23 @@ export default function AcademicPlanner() {
       }
     }
 
-    generateGraduationPlan({
-      strategy: pendingRegenerateStrategy,
-      strictCredits: pendingStrictGuardrails,
-      minCredits: nextMin,
-      maxCredits: nextMax,
-    })
+    setPlanGenerationLoading(true)
+    if (planGenerationTimeoutRef.current) {
+      clearTimeout(planGenerationTimeoutRef.current)
+    }
+    planGenerationTimeoutRef.current = setTimeout(() => {
+      try {
+        generateGraduationPlan({
+          strategy: pendingRegenerateStrategy,
+          strictCredits: pendingStrictGuardrails,
+          minCredits: nextMin,
+          maxCredits: nextMax,
+        })
+      } finally {
+        setPlanGenerationLoading(false)
+        planGenerationTimeoutRef.current = null
+      }
+    }, 0)
 
     trackAnalyticsEvent("academic_planner.apply_profile_success", {
       strategy: pendingRegenerateStrategy,
@@ -5867,10 +5980,33 @@ export default function AcademicPlanner() {
   // Toggle semester collapsible
   const toggleSemester = (year: number, term: string, open?: boolean) => {
     const key = `${year}-${term}`
-    setOpenSemesters((prev) => ({
-      ...prev,
-      [key]: open ?? !prev[key],
-    }))
+    const nextOpen = typeof open === "boolean" ? open : !openSemesters[key]
+
+    if (!nextOpen) {
+      if (semesterToggleTimeoutRef.current) {
+        clearTimeout(semesterToggleTimeoutRef.current)
+      }
+      setExpandingSemesterKey((prev) => (prev === key ? null : prev))
+      setOpenSemesters((prev) => ({
+        ...prev,
+        [key]: false,
+      }))
+      return
+    }
+
+    setExpandingSemesterKey(key)
+    if (semesterToggleTimeoutRef.current) {
+      clearTimeout(semesterToggleTimeoutRef.current)
+    }
+
+    semesterToggleTimeoutRef.current = setTimeout(() => {
+      setOpenSemesters((prev) => ({
+        ...prev,
+        [key]: true,
+      }))
+      setExpandingSemesterKey((prev) => (prev === key ? null : prev))
+      semesterToggleTimeoutRef.current = null
+    }, 120)
   }
 
   // Calculate expected graduation date
@@ -6044,26 +6180,27 @@ export default function AcademicPlanner() {
 
     const [hours, minutes] = time.split(":")
     const hour = Number.parseInt(hours)
+    if (Number.isNaN(hour) || !minutes) return time
     const ampm = hour >= 12 ? "PM" : "AM"
     const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour
 
-    return `${displayHour}:${minutes}${ampm}`
+    return `${displayHour}:${minutes} ${ampm}`
   }
 
   // Format meeting days and times
   const formatSchedule = (meetingDays: string, meetingTime: string): string => {
-    if (!meetingDays || !meetingTime || meetingTime === "TBD") return "TBD"
+    if (!meetingTime || meetingTime === "TBD") return "TBD"
 
-    const days = parseDays(meetingDays)
-      .map((day) => getFullDayName(day))
-      .join("/")
+    const days = normalizeMeetingDays(meetingDays).join(" / ")
 
     if (meetingTime.includes("-")) {
       const [startTime, endTime] = meetingTime.split("-")
-      return `${days}\n${formatTime(startTime)}-${formatTime(endTime)}`
+      const timeRange = `${formatTime(startTime)} - ${formatTime(endTime)}`
+      return days ? `${days}\n${timeRange}` : timeRange
     }
 
-    return `${days}\n${formatTime(meetingTime)}`
+    const formattedTime = formatTime(meetingTime)
+    return days ? `${days}\n${formattedTime}` : formattedTime
   }
 
   const renderCourseListBadges = (list: Course[], emptyLabel: string) => {
@@ -6483,6 +6620,7 @@ export default function AcademicPlanner() {
               <Button variant="outline" className="w-full" asChild>
                 <Link
                   href="/course-tracker"
+                  prefetch={false}
                   onClick={(event) => handleNavigationIntent("/course-tracker", event)}
                 >
                   Open Course Tracker
@@ -6773,9 +6911,16 @@ export default function AcademicPlanner() {
                 <Button
                   className="w-full sm:w-auto"
                   onClick={handleConfirmRegeneratePlan}
-                  disabled={regeneratePreviewLoading || Boolean(regenerateCreditError)}
+                  disabled={regeneratePreviewLoading || planGenerationLoading || Boolean(regenerateCreditError)}
                 >
-                  Apply profile
+                  {planGenerationLoading ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Generating...
+                    </>
+                  ) : (
+                    "Apply profile"
+                  )}
                 </Button>
               </div>
             </DialogFooter>
@@ -7289,7 +7434,7 @@ export default function AcademicPlanner() {
                     The current plan shows the default curriculum progression. You can still use all planning features
                     to customize your path.
                     <div className="mt-3">
-                      <Link href="/course-tracker" onClick={(event) => handleNavigationIntent("/course-tracker", event)}>
+                      <Link href="/course-tracker" prefetch={false} onClick={(event) => handleNavigationIntent("/course-tracker", event)}>
                         <Button size="sm" className="mr-2">
                           <BookOpen className="h-4 w-4 mr-1" />
                           Update Course Status
@@ -7380,7 +7525,16 @@ export default function AcademicPlanner() {
                     </select>
                   </div>
                   <div className="flex items-end">
-                    <Button onClick={openRegeneratePlanDialog}>Regenerate Plan</Button>
+                    <Button onClick={openRegeneratePlanDialog} disabled={planGenerationLoading}>
+                      {planGenerationLoading ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                          Regenerating...
+                        </>
+                      ) : (
+                        "Regenerate Plan"
+                      )}
+                    </Button>
                   </div>
                 </div>
               </CardContent>
@@ -7929,7 +8083,15 @@ export default function AcademicPlanner() {
             {/* Graduation Plan */}
             <div className="mb-6">
               <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <h2 className="text-2xl font-bold">Your Graduation Plan</h2>
+                <div className="flex items-center gap-3">
+                  <h2 className="text-2xl font-bold">Your Graduation Plan</h2>
+                  {planGenerationLoading && (
+                    <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      Updating plan...
+                    </span>
+                  )}
+                </div>
                 <div className="relative w-full md:w-96">
                   <Input
                     value={searchQuery}
@@ -8060,7 +8222,12 @@ export default function AcademicPlanner() {
                               </span>
                             )}
                           </div>
-                          <div className="text-gray-500">{isOpen ? "Hide" : "Show"} Courses</div>
+                          <div className="text-gray-500 inline-flex items-center gap-2">
+                            {expandingSemesterKey === semesterKey && (
+                              <RefreshCw className="h-4 w-4 animate-spin" />
+                            )}
+                            {isOpen ? "Hide" : "Show"} Courses
+                          </div>
                         </CollapsibleTrigger>
                         <CollapsibleContent>
                           <div className="p-4 bg-gray-50 dark:bg-gray-900">
@@ -8105,7 +8272,9 @@ export default function AcademicPlanner() {
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
-                                {semester.courses.map((course, _idx) => {
+                                {semester.courses
+                                  .filter((course, index, allCourses) => allCourses.findIndex((c) => c.id === course.id) === index)
+                                  .map((course, _idx) => {
                                   const prereqCourses = course.prerequisites
                                     .map((id) => findCourseById(id))
                                     .filter((c): c is Course => c !== undefined)
@@ -8172,29 +8341,69 @@ export default function AcademicPlanner() {
                                         <>
                                           <TableCell>
                                             {availableSections.length > 0 ? (
-                                              <Select
-                                                value={section?.section || ""}
-                                                onValueChange={(value) => {
-                                                  const selectedSection = availableSections.find((s) => s.section === value)
-                                                  if (selectedSection) {
-                                                    changeCourseSection(course.id, selectedSection)
+                                              (() => {
+                                                const occurrenceMap = new Map<string, number>()
+                                                const totalBySection = new Map<string, number>()
+
+                                                availableSections.forEach((candidate) => {
+                                                  const label = (candidate.section || "").trim()
+                                                  totalBySection.set(label, (totalBySection.get(label) ?? 0) + 1)
+                                                })
+
+                                                const sectionOptions = availableSections.map((candidate) => {
+                                                  const baseLabel = (candidate.section || "").trim()
+                                                  const occurrence = (occurrenceMap.get(baseLabel) ?? 0) + 1
+                                                  occurrenceMap.set(baseLabel, occurrence)
+                                                  const hasDuplicates = (totalBySection.get(baseLabel) ?? 0) > 1
+                                                  const optionLabel = hasDuplicates ? `${baseLabel} (${occurrence})` : baseLabel
+                                                  const optionValue = hasDuplicates ? `${baseLabel}::${occurrence}` : baseLabel
+
+                                                  return {
+                                                    key: `${optionValue}::${candidate.meetingDays || ""}::${candidate.meetingTime || ""}::${candidate.room || ""}`,
+                                                    value: optionValue,
+                                                    label: optionLabel,
+                                                    section: candidate,
                                                   }
-                                                }}
-                                              >
+                                                })
+
+                                                const selectedOption = section
+                                                  ?
+                                                      sectionOptions.find(
+                                                        (option) =>
+                                                          option.section.section === section.section &&
+                                                          option.section.meetingDays === section.meetingDays &&
+                                                          option.section.meetingTime === section.meetingTime &&
+                                                          (option.section.room || "") === (section.room || ""),
+                                                      ) ??
+                                                    sectionOptions.find((option) => option.section.section === section.section)
+                                                  : undefined
+
+                                                return (
+                                                  <Select
+                                                    value={selectedOption?.value || ""}
+                                                    onValueChange={(value) => {
+                                                      const option = sectionOptions.find((candidate) => candidate.value === value)
+                                                      if (option) {
+                                                        changeCourseSection(course.id, option.section)
+                                                      }
+                                                    }}
+                                                  >
                                                 <SelectTrigger className="w-32">
                                                   <SelectValue placeholder="Select Section" />
                                                 </SelectTrigger>
                                                 <SelectContent>
-                                                  {availableSections.map((availableSection) => (
+                                                  {sectionOptions.map((option) => (
                                                     <SelectItem
-                                                      key={availableSection.section}
-                                                      value={availableSection.section}
+                                                      key={option.key}
+                                                      value={option.value}
                                                     >
-                                                      {availableSection.section}
+                                                      {option.label}
                                                     </SelectItem>
                                                   ))}
                                                 </SelectContent>
-                                              </Select>
+                                                  </Select>
+                                                )
+                                              })()
                                             ) : section ? (
                                               section.section
                                             ) : (

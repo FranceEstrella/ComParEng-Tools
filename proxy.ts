@@ -2,11 +2,15 @@ import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
 
 const isDev = process.env.NODE_ENV !== "production"
+const enableReportOnlyCsp = !isDev
 
 function buildEnforcedCsp(nonce: string) {
   const scriptSrc = isDev
     ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:"
     : `script-src 'self' 'nonce-${nonce}' blob:`
+  const connectSrc = isDev
+    ? "connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:*"
+    : "connect-src 'self'"
 
   return [
     "default-src 'self'",
@@ -15,7 +19,7 @@ function buildEnforcedCsp(nonce: string) {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' data: https://fonts.googleapis.com https://fonts.gstatic.com",
     "img-src 'self' data: blob: https:",
-    "connect-src 'self'",
+    connectSrc,
     "frame-ancestors 'self'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -27,6 +31,9 @@ function buildReportOnlyCsp(nonce: string) {
   const scriptSrc = isDev
     ? `script-src 'self' 'nonce-${nonce}' 'unsafe-eval' blob:`
     : `script-src 'self' 'nonce-${nonce}'`
+  const connectSrc = isDev
+    ? "connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:*"
+    : "connect-src 'self'"
 
   return [
     "default-src 'self'",
@@ -35,7 +42,7 @@ function buildReportOnlyCsp(nonce: string) {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' data: https://fonts.googleapis.com https://fonts.gstatic.com",
     "img-src 'self' data: blob: https:",
-    "connect-src 'self'",
+    connectSrc,
     "frame-ancestors 'self'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -56,7 +63,7 @@ function generateNonce() {
 export function proxy(request: NextRequest) {
   const nonce = generateNonce()
   const enforcedCsp = buildEnforcedCsp(nonce)
-  const reportOnlyCsp = buildReportOnlyCsp(nonce)
+  const reportOnlyCsp = enableReportOnlyCsp ? buildReportOnlyCsp(nonce) : ""
   const requestHeaders = new Headers(request.headers)
   requestHeaders.set("x-nonce", nonce)
   requestHeaders.set("x-csp-nonce", nonce)
@@ -71,7 +78,9 @@ export function proxy(request: NextRequest) {
   response.headers.set("x-nonce", nonce)
   response.headers.set("x-csp-nonce", nonce)
   response.headers.set("Content-Security-Policy", enforcedCsp)
-  response.headers.set("Content-Security-Policy-Report-Only", reportOnlyCsp)
+  if (enableReportOnlyCsp) {
+    response.headers.set("Content-Security-Policy-Report-Only", reportOnlyCsp)
+  }
   return response
 }
 

@@ -1634,6 +1634,7 @@ export default function Home() {
               {/* Course Tracker Card */}
               <Link
                 href="/course-tracker"
+                prefetch={false}
                 onClick={() => trackAnalyticsEvent("home.open_course_tracker_click")}
                 className="rounded-md md:rounded-lg shadow-md md:shadow-lg overflow-hidden transition-transform md:hover:transform md:hover:scale-105"
               >
@@ -1649,6 +1650,7 @@ export default function Home() {
               {/* Schedule Maker Card */}
               <Link
                 href="/schedule-maker"
+                prefetch={false}
                 onClick={() => trackAnalyticsEvent("home.open_schedule_maker_click")}
                 className="rounded-md md:rounded-lg shadow-md md:shadow-lg overflow-hidden transition-transform md:hover:transform md:hover:scale-105"
               >
@@ -1664,6 +1666,7 @@ export default function Home() {
               {/* Academic Planner Card */}
               <Link
                 href="/academic-planner"
+                prefetch={false}
                 onClick={() => trackAnalyticsEvent("home.open_academic_planner_click")}
                 className="rounded-md md:rounded-lg shadow-md md:shadow-lg overflow-hidden transition-transform md:hover:transform md:hover:scale-105"
               >
