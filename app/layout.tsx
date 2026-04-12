@@ -77,7 +77,7 @@ export default async function RootLayout({
   children: React.ReactNode
 }>) {
   const requestHeaders = await headers()
-  const nonce = requestHeaders.get("x-csp-nonce") || undefined
+  const nonce = requestHeaders.get("x-nonce") || requestHeaders.get("x-csp-nonce") || undefined
 
   return (
     <html lang="en" suppressHydrationWarning>

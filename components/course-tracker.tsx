@@ -62,6 +62,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import NonCpeNotice from "@/components/non-cpe-notice"
 import FeedbackDialog from "@/components/feedback-dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { COMPARENG_EXTENSION_IDS } from "@/lib/extension-ids"
 import {
   Dialog,
   DialogContent,
@@ -77,7 +78,6 @@ const APP_VERSION = orderedPatchNotes[0]?.version ?? "Dev"
 const GAMIFICATION_STORAGE_KEY = "courseTracker.gamification.v1"
 const PROFILE_STORAGE_KEY = "courseTracker.profile.v1"
 const GRADE_IMPORT_HISTORY_STORAGE_KEY = "courseTracker.gradeImportHistory.v1"
-const COMPARENG_EXTENSION_ID = "fdfappahfelppgjnpbobconjogebpiml"
 const TERM_BADGE_XP_BY_YEAR: Record<number, number> = {
   1: 600,
   2: 900,
@@ -3704,6 +3704,7 @@ export default function CourseTracker() {
     const sendStartRequest = () =>
       new Promise<any>((resolve) => {
         let settled = false
+        let lastFailureMessage = ""
         const finish = (value: any) => {
           if (settled) return
           settled = true
@@ -3715,22 +3716,51 @@ export default function CourseTracker() {
           finish({ success: false, message: "Timed out waiting for extension response." })
         }, 4000)
 
-        try {
-          runtime.sendMessage(COMPARENG_EXTENSION_ID, { action: "startOSESGradeExtraction" }, (result: any) => {
-            const runtimeError = (window as any)?.chrome?.runtime?.lastError
-            if (runtimeError) {
-              const rawMessage = String(runtimeError.message || "Extension response channel closed.")
-              const message = rawMessage.includes("message channel closed")
-                ? "Extension did not respond before the message channel closed. Keep the extension page active, then try again."
-                : rawMessage
-              finish({ success: false, message })
-              return
-            }
-            finish(result)
-          })
-        } catch (err: any) {
-          finish({ success: false, message: String(err?.message || "Failed to contact extension runtime.") })
+        const trySendByIndex = (index: number) => {
+          if (index >= COMPARENG_EXTENSION_IDS.length) {
+            finish({
+              success: false,
+              message: lastFailureMessage || "Failed to contact configured extension IDs.",
+            })
+            return
+          }
+
+          const extensionId = COMPARENG_EXTENSION_IDS[index]
+          try {
+            runtime.sendMessage(extensionId, { action: "startOSESGradeExtraction" }, (result: any) => {
+              const runtimeError = (window as any)?.chrome?.runtime?.lastError
+              if (runtimeError) {
+                const rawMessage = String(runtimeError.message || "Extension response channel closed.")
+                lastFailureMessage = rawMessage.includes("message channel closed")
+                  ? "Extension did not respond before the message channel closed. Keep the extension page active, then try again."
+                  : rawMessage
+
+                const tryNext =
+                  /Receiving end does not exist|Could not establish connection|No such native application|Extension context invalidated/i.test(rawMessage)
+                if (tryNext) {
+                  trySendByIndex(index + 1)
+                  return
+                }
+
+                finish({ success: false, message: lastFailureMessage })
+                return
+              }
+
+              if (result?.success || index === COMPARENG_EXTENSION_IDS.length - 1) {
+                finish(result)
+                return
+              }
+
+              lastFailureMessage = String(result?.message || "Extension request failed.")
+              trySendByIndex(index + 1)
+            })
+          } catch (err: any) {
+            lastFailureMessage = String(err?.message || "Failed to contact extension runtime.")
+            trySendByIndex(index + 1)
+          }
         }
+
+        trySendByIndex(0)
       })
 
     try {
@@ -5282,7 +5312,7 @@ export default function CourseTracker() {
     // Use requested logo from public/android-icon-192x192.png
     const logoUrl = `${window.location.origin}/android-icon-192x192.png`
 
-    transcriptWindow.document.write(`
+    const transcriptHtml = `
       <!DOCTYPE html>
       <html>
         <head>
@@ -5394,9 +5424,16 @@ export default function CourseTracker() {
           <p class="footer">* Save or print this page as PDF for your own record. Data is based on manual entries inside the Course Tracker.<br>ComParEng Tools &copy; 2025</p>
         </body>
       </html>
-    `)
+    `
 
-    transcriptWindow.document.close()
+    const transcriptBlob = new Blob([transcriptHtml], { type: "text/html;charset=utf-8" })
+    const transcriptUrl = URL.createObjectURL(transcriptBlob)
+
+    await new Promise<void>((resolve) => {
+      transcriptWindow.addEventListener("load", () => resolve(), { once: true })
+      transcriptWindow.location.replace(transcriptUrl)
+    })
+
     const waitForTranscriptRender = async () => {
       await new Promise<void>((resolve) => {
         if (transcriptWindow.document.readyState === "complete") {
@@ -5442,6 +5479,7 @@ export default function CourseTracker() {
     await waitForTranscriptRender()
     transcriptWindow.focus()
     transcriptWindow.print()
+    window.setTimeout(() => URL.revokeObjectURL(transcriptUrl), 60_000)
     closeTranscriptModal()
   }
 

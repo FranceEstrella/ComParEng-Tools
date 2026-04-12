@@ -84,6 +84,7 @@ import { AnimatePresence, motion } from "framer-motion"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useMemo } from "react"
 import { trackAnalyticsEvent } from "@/lib/analytics-client"
+import { COMPARENG_DEV_EXTENSION_ID, COMPARENG_PUBLIC_EXTENSION_ID } from "@/lib/extension-ids"
 
 // Time slot constants
 const DAYS = ["M", "Tu", "W", "Th", "F", "S"] as const;
@@ -164,6 +165,7 @@ const GROUP_LABELS: Record<GroupByOption, string> = {
 type TermName = "Term 1" | "Term 2" | "Term 3"
 type SolarOSESStudentType = "regular" | "irregular"
 type SolarOSESStudentTypeOverride = "auto" | SolarOSESStudentType
+type ScheduleMakerExtensionIdPreference = "public" | "dev"
 
 const TERM_ORDER: TermName[] = ["Term 1", "Term 2", "Term 3"]
 
@@ -1158,6 +1160,7 @@ export default function ScheduleMaker() {
   const [regularStudentNoticeDontShowAgain, setRegularStudentNoticeDontShowAgain] = useState(false)
   const [regularStudentNoticeDismissedSession, setRegularStudentNoticeDismissedSession] = useState(false)
   const [solarOSESStudentTypeOverride, setSolarOSESStudentTypeOverride] = useState<SolarOSESStudentTypeOverride>("auto")
+  const [extensionIdPreference, setExtensionIdPreference] = useState<ScheduleMakerExtensionIdPreference>("public")
 
   const [sameSectionFeatureEnabled, setSameSectionFeatureEnabled] = useState(true)
   const [rememberSameSectionAddDecision, setRememberSameSectionAddDecision] = useState<"confirm" | null>(null)
@@ -1420,6 +1423,7 @@ export default function ScheduleMaker() {
       rememberSameSectionAddDecision: "confirm" | null
       regularStudentNoticeDismissed: boolean
       solarOSESStudentTypeOverride: SolarOSESStudentTypeOverride
+      extensionIdPreference: ScheduleMakerExtensionIdPreference
     }>) => {
       if (typeof window === "undefined") return
       try {
@@ -1428,6 +1432,7 @@ export default function ScheduleMaker() {
           rememberSameSectionAddDecision,
           regularStudentNoticeDismissed: regularStudentNoticeDontShowAgain,
           solarOSESStudentTypeOverride,
+          extensionIdPreference,
           ...(overrides || {}),
         }
         window.localStorage.setItem(SCHEDULE_MAKER_PREFS_KEY, JSON.stringify(next))
@@ -1435,7 +1440,13 @@ export default function ScheduleMaker() {
         // ignore
       }
     },
-    [rememberSameSectionAddDecision, regularStudentNoticeDontShowAgain, sameSectionFeatureEnabled, solarOSESStudentTypeOverride],
+    [
+      extensionIdPreference,
+      rememberSameSectionAddDecision,
+      regularStudentNoticeDontShowAgain,
+      sameSectionFeatureEnabled,
+      solarOSESStudentTypeOverride,
+    ],
   )
 
   const getTermIndex = useCallback((term: string | undefined | null) => {
@@ -1640,6 +1651,11 @@ export default function ScheduleMaker() {
       const oSESStudentTypeOverride = (prefs as any).solarOSESStudentTypeOverride
       if (oSESStudentTypeOverride === "auto" || oSESStudentTypeOverride === "regular" || oSESStudentTypeOverride === "irregular") {
         setSolarOSESStudentTypeOverride(oSESStudentTypeOverride)
+      }
+
+      const parsedExtensionIdPreference = (prefs as any).extensionIdPreference
+      if (parsedExtensionIdPreference === "public" || parsedExtensionIdPreference === "dev") {
+        setExtensionIdPreference(parsedExtensionIdPreference)
       }
     }
 
@@ -4311,8 +4327,6 @@ export default function ScheduleMaker() {
     setNoDataDialogPaused(true)
   }
 
-  const COMPARENG_EXTENSION_ID = "fdfappahfelppgjnpbobconjogebpiml"
-
   const deriveLikelyRegularBlockSection = useCallback((courses: SelectedCourse[]): string => {
     const counts = new Map<string, number>()
 
@@ -4370,9 +4384,12 @@ export default function ScheduleMaker() {
             },
           }
 
+    const selectedExtensionId =
+      extensionIdPreference === "dev" ? COMPARENG_DEV_EXTENSION_ID : COMPARENG_PUBLIC_EXTENSION_ID
+
     try {
       const response = await new Promise<any>((resolve) => {
-        runtime.sendMessage(COMPARENG_EXTENSION_ID, payload, (result: any) => {
+        runtime.sendMessage(selectedExtensionId, payload, (result: any) => {
           if ((window as any)?.chrome?.runtime?.lastError) {
             resolve({ success: false, message: (window as any).chrome.runtime.lastError.message })
             return
@@ -4385,7 +4402,7 @@ export default function ScheduleMaker() {
     } catch {
       return false
     }
-  }, [normalizeSection])
+  }, [extensionIdPreference, normalizeSection])
 
   const resolvedSolarOSESStudentType = useMemo<SolarOSESStudentType>(() => {
     if (solarOSESStudentTypeOverride === "auto") {
@@ -7019,6 +7036,27 @@ const renderScheduleView = () => {
                   <SelectItem value="auto">Auto (detected)</SelectItem>
                   <SelectItem value="regular">Always regular</SelectItem>
                   <SelectItem value="irregular">Always irregular</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2 rounded-md border border-slate-200/80 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-800/60">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Developer: Extension ID target</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Choose which extension ID Schedule Maker sends automation payloads to.
+                </p>
+              </div>
+              <Select
+                value={extensionIdPreference}
+                onValueChange={(value) => setExtensionIdPreference(value as ScheduleMakerExtensionIdPreference)}
+              >
+                <SelectTrigger aria-label="Select extension ID target">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="z-[11001]">
+                  <SelectItem value="public">Public ({COMPARENG_PUBLIC_EXTENSION_ID})</SelectItem>
+                  <SelectItem value="dev">Dev ({COMPARENG_DEV_EXTENSION_ID})</SelectItem>
                 </SelectContent>
               </Select>
             </div>
