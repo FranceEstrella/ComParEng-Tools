@@ -937,6 +937,7 @@ export default function ScheduleMaker() {
   const [nextStepsDialogOpen, setNextStepsDialogOpen] = useState(false)
   const [nextStepsDialogDismissed, setNextStepsDialogDismissed] = useState(false)
   const [nextStepsSlideIndex, setNextStepsSlideIndex] = useState(0)
+  const [trackerActiveImportDialogOpen, setTrackerActiveImportDialogOpen] = useState(false)
   const [dragCourseCode, setDragCourseCode] = useState<string | null>(null)
   const [dragPreviewSections, setDragPreviewSections] = useState<SectionPreview[]>([])
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
@@ -961,6 +962,7 @@ export default function ScheduleMaker() {
   const previousTermYearKeyRef = useRef<string | null>(null)
   const previousSessionTermYearKeyRef = useRef<string | null | undefined>(undefined)
   const hasCheckedInitialReopenNoticeRef = useRef(false)
+  const hasPromptedTrackerActiveImportRef = useRef(false)
   const departmentColorCache = useRef<Map<string, string>>(new Map())
   const hasSeenNoDataSequenceRef = useRef(false)
   const [startDate, setStartDate] = useState<Date>(new Date())
@@ -1625,6 +1627,27 @@ export default function ScheduleMaker() {
   }, [awaitingDataDialogOpen, nextStepsDialogDismissed, nextStepsDialogOpen, noActiveDialogOpen, noDataDialogOpen])
 
   useEffect(() => {
+    if (!isClient) return
+    if (hasPromptedTrackerActiveImportRef.current) return
+    if (activeCourses.length === 0) return
+    if (selectedCourseCodes.length > 0) return
+    if (nextStepsDialogOpen || noDataDialogOpen || awaitingDataDialogOpen || noActiveDialogOpen) return
+    if (trackerActiveImportDialogOpen) return
+
+    hasPromptedTrackerActiveImportRef.current = true
+    setTrackerActiveImportDialogOpen(true)
+  }, [
+    isClient,
+    activeCourses.length,
+    selectedCourseCodes.length,
+    nextStepsDialogOpen,
+    noDataDialogOpen,
+    awaitingDataDialogOpen,
+    noActiveDialogOpen,
+    trackerActiveImportDialogOpen,
+  ])
+
+  useEffect(() => {
     if (!awaitingDataDialogOpen) {
       setNoDataDialogPaused(false)
     }
@@ -1826,7 +1849,7 @@ export default function ScheduleMaker() {
 
   // Load data from localStorage only on the client side
   const clearScheduleSelections = useCallback(() => {
-    if (selectedCourses.length === 0) {
+    if (selectedCourses.length === 0 && selectedCourseCodes.length === 0) {
       return
     }
     setSelectedCourses([])
@@ -1839,7 +1862,7 @@ export default function ScheduleMaker() {
         console.error("Error clearing saved schedule data:", error)
       }
     }
-  }, [selectedCourses.length])
+  }, [selectedCourseCodes.length, selectedCourses.length])
 
   const ensureActiveVersion = useCallback(() => {
     setVersionStore((prev) => {
@@ -3195,7 +3218,6 @@ export default function ScheduleMaker() {
 
   const maybeHandleSameSectionPrompt = useCallback(
     (primary: CourseSection) => {
-      if (!regularStudentDetected) return
       if (!sameSectionFeatureEnabled) return
 
       const matches = buildSameSectionMatches(primary)
@@ -3210,6 +3232,8 @@ export default function ScheduleMaker() {
         })
         return
       }
+
+      if (!regularStudentDetected) return
 
       setRememberSameSectionAddToggle(false)
       setSameSectionPrompt({ open: true, primary, matches })
@@ -4504,10 +4528,64 @@ export default function ScheduleMaker() {
     setNoActiveDialogDismissed(true)
   }
 
+  const importActiveTrackerCourses = useCallback(
+    (source: "onboarding" | "manual") => {
+      const activeCodes = Array.from(
+        new Set(
+          activeCourses
+            .map((course) => getCanonicalCourseCode(course.code))
+            .filter((code) => Boolean(code)),
+        ),
+      )
+
+      if (activeCodes.length === 0) {
+        setImportStatus({ type: "warning", message: "No active courses found in Course Tracker." })
+        trackAnalyticsEvent("schedule_maker.import_active_tracker_courses", {
+          source,
+          totalActive: 0,
+          added: 0,
+        })
+        return
+      }
+
+      let added = 0
+      setSelectedCourseCodes((prev) => {
+        const next = new Set(prev)
+        activeCodes.forEach((code) => {
+          if (!next.has(code)) {
+            next.add(code)
+            added += 1
+          }
+        })
+        return Array.from(next)
+      })
+
+      if (added > 0) {
+        setImportStatus({
+          type: "success",
+          message: `Added ${added} active ${added === 1 ? "course" : "courses"} from Course Tracker.`,
+        })
+      } else {
+        setImportStatus({ type: "warning", message: "All active tracker courses are already selected." })
+      }
+
+      trackAnalyticsEvent("schedule_maker.import_active_tracker_courses", {
+        source,
+        totalActive: activeCodes.length,
+        added,
+      })
+    },
+    [activeCourses],
+  )
+
   const handleScheduleNextStepsClose = () => {
     setNextStepsDialogOpen(false)
     setNextStepsDialogDismissed(true)
     setNextStepsSlideIndex(0)
+    if (activeCourses.length > 0) {
+      hasPromptedTrackerActiveImportRef.current = true
+      setTrackerActiveImportDialogOpen(true)
+    }
   }
 
   const handleScheduleNextStepsOpenChange = (nextOpen: boolean) => {
@@ -6599,6 +6677,31 @@ const renderScheduleView = () => {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={trackerActiveImportDialogOpen} onOpenChange={setTrackerActiveImportDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add your active tracker courses?</DialogTitle>
+            <DialogDescription>
+              We found {activeCourses.length} active {activeCourses.length === 1 ? "course" : "courses"} in Course Tracker.
+              Add them to your selected courses now?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setTrackerActiveImportDialogOpen(false)}>
+              Not now
+            </Button>
+            <Button
+              onClick={() => {
+                importActiveTrackerCourses("onboarding")
+                setTrackerActiveImportDialogOpen(false)
+              }}
+            >
+              Add active courses
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={Boolean(error) && errorDialogOpen}
         onOpenChange={(nextOpen) => setErrorDialogOpen(nextOpen)}
@@ -7679,11 +7782,20 @@ const renderScheduleView = () => {
                 </div>
                 <div className="mt-3">
                   <Button
+                    variant="outline"
+                    size="sm"
+                    className="mb-2 h-8 w-full justify-center text-xs"
+                    onClick={() => importActiveTrackerCourses("manual")}
+                    disabled={activeCourses.length === 0}
+                  >
+                    Add active courses from tracker
+                  </Button>
+                  <Button
                     variant="ghost"
                     size="sm"
                     className="h-8 w-full justify-center text-xs text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-300 dark:hover:bg-rose-900/20"
                     onClick={clearScheduleSelections}
-                    disabled={selectedCourses.length === 0}
+                    disabled={selectedCourses.length === 0 && selectedCourseCodes.length === 0}
                   >
                     Remove all selected courses
                   </Button>
