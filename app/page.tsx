@@ -4,6 +4,7 @@ import Link from "next/link"
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X, ArrowUp, Palette, Sparkles, Trophy, Medal, Award, Pencil, ArrowLeft, Check, Menu } from "lucide-react"
 import PatchNotesButton from "@/components/patch-notes"
+import FAQsButton from "@/components/faqs-button"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 import { Moon, Sun } from "lucide-react"
@@ -912,11 +913,12 @@ export default function Home() {
                     Start Onboarding
                   </Button>
                   <PatchNotesButton autoOpenOnce={shouldAutoOpenWhatsNew} buttonLabel="What's New" />
+                  <FAQsButton buttonLabel="FAQs" />
                 </div>
 
                 <div className="flex w-full items-start gap-3 justify-between md:w-auto md:ml-auto md:block">
                   <div className="md:hidden flex items-start justify-start">
-                    <div className="relative">
+                    <div className="relative z-[120]">
                       <Button
                         variant="outline"
                         size="icon"
@@ -939,7 +941,7 @@ export default function Home() {
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: -4, scale: 0.98 }}
                             transition={{ duration: 0.18, ease: "easeInOut" }}
-                            className="absolute left-0 mt-2 w-56 rounded-2xl border border-slate-200 bg-white p-3 shadow-lg dark:border-white/10 dark:bg-slate-900"
+                            className="absolute left-0 z-[130] mt-2 w-56 rounded-2xl border border-slate-200 bg-white p-3 shadow-lg dark:border-white/10 dark:bg-slate-900"
                           >
                             <div className="flex flex-col gap-2">
                               <Button
@@ -960,6 +962,14 @@ export default function Home() {
                                 }}
                               >
                                 <PatchNotesButton autoOpenOnce={shouldAutoOpenWhatsNew} buttonLabel="What's New" />
+                              </div>
+                              <div
+                                className="w-full [&>button]:w-full [&>button]:justify-start [&>button]:text-left"
+                                onClick={() => {
+                                  setMobileActionMenuOpen(false)
+                                }}
+                              >
+                                <FAQsButton buttonLabel="FAQs" />
                               </div>
                               <Button
                                 variant="outline"
@@ -1166,6 +1176,12 @@ export default function Home() {
                                           <CardDescription>Current XP and level</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-3 text-left">
+                                          <div className="flex justify-center">
+                                            <div className="inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs font-semibold text-white shadow-sm" style={{ background: rankTier.gradient }}>
+                                              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/20 text-[10px]">★</span>
+                                              {rankTier.name}
+                                            </div>
+                                          </div>
                                           <div className="flex items-center justify-between text-sm font-medium">
                                             <span>Level {levelInfo.level}</span>
                                             <span className="text-muted-foreground">{Math.round(levelInfo.progress * 100)}%</span>
@@ -1739,7 +1755,9 @@ export default function Home() {
                 </Tabs>
               </CardContent>
               <CardFooter className="text-sm text-gray-500 dark:text-gray-400 flex items-center justify-between">
-                <div>If you encounter any issues with the app, feel free to message them to our page.</div>
+                <div>
+                  <p>If you encounter any issues with the app, feel free to message them to our page.</p>
+                </div>
                 <div>
                   <Dialog open={feedbackDialogOpen} onOpenChange={(open) => setFeedbackDialogOpen(open)}>
                     <DialogTrigger asChild>
@@ -1778,6 +1796,9 @@ export default function Home() {
                   CpEO Page
                 </Button>
                 {/* Removed stray line */}
+              </p>
+              <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                The mascot is a property of the Computer Engineering Organization - FEU Tech. All rights reserved.
               </p>
             </div>
           </div>

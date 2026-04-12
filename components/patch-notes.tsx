@@ -152,11 +152,11 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
         </DialogTrigger>
         <DialogContent
           className={cn(
-            "max-w-2xl",
+            "max-w-2xl overflow-hidden",
             isMajorUpdate && "bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-900 text-white border-0 shadow-[0_20px_80px_rgba(16,185,129,0.35)]",
             isCompactLayout
-              ? "w-[calc(100vw-1rem)] max-w-none max-h-[85svh] overflow-y-auto rounded-2xl p-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)]"
-              : "p-6"
+              ? "w-[calc(100vw-1rem)] max-w-none rounded-2xl p-0"
+              : "p-0"
           )}
           style={
             isMajorUpdate
@@ -176,6 +176,12 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             if (!isMajorUpdate) return
             setSpotlight({ x: 50, y: 50 })
           }}
+        >
+        <div
+          className={cn(
+            "max-h-[85svh] overflow-y-auto [overscroll-behavior:contain]",
+            isCompactLayout ? "p-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)]" : "p-6"
+          )}
         >
         <DialogHeader className={cn(isCompactLayout && "items-center text-center")}
         >
@@ -197,7 +203,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
           <div
             className={cn(
               "mb-4 overflow-hidden rounded-3xl border border-white/10 bg-white/5 p-4 text-white shadow-inner",
-              isCompactLayout && "max-h-64 overflow-y-auto pr-2"
+              isCompactLayout && "max-h-64 overflow-y-auto pr-1 [overscroll-behavior:contain] [scrollbar-width:thin] [scrollbar-color:rgba(167,243,208,0.55)_transparent] [scroll-behavior:smooth] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-emerald-200/45 [&::-webkit-scrollbar-thumb:hover]:bg-emerald-200/70"
             )}
           >
             <p className="text-sm uppercase tracking-[0.2em] text-emerald-200/80">Major highlights</p>
@@ -267,6 +273,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
         <DialogFooter className={cn(isCompactLayout && "pt-2")}>
           <Button variant="outline" onClick={handleCloseClick}>Close</Button>
         </DialogFooter>
+        </div>
         </DialogContent>
       </Dialog>
     </>

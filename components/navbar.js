@@ -9,6 +9,7 @@ import { motion, AnimatePresence } from "framer-motion"
 
 // Lazy-load to avoid server render issues with dialog on some routes
 const PatchNotesButton = dynamic(() => import("./patch-notes"), { ssr: false })
+const FAQsButton = dynamic(() => import("./faqs-button"), { ssr: false })
 import { useTheme } from "next-themes"
 import { trackAnalyticsEvent } from "@/lib/analytics-client"
 
@@ -203,6 +204,7 @@ export default function Navbar() {
               )
             })}
             <PatchNotesButton />
+            <FAQsButton />
             {isHomePage && (
               <button
                 onClick={() => {
@@ -259,6 +261,9 @@ export default function Navbar() {
               )}
               <div>
                 <PatchNotesButton />
+              </div>
+              <div>
+                <FAQsButton />
               </div>
             </div>
           </div>

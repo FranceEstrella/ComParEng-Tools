@@ -15,19 +15,21 @@ import { parseCurriculumHtml } from "@/lib/curriculum-import"
 import { registerExternalCourses } from "@/lib/course-data"
 import { saveCourseStatuses } from "@/lib/course-storage"
 import { RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX } from "@/lib/config"
+import OnboardingSchedulePreview from "@/components/onboarding/schedule-preview"
+import OnboardingCourseTrackerPreview from "@/components/onboarding/course-tracker-preview"
+import OnboardingAcademicPlannerPreview from "@/components/onboarding/academic-planner-preview"
+import OnboardingRewardProfilePreview from "@/components/onboarding/reward-profile-preview"
 import {
   ArrowRight,
   BookOpen,
   BookOpenCheck,
   Calendar,
-  CalendarDays,
   Download,
   GraduationCap,
   Laptop,
   MessageSquare,
   Moon,
   Palette,
-  PartyPopper,
   PlugZap,
   RefreshCw,
   Repeat2,
@@ -36,7 +38,7 @@ import {
   ShieldCheck,
   Sparkles,
   Sun,
-  Target,
+  Trophy,
   Upload,
 } from "lucide-react"
 
@@ -58,6 +60,8 @@ type SlideId =
   | "course-tracker"
   | "schedule-maker"
   | "academic-planner"
+  | "reward-system"
+  | "profile-summary"
   | "extension"
   | "live-data"
   | "theme"
@@ -73,11 +77,15 @@ type Slide = {
 }
 
 const CREDIT_LIMITS_STORAGE_KEY = "planner.creditLimits"
+const WELCOME_ICON_SIZE_PX =180
+const WELCOME_ICON_WRAPPER_SIZE_PX = 180
 
 const slideAccentClasses: Partial<Record<SlideId, string>> = {
   "course-tracker": "text-blue-600 dark:text-blue-300",
   "schedule-maker": "text-purple-600 dark:text-purple-300",
   "academic-planner": "text-emerald-600 dark:text-emerald-300",
+  "reward-system": "text-amber-400",
+  "profile-summary": "text-violet-600 dark:text-violet-300",
 }
 
 const slides: Slide[] = [
@@ -85,15 +93,18 @@ const slides: Slide[] = [
     id: "welcome",
     label: "Start",
     title: "Welcome to ComParEng Tools",
-    description: "A quick walkthrough so you can make the most out of the Course Tracker, Schedule Maker, and Academic Planner.",
-    icon: <PartyPopper className="h-10 w-10 text-emerald-600 animate-bounce" />,
-  },
-  {
-    id: "mission",
-    label: "Overview",
-    title: "Three tools, one workspace",
-    description: "Plan terms, keep tabs on prerequisites, and build conflict-free schedules without switching tabs.",
-    icon: <Target className="h-10 w-10 text-sky-600 animate-pulse" />,
+    description: "A quick walkthrough of your three-tool workspace: Course Tracker, Schedule Maker, and Academic Planner.",
+    icon: (
+      <Image
+        src="/welcome-neebot.png"
+        alt="ComParEng robot"
+        width={WELCOME_ICON_SIZE_PX}
+        height={WELCOME_ICON_SIZE_PX}
+        className="object-contain"
+        style={{ width: WELCOME_ICON_SIZE_PX, height: WELCOME_ICON_SIZE_PX }}
+        priority
+      />
+    ),
   },
   {
     id: "course-tracker",
@@ -115,6 +126,20 @@ const slides: Slide[] = [
     title: "Map your entire journey",
     description: "Drag terms, set unit caps, and keep electives organized so you always know what's next.",
     icon: <GraduationCap className="h-10 w-10 text-emerald-600 animate-pulse" />,
+  },
+  {
+    id: "reward-system",
+    label: "Rewards",
+    title: "Earn XP and track milestones",
+    description: "Complete terms to unlock animated reward moments with XP gains, levels, and milestone badges.",
+    icon: <Trophy className="h-10 w-10 text-white animate-pulse" />,
+  },
+  {
+    id: "profile-summary",
+    label: "Profile",
+    title: "See your academic summary",
+    description: "Open Profile to view completion, rank progress, graduation estimate, and earned rewards in one place.",
+    icon: <Sparkles className="h-10 w-10 text-violet-600 animate-pulse" />,
   },
   {
     id: "extension",
@@ -248,6 +273,8 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const progressValue = useMemo(() => ((currentIndex + 1) / slides.length) * 100, [currentIndex])
   const needsCustomUpload = activeSlide.id === "cpe-check" && cpeAnswer === "no" && !hasCustomCurriculum
   const isWelcomeSlide = activeSlide.id === "welcome"
+  const isScheduleMakerSlide = activeSlide.id === "schedule-maker"
+  const isRewardThemeSlide = activeSlide.id === "reward-system"
 
   const nextDisabled = activeSlide.id === "cpe-check" && (cpeAnswer === null || needsCustomUpload)
   const isLastSlide = currentIndex === slides.length - 1
@@ -291,7 +318,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       promptExtensionConfirmation("skip")
       return
     }
-    const generalSkipSlides: SlideId[] = ["welcome", "mission", "course-tracker", "schedule-maker", "academic-planner", "live-data", "theme"]
+    const generalSkipSlides: SlideId[] = ["welcome", "course-tracker", "schedule-maker", "academic-planner", "reward-system", "profile-summary", "live-data", "theme"]
     if (generalSkipSlides.includes(activeSlide.id)) {
       setGeneralSkipPromptOpen(true)
       return
@@ -440,9 +467,14 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
 
   const renderSlideContent = (slideId: SlideId) => {
     switch (slideId) {
+      case "welcome":
       case "mission":
         return (
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Start with the tool you need now, then switch anytime as your term plan evolves.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
             {[
               {
                 title: "Course Tracker",
@@ -464,8 +496,8 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
               },
             ].map((item) => (
               <Card key={item.title} className="border border-dashed">
-                <CardHeader className="space-y-1 pb-2">
-                  <div className={cn("inline-flex rounded-full bg-gradient-to-r p-2", item.accent)}>
+                <CardHeader className="space-y-1 pb-2 text-center">
+                  <div className={cn("mx-auto inline-flex rounded-full bg-gradient-to-r p-2", item.accent)}>
                     {item.icon}
                   </div>
                   <CardTitle className="text-base">{item.title}</CardTitle>
@@ -473,76 +505,220 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                 <CardContent className="text-sm text-muted-foreground">{item.body}</CardContent>
               </Card>
             ))}
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Note: The mascot is a property of the Computer Engineering Organization - FEU Tech.
+            </p>
           </div>
         )
       case "course-tracker":
         return (
-          <div className="space-y-3">
-            <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200" variant="secondary">
-              Auto-sync statuses
-            </Badge>
-            <ul className="list-disc pl-6 space-y-1 text-sm text-muted-foreground">
-              <li>Track completed, in-progress, and remaining subjects with colors you set.</li>
-              <li>Import SOLAR curriculum HTML to mirror your exact flow.</li>
-              <li>Hover to view prerequisites and dependent courses instantly.</li>
-            </ul>
+          <div className="space-y-2">
+            <Card className="border-slate-200/90 bg-gradient-to-br from-slate-50 via-white to-blue-50/40 dark:border-white/10 dark:from-slate-900 dark:via-slate-900 dark:to-slate-800/70">
+              <CardContent className="space-y-2 p-3">
+                <Badge className="h-5 bg-emerald-100 px-2 text-[10px] text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200" variant="secondary">
+                  Progress visibility
+                </Badge>
+                <div>
+                  <h3 className="text-sm font-semibold leading-tight text-slate-900 dark:text-slate-100 sm:text-base">
+                    Track prerequisites in card and table views.
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    Use Card view for quick checks and Table view for detailed status + last-taken review.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 text-[11px] text-slate-700 dark:text-slate-200">
+                  <div className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 dark:border-white/10 dark:bg-white/5">
+                    <p className="font-semibold">Card view</p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">Prerequisites, units, and status at a glance.</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 dark:border-white/10 dark:bg-white/5">
+                    <p className="font-semibold">Table view + Save Grade Attempts</p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">Add grade attempts, review last taken terms, and save a transcript of grades.</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 dark:border-white/10 dark:bg-white/5">
+                    <p className="font-semibold">Synced progress</p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">Both views stay synced with imported curriculum and saved progress.</p>
+                  </div>
+                  <div className="rounded-lg border border-blue-300 bg-blue-50/90 px-2 py-1.5 dark:border-blue-400/40 dark:bg-blue-500/10">
+                    <p className="font-semibold text-blue-800 dark:text-blue-100">Tip</p>
+                    <p className="mt-0.5 text-[10px] text-blue-700 dark:text-blue-200">
+                      Use Table view for grade attempts and transcript export, while Card view stays focused on prerequisite and status checks.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <div className="rounded-2xl border border-slate-200/80 bg-white/70 p-1.5 dark:border-white/10 dark:bg-slate-900/60">
+              <OnboardingCourseTrackerPreview />
+            </div>
           </div>
         )
       case "schedule-maker":
         return (
-          <div className="space-y-3">
-            <Badge variant="secondary" className="bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-200">
-              Live section feed
-            </Badge>
-            <p className="text-sm text-muted-foreground">
-              Each upload stays fresh for a short window and refreshes automatically so you can watch slots open up without reloading.
-            </p>
-            <div className="grid gap-2 text-xs">
-              <div className="flex items-center justify-between rounded-lg border px-3 py-2 text-muted-foreground">
-                <span className="font-medium text-slate-800 dark:text-slate-100">COExxxx | 7:30-9:00</span>
-                <span className="text-emerald-600 dark:text-emerald-300">3 slots left</span>
-              </div>
-              <div className="flex items-center justify-between rounded-lg border px-3 py-2 text-muted-foreground">
-                <span className="font-medium text-slate-800 dark:text-slate-100">ELExxxx | 10:00-12:00</span>
-                <span className="text-rose-600 dark:text-rose-300">For petition</span>
-              </div>
-            </div>
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)] lg:items-start">
+            <Card className="border-slate-200/90 bg-gradient-to-br from-slate-50 via-white to-rose-50/40 dark:border-white/10 dark:from-slate-900 dark:via-slate-900 dark:to-slate-800/70">
+              <CardContent className="space-y-2.5 p-3.5">
+                <Badge variant="secondary" className="h-6 bg-blue-100 text-[11px] text-blue-800 dark:bg-blue-500/20 dark:text-blue-200">
+                  Tools in action
+                </Badge>
+                <div>
+                  <h3 className="text-base font-semibold leading-tight text-slate-900 dark:text-slate-100 sm:text-lg">
+                    Plan with live section data and a visual timetable.
+                  </h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Import sections from SOLAR using the extractor, compare options in one place, then shape your final layout in Schedule View.
+                  </p>
+                </div>
+                <ul className="space-y-1 text-xs text-slate-700 dark:text-slate-200">
+                  <li className="rounded-lg border border-slate-200 bg-white/80 px-2.5 py-1.5 dark:border-white/10 dark:bg-white/5">
+                    Available Courses and Selected Courses let you filter, compare, and pick real section combinations.
+                  </li>
+                  <li className="rounded-lg border border-slate-200 bg-white/80 px-2.5 py-1.5 dark:border-white/10 dark:bg-white/5">
+                    Schedule View highlights overlaps so you can adjust meeting times before enrollment.
+                  </li>
+                  <li className="rounded-lg border border-slate-200 bg-white/80 px-2.5 py-1.5 dark:border-white/10 dark:bg-white/5">
+                    Export your finalized schedule as .ics, image, CSV, or JSON for sharing and backup.
+                  </li>
+                </ul>
+                <div className="rounded-xl border border-dashed border-rose-300 bg-rose-50 px-2.5 py-1.5 text-[11px] font-semibold text-rose-800 dark:border-rose-400/40 dark:bg-rose-500/10 dark:text-rose-100">
+                  Tip: Switch to "Version 2" to see a conflict example, then drag blocks to create a conflict-free version.
+                </div>
+              </CardContent>
+            </Card>
+            <OnboardingSchedulePreview />
           </div>
         )
       case "academic-planner":
         return (
-          <div className="space-y-3">
-            <Badge variant="secondary" className="bg-purple-100 text-purple-800 dark:bg-purple-500/20 dark:text-purple-200">
-              Long-range view
-            </Badge>
-            <p className="text-sm text-muted-foreground">
-              Outline every remaining term, balance units, and drag electives into future slots to avoid overload later.
-            </p>
-            <div className="grid gap-2 text-xs sm:grid-cols-2">
-              {["Term 1", "Term 2"].map((term, idx) => (
-                <div key={term} className="rounded-xl border border-dashed p-3">
-                  <div className="flex items-center justify-between text-slate-700 dark:text-slate-100">
-                    <span className="font-medium">{term}</span>
-                    <span>{idx === 0 ? "21" : "19"} units</span>
+          <div className="space-y-2">
+            <Card className="border-slate-200/90 bg-gradient-to-br from-slate-50 via-white to-emerald-50/40 dark:border-white/10 dark:from-slate-900 dark:via-slate-900 dark:to-slate-800/70">
+              <CardContent className="space-y-2 p-3">
+                <Badge variant="secondary" className="h-5 bg-purple-100 px-2 text-[10px] text-purple-800 dark:bg-purple-500/20 dark:text-purple-200">
+                  Long-range planning
+                </Badge>
+                <div>
+                  <h3 className="text-sm font-semibold leading-tight text-slate-900 dark:text-slate-100 sm:text-base">
+                    Compare strategy modes and project your graduation timeline.
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    Academic Planner helps you regenerate terms with different priorities while keeping unit limits and prerequisite flow in view.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 text-[11px] text-slate-700 dark:text-slate-200">
+                  <div className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 dark:border-white/10 dark:bg-white/5">
+                    <p className="font-semibold">Three planning modes</p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">Balanced, Crucial-first, and Easy-first strategies.</p>
                   </div>
-                  <div className="mt-2 space-y-1 text-muted-foreground">
-                    <p>Core subjects</p>
-                    <p>Elective placeholder</p>
+                  <div className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 dark:border-white/10 dark:bg-white/5">
+                    <p className="font-semibold">Graduation summary</p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">Shows target graduation and projected load.</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-white/80 px-2 py-1.5 dark:border-white/10 dark:bg-white/5">
+                    <p className="font-semibold">Sample term plan</p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">Preview how each mode changes term composition.</p>
+                  </div>
+                  <div className="rounded-lg border border-emerald-300 bg-emerald-50/90 px-2 py-1.5 dark:border-emerald-400/40 dark:bg-emerald-500/10">
+                    <p className="font-semibold text-emerald-800 dark:text-emerald-100">Tip</p>
+                    <p className="mt-0.5 text-[10px] text-emerald-700 dark:text-emerald-200">
+                      Toggle modes to compare tradeoffs before locking your final graduation plan.
+                    </p>
                   </div>
                 </div>
-              ))}
+              </CardContent>
+            </Card>
+            <div className="rounded-2xl border border-slate-200/80 bg-white/70 p-1.5 dark:border-white/10 dark:bg-slate-900/60">
+              <OnboardingAcademicPlannerPreview />
             </div>
+          </div>
+        )
+      case "reward-system":
+        return (
+          <div className="space-y-2">
+            <Card className="border-amber-200/20 bg-gradient-to-br from-[#2a180f] via-[#19141e] to-[#0d0b12] text-amber-50 shadow-[0_16px_40px_rgba(0,0,0,0.42)]">
+              <CardContent className="space-y-2 p-3">
+                <Badge variant="secondary" className="h-5 bg-amber-100/15 px-2 text-[10px] text-amber-100">
+                  Gamified progress
+                </Badge>
+                <div>
+                  <h3 className="text-sm font-semibold leading-tight text-amber-50 sm:text-base">
+                    Get reward popups whenever you complete term milestones.
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-amber-100/85">
+                    Course Tracker triggers an animated overlay with XP gains, current level progress, and newly unlocked term/year badges.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 text-[11px] text-amber-50">
+                  <div className="rounded-lg border border-amber-200/20 bg-amber-100/5 px-2 py-1.5 backdrop-blur-[1px]">
+                    <p className="font-semibold">Reward overlay</p>
+                    <p className="mt-0.5 text-[10px] text-amber-100/85">Animated XP gain, level progress, and badge unlock moments.</p>
+                  </div>
+                  <div className="rounded-lg border border-amber-200/20 bg-amber-100/5 px-2 py-1.5 backdrop-blur-[1px]">
+                    <p className="font-semibold">Milestone XP</p>
+                    <p className="mt-0.5 text-[10px] text-amber-100/85">Each completed term or year adds to your total XP progression.</p>
+                  </div>
+                  <div className="rounded-lg border border-amber-200/20 bg-amber-100/5 px-2 py-1.5 backdrop-blur-[1px]">
+                    <p className="font-semibold">Badges earned</p>
+                    <p className="mt-0.5 text-[10px] text-amber-100/85">Each completed term and year contributes to your collection.</p>
+                  </div>
+                  <div className="rounded-lg border border-orange-200/40 bg-orange-400/10 px-2 py-1.5">
+                    <p className="font-semibold text-orange-100">Tip</p>
+                    <p className="mt-0.5 text-[10px] text-orange-50/90">Close the overlay to continue tracking, then jump to Profile for your full history.</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <OnboardingRewardProfilePreview mode="reward" />
+          </div>
+        )
+      case "profile-summary":
+        return (
+          <div className="space-y-2">
+            <Card className="border-violet-200/35 bg-gradient-to-br from-[#38338d] via-[#5a4fc2] to-[#9a84ea] text-white shadow-[0_16px_40px_rgba(68,56,152,0.35)]">
+              <CardContent className="space-y-2 p-3">
+                <Badge variant="secondary" className="h-5 bg-violet-200/20 px-2 text-[10px] text-violet-50">
+                  Profile overview
+                </Badge>
+                <div>
+                  <h3 className="text-sm font-semibold leading-tight text-white sm:text-base">
+                    Review your academic summary and rewards from one profile panel.
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-violet-100/90">
+                    The profile view combines completion stats, level progress, and unlocked badges so you can monitor progress at a glance.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 text-[11px] text-violet-50">
+                  <div className="rounded-lg border border-violet-200/35 bg-black/20 px-2 py-1.5 backdrop-blur-[1px]">
+                    <p className="font-semibold">Academic completion</p>
+                    <p className="mt-0.5 text-[10px] text-violet-100/90">Check overall passed, active, and pending course progress.</p>
+                  </div>
+                  <div className="rounded-lg border border-violet-200/35 bg-black/20 px-2 py-1.5 backdrop-blur-[1px]">
+                    <p className="font-semibold">Rank and XP</p>
+                    <p className="mt-0.5 text-[10px] text-violet-100/90">See your current level plus XP needed for the next milestone.</p>
+                  </div>
+                  <div className="rounded-lg border border-violet-200/35 bg-black/20 px-2 py-1.5 backdrop-blur-[1px]">
+                    <p className="font-semibold">Badge history</p>
+                    <p className="mt-0.5 text-[10px] text-violet-100/90">Browse all earned term and year badges in one list.</p>
+                  </div>
+                  <div className="rounded-lg border border-violet-200/40 bg-violet-300/15 px-2 py-1.5">
+                    <p className="font-semibold text-violet-100">Tip</p>
+                    <p className="mt-0.5 text-[10px] text-violet-50/90">Use the color chips in the preview to switch the profile background theme.</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <OnboardingRewardProfilePreview mode="profile" />
           </div>
         )
       case "extension":
         return (
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-dashed p-4">
-              <p className="text-sm text-muted-foreground">
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-rose-200/80 bg-gradient-to-br from-rose-50 via-white to-orange-50 p-4 shadow-sm dark:border-rose-400/20 dark:from-rose-500/10 dark:via-slate-900 dark:to-orange-500/10">
+              <p className="text-sm text-slate-700 dark:text-slate-200">
                 Install the <span className="font-semibold">ComParEng Course Data Extractor</span> from the Chrome Web Store, then log in to SOLAR before uploading sections.
               </p>
               <Button
-                className="mt-3 flex items-center gap-2"
+                className="mt-3 h-9 gap-2 bg-gradient-to-r from-rose-600 to-orange-500 text-white hover:from-rose-500 hover:to-orange-400"
                 onClick={() => {
                   if (typeof window !== "undefined") {
                     window.open(
@@ -554,6 +730,39 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
               >
                 <Download className="h-4 w-4" /> Open Chrome Web Store
               </Button>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 text-[11px] text-slate-700 dark:text-slate-200">
+              <div className="rounded-lg border border-slate-200 bg-white/90 px-2 py-1.5 shadow-sm dark:border-white/10 dark:bg-white/5">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-200">
+                    <Calendar className="h-3 w-3" />
+                  </span>
+                  <p className="font-semibold">Schedule Maker</p>
+                </div>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Extension imports live SOLAR sections so you can compare slots and conflicts.</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white/90 px-2 py-1.5 shadow-sm dark:border-white/10 dark:bg-white/5">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200">
+                    <GraduationCap className="h-3 w-3" />
+                  </span>
+                  <p className="font-semibold">Academic Planner</p>
+                </div>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Uses the same extracted section data to generate and validate realistic term plans.</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white/90 px-2 py-1.5 shadow-sm dark:border-white/10 dark:bg-white/5">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200">
+                    <BookOpen className="h-3 w-3" />
+                  </span>
+                  <p className="font-semibold">Course Tracker</p>
+                </div>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Works without the extension via curriculum import, then stays aligned with the same course codes.</p>
+              </div>
+              <div className="rounded-lg border border-rose-300 bg-rose-50/90 px-2 py-1.5 shadow-sm dark:border-rose-400/40 dark:bg-rose-500/10">
+                <p className="font-semibold text-rose-800 dark:text-rose-100">Tip</p>
+                <p className="mt-0.5 text-[10px] text-rose-700 dark:text-rose-200">Install once, keep SOLAR open, then refresh uploads whenever section availability changes.</p>
+              </div>
             </div>
             <p className="text-xs text-muted-foreground">
               No Chrome? Export CSV from another browser, then import inside the Schedule Maker.
@@ -817,20 +1026,39 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         <div
           className={cn(
             "relative flex h-full max-h-[90vh] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-white/10 dark:bg-slate-900",
+            isRewardThemeSlide && "border-amber-200/20 bg-gradient-to-br from-[#2a180f] via-[#19141e] to-[#0d0b12] text-amber-50",
             isMobileLayout && "h-full min-h-full max-h-none overflow-y-auto rounded-none border-none"
           )}
         >
-          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-400 via-blue-400 to-amber-400" />
-          <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 text-sm font-medium uppercase tracking-wide dark:border-white/10">
+          <div
+            className={cn(
+              "absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-400 via-blue-400 to-amber-400",
+              isRewardThemeSlide && "from-amber-300 via-orange-400 to-amber-500"
+            )}
+          />
+          <div
+            className={cn(
+              "flex items-center justify-between border-b border-slate-100 px-6 py-4 text-sm font-medium uppercase tracking-wide dark:border-white/10",
+              isRewardThemeSlide && "border-white/10 text-amber-100"
+            )}
+          >
             <span>Guided onboarding</span>
             {activeSlide.id !== "wrap-up" && (
-              <Button variant="ghost" size="sm" onClick={handleSkip}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleSkip}
+                className={cn(
+                  isRewardThemeSlide &&
+                    "border border-amber-300/40 text-amber-100 hover:bg-amber-100/10 hover:text-white"
+                )}
+              >
                 Skip tour
               </Button>
             )}
           </div>
           {/* Scrollable slide content */}
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-4 pt-5">
+          <div className={cn("flex-1 min-h-0 px-6 pb-4 pt-5", isScheduleMakerSlide && !isMobileLayout ? "overflow-hidden" : "overflow-y-auto")}>
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide">
                 <span className={slideAccentClasses[activeSlide.id] ?? "text-emerald-600 dark:text-emerald-300"}>{activeSlide.label}</span>
@@ -859,8 +1087,14 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                 <div
                   className={cn(
                     "flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-900 dark:bg-white/10 dark:text-white",
+                    isRewardThemeSlide && "bg-amber-100/10 text-amber-100",
                     (isMobileLayout || isWelcomeSlide) && "mb-1"
                   )}
+                  style={
+                    isWelcomeSlide
+                      ? { width: WELCOME_ICON_WRAPPER_SIZE_PX, height: WELCOME_ICON_WRAPPER_SIZE_PX }
+                      : undefined
+                  }
                   aria-hidden
                 >
                   {activeSlide.icon}
@@ -868,13 +1102,13 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                 <div className={cn("text-left", (isMobileLayout || isWelcomeSlide) && "text-center")}
                 >
                   <h2 className="text-2xl font-semibold leading-tight">{activeSlide.title}</h2>
-                  <p className="text-sm text-muted-foreground">{activeSlide.description}</p>
+                  <p className={cn("text-sm text-muted-foreground", isRewardThemeSlide && "text-amber-100/80")}>{activeSlide.description}</p>
                 </div>
               </div>
               {renderSlideContent(activeSlide.id)}
             </div>
           </div>
-          <div className="mt-auto border-t border-slate-100 px-6 py-4 dark:border-white/10">
+          <div className={cn("mt-auto border-t border-slate-100 px-6 py-4 dark:border-white/10", isRewardThemeSlide && "border-white/10")}>
             <div
               className={cn(
                 "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
@@ -887,7 +1121,11 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                   <Button
                     variant="ghost"
                     onClick={goPrev}
-                    className={cn(isMobileLayout && "w-full justify-center py-3 text-base")}
+                    className={cn(
+                      isMobileLayout && "w-full justify-center py-3 text-base",
+                      isRewardThemeSlide &&
+                        "border border-amber-300/40 text-white hover:bg-amber-100/10 hover:text-white"
+                    )}
                   >
                     Back
                   </Button>
@@ -895,12 +1133,16 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                 <Button
                   onClick={goNext}
                   disabled={nextDisabled}
-                  className={cn(isMobileLayout && "w-full justify-center py-3 text-base")}
+                  className={cn(
+                    isMobileLayout && "w-full justify-center py-3 text-base",
+                    isRewardThemeSlide &&
+                      "border border-amber-300/40 bg-transparent text-amber-100 hover:bg-amber-100/10 hover:text-white"
+                  )}
                 >
                   {isLastSlide ? "Finish" : "Next"}
                 </Button>
               </div>
-              <p className={cn("text-xs text-muted-foreground", isMobileLayout && "text-center")}
+              <p className={cn("text-xs text-muted-foreground", isRewardThemeSlide && "text-amber-100/75", isMobileLayout && "text-center")}
               >
                 Tip: Reopen this tour anytime using the Start Onboarding button on the homepage.
               </p>
