@@ -188,6 +188,7 @@ interface PlanCourse extends Course {
   availableSections: CourseSection[]
   needsPetition: boolean
   recommendedSection?: CourseSection
+  autoClearedSectionConflict?: boolean
 }
 
 interface DependentAdjustment {
@@ -4879,8 +4880,134 @@ export default function AcademicPlanner() {
       totalCourses: courses.length,
     })
 
+    const buildPlanCourseForTerm = (course: Course, term: string, existing?: PlanCourse): PlanCourse => {
+      const available = getAvailableSections(course.code)
+      const preferredSection =
+        existing?.recommendedSection &&
+        available.some((section) => (section.section || "").trim() === (existing.recommendedSection?.section || "").trim())
+          ? existing.recommendedSection
+          : undefined
+
+      return {
+        ...course,
+        prerequisites: Array.isArray((course as any).prerequisites) ? course.prerequisites : [],
+        availableSections: available,
+        needsPetition: courseNeedsPetitionForTerm(course, term),
+        recommendedSection: preferredSection || findBestSection(course.code),
+        autoClearedSectionConflict: false,
+      }
+    }
+
+    const ensureActiveCoursesInCurrentTerm = (semesters: SemesterPlan[]): SemesterPlan[] => {
+      if (activeCourses.length === 0) return semesters
+
+      const activeIds = new Set(activeCourses.map((course) => course.id))
+      const preservedById = new Map<string, PlanCourse>()
+      const trimmed: SemesterPlan[] = semesters
+        .map((semester) => {
+          const filteredCourses = semester.courses.filter((course) => {
+            if (!activeIds.has(course.id)) return true
+            preservedById.set(course.id, course)
+            return false
+          })
+          return { ...semester, courses: filteredCourses }
+        })
+        .filter((semester) => semester.courses.length > 0)
+
+      const currentTermNormalized = normalizeTermLabel(currentTerm)
+      let currentIndex = trimmed.findIndex(
+        (semester) => semester.year === currentYear && termsMatch(semester.term, currentTermNormalized),
+      )
+
+      if (currentIndex === -1) {
+        trimmed.push({ year: currentYear, term: currentTermNormalized, courses: [] })
+        currentIndex = trimmed.length - 1
+      }
+
+      const currentSemester = trimmed[currentIndex]
+      const currentIds = new Set(currentSemester.courses.map((course) => course.id))
+
+      activeCourses.forEach((course) => {
+        const locked = lockedPlacements[course.id]
+        if (locked && !(locked.year === currentYear && termsMatch(locked.term, currentTermNormalized))) {
+          return
+        }
+
+        if (currentIds.has(course.id)) return
+        const existing = preservedById.get(course.id)
+        currentSemester.courses.push(buildPlanCourseForTerm(course, currentTermNormalized, existing))
+        currentIds.add(course.id)
+      })
+
+      trimmed.sort((a, b) =>
+        a.year === b.year ? getTermIndex(a.term) - getTermIndex(b.term) : a.year - b.year,
+      )
+
+      return trimmed
+    }
+
+    const resolveCurrentTermSectionConflicts = (semesters: SemesterPlan[]): SemesterPlan[] => {
+      const currentIndex = semesters.findIndex((semester) => isCurrentSemester(semester.year, semester.term))
+      if (currentIndex === -1) return semesters
+
+      const sectionSlotKey = (section?: CourseSection): string | null => {
+        if (!section) return null
+        const days = (section.meetingDays || "").trim()
+        const time = (section.meetingTime || "").trim()
+        if (!days || !time || time.toUpperCase() === "TBD") return null
+        return `${days}-${time}`
+      }
+
+      const keepPreferredCourse = (existing: PlanCourse, candidate: PlanCourse): PlanCourse => {
+        if (candidate.status === "active" && existing.status !== "active") return candidate
+        if (existing.status === "active" && candidate.status !== "active") return existing
+        return existing
+      }
+
+      const currentSemester = semesters[currentIndex]
+      const ownerBySlot = new Map<string, string>()
+      const ownerCourseBySlot = new Map<string, PlanCourse>()
+
+      currentSemester.courses.forEach((course) => {
+        const key = sectionSlotKey(course.recommendedSection)
+        if (!key) return
+        const existingOwnerCourse = ownerCourseBySlot.get(key)
+        if (!existingOwnerCourse) {
+          ownerBySlot.set(key, course.id)
+          ownerCourseBySlot.set(key, course)
+          return
+        }
+
+        const preferred = keepPreferredCourse(existingOwnerCourse, course)
+        ownerBySlot.set(key, preferred.id)
+        ownerCourseBySlot.set(key, preferred)
+      })
+
+      let changed = false
+      const resolvedCourses = currentSemester.courses.map((course) => {
+        const key = sectionSlotKey(course.recommendedSection)
+        if (!key) return course
+        const ownerId = ownerBySlot.get(key)
+        if (ownerId === course.id) {
+          return course.autoClearedSectionConflict
+            ? { ...course, autoClearedSectionConflict: false }
+            : course
+        }
+        changed = true
+        return { ...course, recommendedSection: undefined, autoClearedSectionConflict: true }
+      })
+
+      if (!changed) return semesters
+
+      const next = [...semesters]
+      next[currentIndex] = { ...currentSemester, courses: resolvedCourses }
+      return next
+    }
+
     const finalizePlan = (semesters: SemesterPlan[]) => {
-      const ordered = [...semesters].sort((a, b) =>
+      const activePrioritized = ensureActiveCoursesInCurrentTerm(semesters)
+      const sectionConflictResolved = resolveCurrentTermSectionConflicts(activePrioritized)
+      const ordered = [...sectionConflictResolved].sort((a, b) =>
         a.year === b.year ? getTermIndex(a.term) - getTermIndex(b.term) : a.year - b.year,
       )
 
@@ -5882,9 +6009,64 @@ export default function AcademicPlanner() {
       const updatedPlan = prevPlan.map((semester) => ({
         ...semester,
         courses: semester.courses.map((course) =>
-          course.id === courseId ? { ...course, recommendedSection: newSection } : course,
+          course.id === courseId
+            ? { ...course, recommendedSection: newSection, autoClearedSectionConflict: false }
+            : course,
         ),
       }))
+
+      const currentIndex = updatedPlan.findIndex((semester) => isCurrentSemester(semester.year, semester.term))
+      if (currentIndex !== -1) {
+        const sectionSlotKey = (section?: CourseSection): string | null => {
+          if (!section) return null
+          const days = (section.meetingDays || "").trim()
+          const time = (section.meetingTime || "").trim()
+          if (!days || !time || time.toUpperCase() === "TBD") return null
+          return `${days}-${time}`
+        }
+
+        const keepPreferredCourse = (existing: PlanCourse, candidate: PlanCourse): PlanCourse => {
+          if (candidate.status === "active" && existing.status !== "active") return candidate
+          if (existing.status === "active" && candidate.status !== "active") return existing
+          return existing
+        }
+
+        const semester = updatedPlan[currentIndex]
+        const ownerBySlot = new Map<string, string>()
+        const ownerCourseBySlot = new Map<string, PlanCourse>()
+
+        semester.courses.forEach((course) => {
+          const key = sectionSlotKey(course.recommendedSection)
+          if (!key) return
+
+          const existingOwner = ownerCourseBySlot.get(key)
+          if (!existingOwner) {
+            ownerBySlot.set(key, course.id)
+            ownerCourseBySlot.set(key, course)
+            return
+          }
+
+          const preferred = keepPreferredCourse(existingOwner, course)
+          ownerBySlot.set(key, preferred.id)
+          ownerCourseBySlot.set(key, preferred)
+        })
+
+        updatedPlan[currentIndex] = {
+          ...semester,
+          courses: semester.courses.map((course) => {
+            const key = sectionSlotKey(course.recommendedSection)
+            if (!key) return course
+            const ownerId = ownerBySlot.get(key)
+            if (ownerId === course.id) {
+              return course.autoClearedSectionConflict
+                ? { ...course, autoClearedSectionConflict: false }
+                : course
+            }
+            return { ...course, recommendedSection: undefined, autoClearedSectionConflict: true }
+          }),
+        }
+      }
+
       return applyPetitionFlagsToPlan(updatedPlan)
     })
   }
@@ -8419,6 +8601,11 @@ export default function AcademicPlanner() {
                                                 <Calendar className="h-3 w-3" />
                                                 Find Section
                                               </Button>
+                                            )}
+                                            {course.autoClearedSectionConflict && !section && (
+                                              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                                                Section cleared due to schedule conflict
+                                              </p>
                                             )}
                                           </TableCell>
                                           <TableCell>

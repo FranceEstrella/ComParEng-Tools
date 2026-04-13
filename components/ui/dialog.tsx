@@ -31,12 +31,14 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
 interface DialogContentProps extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
   hideCloseButton?: boolean
+  overlayClassName?: string
 }
 
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
 >(({ className, children, hideCloseButton = false, onPointerDownOutside, onInteractOutside, ...props }, ref) => {
+  const { overlayClassName, ...contentProps } = props
   const ariaDescribedBy = props["aria-describedby"]
 
   const isReportTrigger = (target: EventTarget | null) => {
@@ -62,7 +64,7 @@ const DialogContent = React.forwardRef<
 
   return (
   <DialogPortal>
-    <DialogOverlay />
+    <DialogOverlay className={overlayClassName} />
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
@@ -72,7 +74,7 @@ const DialogContent = React.forwardRef<
       onPointerDownOutside={handlePointerDownOutside}
       onInteractOutside={handleInteractOutside}
       aria-describedby={ariaDescribedBy ?? undefined}
-      {...props}
+      {...contentProps}
     >
       {children}
       {!hideCloseButton && (

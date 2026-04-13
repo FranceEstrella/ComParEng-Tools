@@ -1630,6 +1630,7 @@ export default function ScheduleMaker() {
     if (!isClient) return
     if (hasPromptedTrackerActiveImportRef.current) return
     if (activeCourses.length === 0) return
+    if (selectedCourses.length > 0) return
     if (selectedCourseCodes.length > 0) return
     if (nextStepsDialogOpen || noDataDialogOpen || awaitingDataDialogOpen || noActiveDialogOpen) return
     if (trackerActiveImportDialogOpen) return
@@ -1639,6 +1640,7 @@ export default function ScheduleMaker() {
   }, [
     isClient,
     activeCourses.length,
+    selectedCourses.length,
     selectedCourseCodes.length,
     nextStepsDialogOpen,
     noDataDialogOpen,
@@ -1658,6 +1660,12 @@ export default function ScheduleMaker() {
       setNoDataDialogDismissed(false)
     }
   }, [hasRealCourseData])
+
+  useEffect(() => {
+    if (selectedCourses.length > 0 && trackerActiveImportDialogOpen) {
+      setTrackerActiveImportDialogOpen(false)
+    }
+  }, [selectedCourses.length, trackerActiveImportDialogOpen])
 
   useEffect(() => {
     if (hasRealCourseData) {
@@ -6492,6 +6500,14 @@ const renderScheduleView = () => {
             </div>
           </div>
           <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button
+              variant="outline"
+              className="w-full sm:w-auto gap-2"
+              onClick={openStudentPortal}
+            >
+              <ExternalLink className="h-4 w-4" />
+              Open Course Offerings page
+            </Button>
             <Button
               className="w-full sm:w-auto gap-2"
               onClick={handleStudentPortalLaunch}

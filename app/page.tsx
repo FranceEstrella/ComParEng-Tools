@@ -2,10 +2,11 @@
 
 import Link from "next/link"
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
-import { BookOpen, Calendar, GraduationCap, Download, ExternalLink, Info, X, ArrowUp, Palette, Sparkles, Trophy, Medal, Award, Pencil, ArrowLeft, Check, Menu } from "lucide-react"
+import { BookOpen, Calendar, GraduationCap, Download, Upload, Database, Loader2, Trash2, ExternalLink, Info, X, ArrowUp, Palette, Sparkles, Trophy, Medal, Award, Pencil, ArrowLeft, Check, Menu } from "lucide-react"
 import PatchNotesButton from "@/components/patch-notes"
 import FAQsButton from "@/components/faqs-button"
 import { useTheme } from "next-themes"
+import { toPng } from "html-to-image"
 import { Button } from "@/components/ui/button"
 import { Moon, Sun } from "lucide-react"
 import { AnimatePresence, motion } from "framer-motion"
@@ -291,10 +292,22 @@ export default function Home() {
   const [profileDirty, setProfileDirty] = useState(false)
   const [profileBackHover, setProfileBackHover] = useState(false)
   const [profilePreviewOpen, setProfilePreviewOpen] = useState(false)
+  const [progressRankInfoView, setProgressRankInfoView] = useState<"affirmation" | "badges">("affirmation")
+  const [academicProgressInfoView, setAcademicProgressInfoView] = useState<"affirmation" | "graduation">("affirmation")
+  const [profileDataDialogOpen, setProfileDataDialogOpen] = useState(false)
+  const [unifiedDataResetConfirmOpen, setUnifiedDataResetConfirmOpen] = useState(false)
+  const [profileDataButtonExpanded, setProfileDataButtonExpanded] = useState(false)
+  const [profileImageExporting, setProfileImageExporting] = useState(false)
+  const [profileImageBackgroundDialogOpen, setProfileImageBackgroundDialogOpen] = useState(false)
+  const [unifiedDataExporting, setUnifiedDataExporting] = useState(false)
+  const [unifiedDataImporting, setUnifiedDataImporting] = useState(false)
+  const [unifiedDataResetting, setUnifiedDataResetting] = useState(false)
+  const [unifiedImportStatusDialogOpen, setUnifiedImportStatusDialogOpen] = useState(false)
+  const [unifiedStatusOperation, setUnifiedStatusOperation] = useState<"import" | "download" | "reset">("import")
+  const [unifiedImportStatus, setUnifiedImportStatus] = useState<"loading" | "success" | "error">("loading")
+  const [unifiedImportStatusMessage, setUnifiedImportStatusMessage] = useState("Importing all tools data...")
   const [copied, setCopied] = useState(false)
   const [feedbackHistory, setFeedbackHistory] = useState<any[]>([])
-  const [toastMessage, setToastMessage] = useState("")
-  const [toastType, setToastType] = useState<"success" | "error" | "">("")
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "sending" | "success" | "error">("idle")
   const [feedbackStatusMessage, setFeedbackStatusMessage] = useState("")
@@ -319,8 +332,75 @@ export default function Home() {
   const [profileHydrated, setProfileHydrated] = useState(false)
   const profileHoverOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const profileHoverCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const profileDataExpandTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fullProfileCardRef = useRef<HTMLDivElement | null>(null)
+  const profileOverviewCaptureRef = useRef<HTMLDivElement | null>(null)
   const customProgramInputRef = useRef<HTMLInputElement | null>(null)
+  const unifiedDataImportInputRef = useRef<HTMLInputElement | null>(null)
+  const unifiedImportStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const unifiedResetReloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearUnifiedImportStatusTimer = useCallback(() => {
+    if (unifiedImportStatusTimeoutRef.current) {
+      clearTimeout(unifiedImportStatusTimeoutRef.current)
+      unifiedImportStatusTimeoutRef.current = null
+    }
+  }, [])
+
+  const clearUnifiedResetReloadTimer = useCallback(() => {
+    if (unifiedResetReloadTimeoutRef.current) {
+      clearTimeout(unifiedResetReloadTimeoutRef.current)
+      unifiedResetReloadTimeoutRef.current = null
+    }
+  }, [])
+
+  const showUnifiedImportStatus = useCallback(
+    (
+      status: "loading" | "success" | "error",
+      message: string,
+      autoCloseMs?: number,
+      operation: "import" | "download" | "reset" = "import",
+    ) => {
+      clearUnifiedImportStatusTimer()
+      setUnifiedStatusOperation(operation)
+      setUnifiedImportStatus(status)
+      setUnifiedImportStatusMessage(message)
+      setUnifiedImportStatusDialogOpen(true)
+
+      if (typeof autoCloseMs === "number" && autoCloseMs > 0) {
+        unifiedImportStatusTimeoutRef.current = setTimeout(() => {
+          setUnifiedImportStatusDialogOpen(false)
+          unifiedImportStatusTimeoutRef.current = null
+        }, autoCloseMs)
+      }
+    },
+    [clearUnifiedImportStatusTimer],
+  )
+
+  const shouldIncludeUnifiedDataKey = useCallback((key: string): boolean => {
+    const staticKeys = new Set([
+      "courseStatuses",
+      "courseTrackerPreferences",
+      "trackerPreferences",
+      "courseCodeAliases",
+      "feedbackHistory",
+      "scheduleMakerData",
+      "planner.lastRegenerateResult",
+      "planner.autoSaveEnabled",
+      "planner.creditLimits",
+      "planner.savedPlan",
+    ])
+
+    if (staticKeys.has(key)) return true
+
+    return (
+      key.startsWith("courseTracker") ||
+      key.startsWith("courseTracker.") ||
+      key.startsWith("scheduleMaker") ||
+      key.startsWith("planner.") ||
+      key.startsWith("compareng.")
+    )
+  }, [])
 
   const scrollToPageTop = () => {
     if (typeof window === "undefined") return
@@ -405,7 +485,9 @@ export default function Home() {
   const syncYearFromTrackerPreferences = useCallback(() => {
     try {
       const prefs = loadTrackerPreferences()
-      const yearLevel = Number.isFinite(prefs?.currentYearLevel) ? Math.max(1, Math.floor(prefs.currentYearLevel)) : null
+      const yearLevel = Number.isFinite(prefs?.currentYearLevel)
+        ? Math.max(1, Math.floor(prefs?.currentYearLevel as number))
+        : null
       if (yearLevel === null) return
       setProfileCard((prev) => ({ ...prev, year: yearLevel }))
     } catch {
@@ -499,6 +581,37 @@ export default function Home() {
   }, [refreshGamificationSnapshot, refreshProgressOverview, syncYearFromTrackerPreferences])
 
   useEffect(() => {
+    if (typeof window === "undefined") return undefined
+
+    const handleUnifiedDataImported = () => {
+      refreshGamificationSnapshot()
+      refreshProgressOverview()
+      syncProfileFromStorage()
+      syncYearFromTrackerPreferences()
+    }
+
+    window.addEventListener("compareng:unified-data-imported", handleUnifiedDataImported as EventListener)
+    return () => window.removeEventListener("compareng:unified-data-imported", handleUnifiedDataImported as EventListener)
+  }, [refreshGamificationSnapshot, refreshProgressOverview, syncProfileFromStorage, syncYearFromTrackerPreferences])
+
+  useEffect(() => {
+    if (!fullProfileDialogOpen) {
+      setProgressRankInfoView("affirmation")
+      setAcademicProgressInfoView("affirmation")
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      setProgressRankInfoView((prev) => (prev === "affirmation" ? "badges" : "affirmation"))
+      setAcademicProgressInfoView((prev) => (prev === "affirmation" ? "graduation" : "affirmation"))
+    }, 3000)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [fullProfileDialogOpen])
+
+  useEffect(() => {
     if (profileEditorVisible) return
     setProfileDraft(profileCard)
     profileBaselineRef.current = profileCard
@@ -576,7 +689,10 @@ export default function Home() {
       }
       setShouldAutoOpenWhatsNew(false)
     } else {
-      setShouldAutoOpenWhatsNew(true)
+      setShouldAutoOpenWhatsNew(false)
+      window.setTimeout(() => {
+        setShouldAutoOpenWhatsNew(true)
+      }, 0)
     }
     setOnboardingOpen(false)
   }
@@ -619,6 +735,7 @@ export default function Home() {
       if (extensionHideTimer.current) clearTimeout(extensionHideTimer.current)
       if (profileHoverOpenTimer.current) clearTimeout(profileHoverOpenTimer.current)
       if (profileHoverCloseTimer.current) clearTimeout(profileHoverCloseTimer.current)
+      if (profileDataExpandTimer.current) clearTimeout(profileDataExpandTimer.current)
     }
   }, [])
 
@@ -685,6 +802,11 @@ export default function Home() {
   const profileAccentDraft = profileDraft.cardColor || DEFAULT_PROFILE_CARD.cardColor
   const profileDraftName = profileDraft.name.trim() || profileName
   const profileDraftProgram = profileDraft.program.trim() || profileProgram
+  const expectedGraduationBadgeLabel = useMemo(() => {
+    const raw = profileCard.expectedGraduation?.trim()
+    if (!raw) return null
+    return profileDataButtonExpanded ? raw : `Grad ${raw}`
+  }, [profileCard.expectedGraduation, profileDataButtonExpanded])
   const profileDraftInitials = (profileDraft.name || "").trim()
     .split(/\s+/)
     .filter(Boolean)
@@ -779,8 +901,25 @@ export default function Home() {
         return a.year - b.year
       })
   }, [gamificationSnapshot.unlockedBadges])
+  const soonUnlockableBadgeCount = useMemo(() => {
+    if (typeof window === "undefined") return 0
+
+    const storedCourses = loadCourseStatuses()
+    if (!Array.isArray(storedCourses) || storedCourses.length === 0) return 0
+
+    const projectedCourses = storedCourses.map((course) =>
+      course?.status === "active" ? { ...course, status: "passed" } : course,
+    )
+
+    const currentUnlocked = deriveGamificationFromCourses(storedCourses).unlockedBadges.length
+    const projectedUnlocked = deriveGamificationFromCourses(projectedCourses).unlockedBadges.length
+
+    return Math.max(0, projectedUnlocked - currentUnlocked)
+  }, [gamificationSnapshot.unlockedBadges, progressOverview?.active])
   const completionPercent = progressOverview?.percentage ?? 0
   const xpToNextLevel = Math.max(0, levelInfo.next - gamificationSnapshot.xp)
+  const progressRankAffirmationText = "Your consistency is compounding. Every checkpoint adds real momentum."
+  const academicProgressAffirmationText = "You are moving forward steadily. Small wins here build your next term with confidence."
   const expectedGradLabel = profileCard.expectedGraduation ?? "Not set (auto from Academic Planner)"
   const progressTotals = {
     total: progressOverview?.total ?? 0,
@@ -808,6 +947,319 @@ export default function Home() {
     setFullProfileDialogOpen(true)
     setProfileEditorVisible(false)
   }
+
+  const queueProfileDataExpand = useCallback(() => {
+    if (profileDataExpandTimer.current) clearTimeout(profileDataExpandTimer.current)
+    profileDataExpandTimer.current = setTimeout(() => {
+      setProfileDataButtonExpanded(true)
+      profileDataExpandTimer.current = null
+    }, 140)
+  }, [])
+
+  const collapseProfileDataButton = useCallback(() => {
+    if (profileDataExpandTimer.current) {
+      clearTimeout(profileDataExpandTimer.current)
+      profileDataExpandTimer.current = null
+    }
+    setProfileDataButtonExpanded(false)
+  }, [])
+
+  const exportUnifiedToolsData = useCallback(async () => {
+    if (typeof window === "undefined" || unifiedDataExporting) return
+
+    setUnifiedDataExporting(true)
+
+    try {
+      const localStorageData: Record<string, string> = {}
+      for (let idx = 0; idx < window.localStorage.length; idx++) {
+        const key = window.localStorage.key(idx)
+        if (!key || !shouldIncludeUnifiedDataKey(key)) continue
+        const value = window.localStorage.getItem(key)
+        if (typeof value === "string") {
+          localStorageData[key] = value
+        }
+      }
+
+      const payload = {
+        version: 1,
+        format: "compareng-unified-data",
+        exportedAt: new Date().toISOString(),
+        app: "ComParEng-Tools",
+        localStorage: localStorageData,
+      }
+
+      const filename = `compareng-all-tools-data-${new Date().toISOString().slice(0, 10)}.json`
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: "application/json;charset=utf-8",
+      })
+      const href = window.URL.createObjectURL(blob)
+      const linkElement = document.createElement("a")
+      linkElement.setAttribute("href", href)
+      linkElement.setAttribute("download", filename)
+      document.body.appendChild(linkElement)
+      linkElement.click()
+      linkElement.remove()
+
+      // Keep the loading state until the browser has been given enough time to start the download flow.
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => {
+          window.setTimeout(() => resolve(), 260)
+        })
+      })
+      window.URL.revokeObjectURL(href)
+
+      trackAnalyticsEvent("profile.unified_data_export_success", { keyCount: Object.keys(localStorageData).length })
+      showUnifiedImportStatus("success", "Download prepared. Save the backup file from your browser.", 1700, "download")
+    } catch (error) {
+      console.error("Failed to export unified tools data", error)
+      trackAnalyticsEvent("profile.unified_data_export_failed")
+      showUnifiedImportStatus("error", "Download failed. Please try again.", 2000, "download")
+    } finally {
+      setUnifiedDataExporting(false)
+    }
+  }, [shouldIncludeUnifiedDataKey, showUnifiedImportStatus, unifiedDataExporting])
+
+  const downloadProfileOverviewImage = useCallback(async (backgroundMode: "transparent" | "solid" = "transparent") => {
+    if (typeof window === "undefined" || profileImageExporting) return
+
+    const captureTarget = profileOverviewCaptureRef.current
+    if (!captureTarget) {
+      showUnifiedImportStatus("error", "Profile preview is not ready to export.", 2000, "download")
+      return
+    }
+
+    setProfileImageExporting(true)
+    showUnifiedImportStatus("loading", "Rendering profile overview image...", undefined, "download")
+
+    const previousBackground = captureTarget.style.background
+    const previousBorderRadius = captureTarget.style.borderRadius
+    const previousPadding = captureTarget.style.padding
+    const previousRowGap = captureTarget.style.rowGap
+    const hideElements = Array.from(captureTarget.querySelectorAll("[data-export-hide='true']")) as HTMLElement[]
+    const showElements = Array.from(captureTarget.querySelectorAll("[data-export-show='true']")) as HTMLElement[]
+    const scrollFixElements = Array.from(captureTarget.querySelectorAll("[data-export-scroll-fix='true']")) as HTMLElement[]
+    const previousHiddenDisplays = hideElements.map((element) => element.style.display)
+    const previousShowDisplays = showElements.map((element) => element.style.display)
+    const previousScrollFixStyles = scrollFixElements.map((element) => ({
+      overflow: element.style.overflow,
+      maxHeight: element.style.maxHeight,
+      height: element.style.height,
+    }))
+
+    try {
+      captureTarget.style.background = backgroundMode === "transparent" ? "transparent" : rankTier.gradient
+      captureTarget.style.borderRadius = "24px"
+      captureTarget.style.padding = "14px"
+      captureTarget.style.rowGap = "0.75rem"
+      hideElements.forEach((element) => {
+        element.style.display = "none"
+      })
+      showElements.forEach((element) => {
+        element.style.display = element.getAttribute("data-export-show-display") || "block"
+      })
+      scrollFixElements.forEach((element) => {
+        element.style.overflow = "visible"
+        element.style.maxHeight = "none"
+        element.style.height = "auto"
+      })
+
+      if (typeof document !== "undefined" && "fonts" in document) {
+        await (document as Document & { fonts?: { ready?: Promise<unknown> } }).fonts?.ready
+      }
+
+      const originalConsoleError = console.error
+      console.error = (...args: unknown[]) => {
+        const firstArg = args[0]
+        if (typeof firstArg === "string" && firstArg.includes("Error loading remote css")) {
+          return
+        }
+        originalConsoleError(...args)
+      }
+
+      let dataUrl = ""
+      try {
+        dataUrl = await toPng(captureTarget, {
+          cacheBust: true,
+          backgroundColor: backgroundMode === "transparent" ? "transparent" : rankTier.gradient,
+          pixelRatio: Math.min(2, window.devicePixelRatio || 1.5),
+        })
+      } finally {
+        console.error = originalConsoleError
+      }
+
+      const linkElement = document.createElement("a")
+      linkElement.href = dataUrl
+      linkElement.download = `compareng-profile-overview-${new Date().toISOString().slice(0, 10)}.png`
+      document.body.appendChild(linkElement)
+      linkElement.click()
+      linkElement.remove()
+
+      trackAnalyticsEvent("profile.overview_image_export_success")
+      showUnifiedImportStatus("success", "Profile image downloaded.", 1700, "download")
+    } catch (error) {
+      console.error("Failed to export profile overview image", error)
+      trackAnalyticsEvent("profile.overview_image_export_failed")
+      showUnifiedImportStatus("error", "Image export failed. Please try again.", 2000, "download")
+    } finally {
+      hideElements.forEach((element, index) => {
+        element.style.display = previousHiddenDisplays[index]
+      })
+      showElements.forEach((element, index) => {
+        element.style.display = previousShowDisplays[index]
+      })
+      scrollFixElements.forEach((element, index) => {
+        const previous = previousScrollFixStyles[index]
+        element.style.overflow = previous.overflow
+        element.style.maxHeight = previous.maxHeight
+        element.style.height = previous.height
+      })
+      captureTarget.style.background = previousBackground
+      captureTarget.style.borderRadius = previousBorderRadius
+      captureTarget.style.padding = previousPadding
+      captureTarget.style.rowGap = previousRowGap
+      setProfileImageExporting(false)
+    }
+  }, [profileImageExporting, rankTier.gradient, showUnifiedImportStatus])
+
+  const openProfileImageBackgroundDialog = useCallback(() => {
+    if (profileImageExporting) return
+    setProfileImageBackgroundDialogOpen(true)
+  }, [profileImageExporting])
+
+  const exportProfileOverviewWithBackground = useCallback(
+    async (mode: "transparent" | "solid") => {
+      setProfileImageBackgroundDialogOpen(false)
+      await downloadProfileOverviewImage(mode)
+    },
+    [downloadProfileOverviewImage],
+  )
+
+  const openUnifiedDataImportPicker = useCallback(() => {
+    unifiedDataImportInputRef.current?.click()
+  }, [])
+
+  const resetUnifiedToolsData = useCallback(async () => {
+    if (typeof window === "undefined" || unifiedDataResetting) return
+
+    setUnifiedDataResetting(true)
+    showUnifiedImportStatus("loading", "Resetting all tools data...", undefined, "reset")
+
+    try {
+      const keysToClear: string[] = []
+      for (let idx = 0; idx < window.localStorage.length; idx++) {
+        const key = window.localStorage.key(idx)
+        if (!key) continue
+        if (!shouldIncludeUnifiedDataKey(key)) continue
+        keysToClear.push(key)
+      }
+
+      keysToClear.forEach((key) => window.localStorage.removeItem(key))
+
+      refreshGamificationSnapshot()
+      refreshProgressOverview()
+      syncProfileFromStorage()
+      syncYearFromTrackerPreferences()
+
+      setUnifiedDataResetConfirmOpen(false)
+      setProfileDataDialogOpen(false)
+
+      trackAnalyticsEvent("profile.unified_data_reset_success", { keyCount: keysToClear.length })
+      showUnifiedImportStatus("success", `Reset complete. Cleared ${keysToClear.length} entries.`, 1700, "reset")
+      clearUnifiedResetReloadTimer()
+      unifiedResetReloadTimeoutRef.current = setTimeout(() => {
+        if (typeof window !== "undefined") {
+          window.location.reload()
+        }
+      }, 1750)
+    } catch (error) {
+      console.error("Failed to reset unified tools data", error)
+      trackAnalyticsEvent("profile.unified_data_reset_failed")
+      showUnifiedImportStatus("error", "Reset failed. Please try again.", 2000, "reset")
+    } finally {
+      setUnifiedDataResetting(false)
+    }
+  }, [
+    clearUnifiedResetReloadTimer,
+    refreshGamificationSnapshot,
+    refreshProgressOverview,
+    shouldIncludeUnifiedDataKey,
+    showUnifiedImportStatus,
+    syncProfileFromStorage,
+    syncYearFromTrackerPreferences,
+    unifiedDataResetting,
+  ])
+
+  const importUnifiedToolsData = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0]
+      if (!file) return
+      if (unifiedDataImporting) return
+
+      setUnifiedDataImporting(true)
+      showUnifiedImportStatus("loading", "Importing all tools data...", undefined, "import")
+
+      const reader = new FileReader()
+      reader.onload = () => {
+        try {
+          const raw = String(reader.result || "")
+          const parsed = JSON.parse(raw)
+          const incoming = parsed?.localStorage
+
+          if (!incoming || typeof incoming !== "object") {
+            throw new Error("Invalid backup format")
+          }
+
+          let importedCount = 0
+          Object.entries(incoming as Record<string, unknown>).forEach(([key, value]) => {
+            if (!shouldIncludeUnifiedDataKey(key)) return
+            if (typeof value !== "string") return
+            window.localStorage.setItem(key, value)
+            importedCount += 1
+          })
+
+          refreshGamificationSnapshot()
+          refreshProgressOverview()
+          syncProfileFromStorage()
+          syncYearFromTrackerPreferences()
+
+          setProfileDataDialogOpen(false)
+          trackAnalyticsEvent("profile.unified_data_import_success", { keyCount: importedCount })
+          showUnifiedImportStatus("success", `Import complete. Restored ${importedCount} entries.`, 1700, "import")
+        } catch (error) {
+          console.error("Failed to import unified tools data", error)
+          trackAnalyticsEvent("profile.unified_data_import_failed")
+          showUnifiedImportStatus("error", "Import failed. Invalid backup file.", 2000, "import")
+        } finally {
+          setUnifiedDataImporting(false)
+        }
+      }
+
+      reader.onerror = () => {
+        trackAnalyticsEvent("profile.unified_data_import_failed")
+        showUnifiedImportStatus("error", "Import failed. Could not read backup file.", 2000, "import")
+        setUnifiedDataImporting(false)
+      }
+
+      reader.readAsText(file)
+      event.target.value = ""
+    },
+    [
+      shouldIncludeUnifiedDataKey,
+      refreshGamificationSnapshot,
+      refreshProgressOverview,
+      syncProfileFromStorage,
+      syncYearFromTrackerPreferences,
+      showUnifiedImportStatus,
+      unifiedDataImporting,
+    ],
+  )
+
+  useEffect(() => {
+    return () => {
+      clearUnifiedImportStatusTimer()
+      clearUnifiedResetReloadTimer()
+    }
+  }, [clearUnifiedImportStatusTimer, clearUnifiedResetReloadTimer])
 
   useEffect(() => {
     if (programSelectValue === "custom" && customProgramInputRef.current) {
@@ -849,24 +1301,61 @@ export default function Home() {
 
   return (
     <>
+      <input
+        ref={unifiedDataImportInputRef}
+        type="file"
+        accept=".json,application/json"
+        onChange={importUnifiedToolsData}
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
       <OnboardingDialog
         open={onboardingOpen}
         onOpenChange={setOnboardingOpen}
         onComplete={completeOnboarding}
         hasCompletedOnce={hasCompletedOnboarding}
       />
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
-        {/* Simple toast notification (uses Alert for consistent UI) */}
-        {toastMessage && (
-          <div className="fixed bottom-24 right-4 z-50 w-80 sm:right-6 md:bottom-6">
-            <Alert variant={toastType === "error" ? "destructive" : "default"} className={toastType === "error" ? "" : "bg-green-600 text-white border-green-600"}>
-              <div className="flex flex-col">
-                <AlertTitle className={toastType === "error" ? "" : "text-white"}>{toastType === "error" ? "Error" : "Success"}</AlertTitle>
-                <AlertDescription className={toastType === "error" ? "" : "text-white"}>{toastMessage}</AlertDescription>
-              </div>
-            </Alert>
+      <Dialog open={unifiedImportStatusDialogOpen} onOpenChange={setUnifiedImportStatusDialogOpen}>
+        <DialogContent
+          hideCloseButton
+          overlayClassName="z-[14080] ease-in-out data-[state=open]:duration-300 data-[state=closed]:duration-200"
+          className="z-[14090] max-w-sm ease-in-out data-[state=open]:duration-300 data-[state=closed]:duration-200"
+        >
+          <DialogHeader>
+            <DialogTitle>
+              {unifiedImportStatus === "loading"
+                ? unifiedStatusOperation === "reset"
+                  ? "Resetting Data"
+                  : unifiedStatusOperation === "download"
+                    ? "Preparing Download"
+                    : "Importing Data"
+                : unifiedImportStatus === "success"
+                  ? unifiedStatusOperation === "reset"
+                    ? "Reset Complete"
+                    : unifiedStatusOperation === "download"
+                      ? "Download Ready"
+                      : "Import Complete"
+                  : unifiedStatusOperation === "reset"
+                    ? "Reset Failed"
+                    : unifiedStatusOperation === "download"
+                      ? "Download Failed"
+                      : "Import Failed"}
+            </DialogTitle>
+            <DialogDescription>{unifiedImportStatusMessage}</DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-center py-3">
+            {unifiedImportStatus === "loading" ? (
+              <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+            ) : unifiedImportStatus === "success" ? (
+              <Check className="h-8 w-8 text-emerald-600" />
+            ) : (
+              <Info className="h-8 w-8 text-rose-600" />
+            )}
           </div>
-        )}
+        </DialogContent>
+      </Dialog>
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
         <div className="fixed inset-x-0 top-0 z-50" ref={disclaimerRef}>
           <div className="w-full bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-100 p-2 text-xs md:text-sm">
             <div className="container mx-auto px-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-4 text-center sm:text-left">
@@ -1080,6 +1569,7 @@ export default function Home() {
                           >
                             <div
                               ref={fullProfileCardRef}
+                              data-export-root="profile-overview-dialog"
                               role="dialog"
                               aria-modal="true"
                               aria-labelledby="full-profile-title"
@@ -1104,9 +1594,9 @@ export default function Home() {
                                   animate={{ x: profileEditorVisible ? "-100%" : "0%" }}
                                   transition={{ duration: 0.32, ease: [0.4, 0, 0.2, 1] }}
                                 >
-                                  <div className="w-full shrink-0 flex flex-col gap-4 min-h-0 max-w-3xl mx-auto">
+                                  <div ref={profileOverviewCaptureRef} className="w-full shrink-0 flex flex-col gap-4 min-h-0 max-w-3xl mx-auto">
                                     <div className="flex items-start justify-between gap-4">
-                                      <div className="flex items-start gap-4">
+                                      <div className="flex min-w-0 flex-1 items-start gap-4">
                                         <div
                                           className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-base font-semibold uppercase tracking-wide ring-2 ring-white/60 shadow-inner ml-1 mt-1 text-white"
                                           style={{ background: profileAccent, textShadow: "0 0 6px rgba(0,0,0,0.55)" }}
@@ -1119,27 +1609,99 @@ export default function Home() {
                                             {profileName}
                                           </p>
                                           <p className="truncate text-sm text-white/90">{profileProgram}</p>
-                                          <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-white/85">
-                                            <Badge variant="secondary" className="bg-white/20 text-white hover:bg-white/25">
+                                          <div data-export-hide="true" data-export-scroll-fix="true" className="flex flex-nowrap items-center gap-2 overflow-x-auto pt-1 text-xs text-white/85 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                                            <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/20 text-white hover:bg-white/25">
                                               Year {profileCard.year}
                                             </Badge>
-                                            <Badge variant="secondary" className="bg-white/20 text-white hover:bg-white/25">
+                                            <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/20 text-white hover:bg-white/25">
                                               Rank: {rankTier.name}
                                             </Badge>
                                             {profileCard.expectedGraduation && (
-                                              <Badge variant="secondary" className="bg-white/20 text-white hover:bg-white/25">
-                                                Grad {profileCard.expectedGraduation}
-                                              </Badge>
+                                              <motion.div
+                                                layout
+                                                initial={false}
+                                                animate={{ scale: profileDataButtonExpanded ? 0.98 : 1, y: profileDataButtonExpanded ? 0.5 : 0 }}
+                                                transition={{ duration: 0.22, ease: "easeInOut" }}
+                                              >
+                                                <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/20 text-white hover:bg-white/25">
+                                                  <AnimatePresence mode="wait" initial={false}>
+                                                    <motion.span
+                                                      key={expectedGraduationBadgeLabel ?? profileCard.expectedGraduation}
+                                                      initial={{ opacity: 0, y: 3 }}
+                                                      animate={{ opacity: 1, y: 0 }}
+                                                      exit={{ opacity: 0, y: -3 }}
+                                                      transition={{ duration: 0.2, ease: "easeInOut" }}
+                                                    >
+                                                      {expectedGraduationBadgeLabel ?? profileCard.expectedGraduation}
+                                                    </motion.span>
+                                                  </AnimatePresence>
+                                                </Badge>
+                                              </motion.div>
                                             )}
                                           </div>
                                         </div>
                                       </div>
-                                      <div className="flex items-center gap-2">
+                                      <div className="flex shrink-0 items-center justify-end gap-2 pl-2 sm:min-w-[244px]" data-export-hide="true">
+                                        <motion.button
+                                          type="button"
+                                          className="relative flex h-9 shrink-0 items-center overflow-hidden rounded-full bg-white text-slate-900 shadow dark:bg-white/10 dark:text-white"
+                                          onMouseEnter={queueProfileDataExpand}
+                                          onMouseLeave={collapseProfileDataButton}
+                                          onFocus={queueProfileDataExpand}
+                                          onBlur={collapseProfileDataButton}
+                                          onClick={() => setProfileDataDialogOpen(true)}
+                                          aria-label="Open all tools data options"
+                                          initial={false}
+                                          animate={{
+                                            width: profileDataButtonExpanded ? 136 : 36,
+                                            paddingLeft: profileDataButtonExpanded ? 12 : 0,
+                                            paddingRight: profileDataButtonExpanded ? 12 : 0,
+                                            justifyContent: profileDataButtonExpanded ? "flex-start" : "center",
+                                          }}
+                                          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+                                          whileHover={{ backgroundColor: "rgba(255,255,255,0.9)" }}
+                                        >
+                                          <motion.span
+                                            className="inline-flex shrink-0"
+                                            animate={{ rotate: profileDataButtonExpanded ? 14 : 0, scale: profileDataButtonExpanded ? 1.12 : 1 }}
+                                            transition={{ duration: 0.25, ease: "easeOut" }}
+                                          >
+                                            <Database className="h-4 w-4" />
+                                          </motion.span>
+                                          <motion.span
+                                            className="overflow-hidden whitespace-nowrap text-xs font-semibold"
+                                            initial={false}
+                                            animate={{
+                                              marginLeft: profileDataButtonExpanded ? 8 : 0,
+                                              maxWidth: profileDataButtonExpanded ? 86 : 0,
+                                              opacity: profileDataButtonExpanded ? 1 : 0,
+                                              x: profileDataButtonExpanded ? 0 : -6,
+                                            }}
+                                            transition={{ duration: 0.22, ease: "easeOut" }}
+                                          >
+                                            Data options
+                                          </motion.span>
+                                        </motion.button>
                                         <Button
                                           type="button"
                                           size="icon"
                                           variant="secondary"
-                                          className="h-9 w-9 rounded-full bg-white text-slate-900 shadow hover:bg-white/90 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                                          className="h-9 w-9 shrink-0 rounded-full bg-white text-slate-900 shadow hover:bg-white/90 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                                          onClick={openProfileImageBackgroundDialog}
+                                          disabled={profileImageExporting}
+                                          aria-label="Download profile overview as image"
+                                        >
+                                          {profileImageExporting ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                          ) : (
+                                            <Download className="h-4 w-4" />
+                                          )}
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="icon"
+                                          variant="secondary"
+                                          className="h-9 w-9 shrink-0 rounded-full bg-white text-slate-900 shadow hover:bg-white/90 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
                                           onClick={openProfileEditor}
                                           aria-label="Edit profile"
                                         >
@@ -1154,7 +1716,7 @@ export default function Home() {
                                           type="button"
                                           size="icon"
                                           variant="ghost"
-                                          className="h-9 w-9 rounded-full bg-black/10 text-white hover:bg-black/20"
+                                          className="h-9 w-9 shrink-0 rounded-full bg-black/10 text-white hover:bg-black/20"
                                           onClick={() => {
                                             setFullProfileDialogOpen(false)
                                             setProfileEditorVisible(false)
@@ -1163,6 +1725,23 @@ export default function Home() {
                                         >
                                           <X className="h-4 w-4" />
                                         </Button>
+                                      </div>
+                                      <div
+                                        data-export-show="true"
+                                        data-export-show-display="flex"
+                                        className="hidden shrink-0 flex-col items-end gap-2 pl-2 text-xs text-white/90 sm:min-w-[244px]"
+                                      >
+                                        <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/20 text-white hover:bg-white/25">
+                                          Year {profileCard.year}
+                                        </Badge>
+                                        <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/20 text-white hover:bg-white/25">
+                                          Rank: {rankTier.name}
+                                        </Badge>
+                                        {profileCard.expectedGraduation && (
+                                          <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/20 text-white hover:bg-white/25">
+                                            Grad {profileCard.expectedGraduation}
+                                          </Badge>
+                                        )}
                                       </div>
                                     </div>
 
@@ -1173,12 +1752,12 @@ export default function Home() {
                                             <Trophy className="h-4 w-4 text-amber-500" />
                                             Progress & rank
                                           </CardTitle>
-                                          <CardDescription>Current XP and level</CardDescription>
+                                          <CardDescription data-export-hide="true">Current XP and level</CardDescription>
                                         </CardHeader>
-                                        <CardContent className="space-y-3 text-left">
+                                        <CardContent className="space-y-2.5 text-left">
                                           <div className="flex justify-center">
-                                            <div className="inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs font-semibold text-white shadow-sm" style={{ background: rankTier.gradient }}>
-                                              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/20 text-[10px]">★</span>
+                                            <div className="inline-flex items-center gap-2.5 rounded-full px-4 py-1.5 text-sm font-semibold text-white shadow-sm" style={{ background: rankTier.gradient }}>
+                                              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/20 text-xs">★</span>
                                               {rankTier.name}
                                             </div>
                                           </div>
@@ -1195,9 +1774,48 @@ export default function Home() {
                                               }}
                                             />
                                           </Progress>
-                                          <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                            <span>{gamificationSnapshot.xp.toLocaleString()} XP</span>
-                                            <span>{xpToNextLevel.toLocaleString()} XP to next</span>
+                                          <div className="grid grid-cols-2 gap-2 text-xs">
+                                            <div className="rounded-md bg-slate-100 px-2 py-1.5 dark:bg-slate-900/60">
+                                              <p className="font-semibold text-slate-900 dark:text-white">{gamificationSnapshot.xp.toLocaleString()} XP</p>
+                                              <p className="text-[11px] text-muted-foreground">Total XP</p>
+                                            </div>
+                                            <div className="rounded-md bg-slate-100 px-2 py-1.5 text-right dark:bg-slate-900/60">
+                                              <p className="font-semibold text-slate-900 dark:text-white">{xpToNextLevel.toLocaleString()} XP</p>
+                                              <p className="text-[11px] text-muted-foreground">To next level</p>
+                                            </div>
+                                          </div>
+                                          <div className="rounded-md border border-slate-200/80 bg-slate-50/80 px-2.5 py-1.5 text-[11px] text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-200">
+                                            <AnimatePresence mode="wait" initial={false}>
+                                              {progressRankInfoView === "affirmation" ? (
+                                                <motion.p
+                                                  key="progress-rank-affirmation"
+                                                  initial={{ opacity: 0, y: 4 }}
+                                                  animate={{ opacity: 1, y: 0 }}
+                                                  exit={{ opacity: 0, y: -4 }}
+                                                  transition={{ duration: 0.25, ease: "easeInOut" }}
+                                                  className="leading-relaxed"
+                                                >
+                                                  {progressRankAffirmationText}
+                                                </motion.p>
+                                              ) : (
+                                                <motion.p
+                                                  key="progress-rank-badges"
+                                                  initial={{ opacity: 0, y: 4 }}
+                                                  animate={{ opacity: 1, y: 0 }}
+                                                  exit={{ opacity: 0, y: -4 }}
+                                                  transition={{ duration: 0.25, ease: "easeInOut" }}
+                                                  className="leading-relaxed"
+                                                >
+                                                  {soonUnlockableBadgeCount > 0 ? (
+                                                    <>
+                                                      <span className="font-semibold">{soonUnlockableBadgeCount}</span> badge{soonUnlockableBadgeCount === 1 ? "" : "s"} soon to unlock if active courses are marked passed
+                                                    </>
+                                                  ) : (
+                                                    <>No additional badges will unlock from current active courses yet</>
+                                                  )}
+                                                </motion.p>
+                                              )}
+                                            </AnimatePresence>
                                           </div>
                                         </CardContent>
                                       </Card>
@@ -1208,7 +1826,7 @@ export default function Home() {
                                             <Medal className="h-4 w-4 text-emerald-500" />
                                             Academic progress
                                           </CardTitle>
-                                          <CardDescription>Syncs from Course Tracker</CardDescription>
+                                          <CardDescription data-export-hide="true">Syncs from Course Tracker</CardDescription>
                                         </CardHeader>
                                         <CardContent className="space-y-3 text-left">
                                           <div className="flex items-center justify-between text-sm font-medium">
@@ -1238,14 +1856,44 @@ export default function Home() {
                                               <p className="text-[11px]">Pending</p>
                                             </div>
                                           </div>
-                                          <div className="text-sm font-medium text-slate-900 dark:text-white">
-                                            Estimated graduation: <span className="font-semibold">{expectedGradLabel}</span>
+                                          <div className="rounded-lg border border-emerald-200/80 bg-emerald-50/70 px-3 py-2 text-center dark:border-emerald-500/30 dark:bg-emerald-500/10">
+                                            <AnimatePresence mode="wait" initial={false}>
+                                              {academicProgressInfoView === "affirmation" ? (
+                                                <motion.p
+                                                  key="academic-progress-affirmation"
+                                                  initial={{ opacity: 0, y: 4 }}
+                                                  animate={{ opacity: 1, y: 0 }}
+                                                  exit={{ opacity: 0, y: -4 }}
+                                                  transition={{ duration: 0.25, ease: "easeInOut" }}
+                                                  className="text-[11px] leading-relaxed text-emerald-800 dark:text-emerald-200"
+                                                >
+                                                  {academicProgressAffirmationText}
+                                                </motion.p>
+                                              ) : (
+                                                <motion.div
+                                                  key="academic-progress-graduation"
+                                                  initial={{ opacity: 0, y: 4 }}
+                                                  animate={{ opacity: 1, y: 0 }}
+                                                  exit={{ opacity: 0, y: -4 }}
+                                                  transition={{ duration: 0.25, ease: "easeInOut" }}
+                                                >
+                                                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-200">
+                                                    Estimated graduation
+                                                  </p>
+                                                  <div className="mt-1 flex items-center justify-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                                                    <Calendar className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+                                                    <span className="leading-snug">{expectedGradLabel}</span>
+                                                  </div>
+                                                </motion.div>
+                                              )}
+                                            </AnimatePresence>
                                           </div>
                                         </CardContent>
                                       </Card>
                                     </div>
 
                                       <div
+                                        data-export-scroll-fix="true"
                                         className="rounded-xl border border-slate-200 bg-white/80 p-4 shadow-sm text-left dark:border-slate-800 dark:bg-slate-900/60 w-full flex-1 min-h-0 overflow-y-auto max-h-[65vh] [scrollbar-width:thin] [scrollbar-color:rgba(100,116,139,0.8)_transparent] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-500/60 [&::-webkit-scrollbar-thumb:hover]:bg-slate-500/80 [WebkitOverflowScrolling:touch] md:flex-none md:min-h-[240px] md:max-h-[320px]"
                                       >
                                       <div className="flex items-center gap-2 pb-3">
@@ -1255,6 +1903,9 @@ export default function Home() {
                                           <span className="text-xs text-muted-foreground">{unlockedBadges.length} total</span>
                                         </div>
                                       </div>
+                                      <p data-export-hide="true" className="pb-3 text-xs text-muted-foreground">
+                                        Each badge marks real progress. Keep stacking milestones one course at a time.
+                                      </p>
                                       {unlockedBadges.length > 0 ? (
                                         <div className="grid gap-2 sm:grid-cols-2">
                                           {unlockedBadges.map((badge) => (
@@ -1338,12 +1989,12 @@ export default function Home() {
                                         <div className="flex-1 min-w-0 text-left">
                                           <p className="text-[11px] uppercase tracking-[0.22em] text-white/70">Preview</p>
                                           <p className="truncate text-lg font-semibold leading-tight text-left">{profileDraftName}</p>
-                                          <div className="flex flex-wrap items-center gap-2 text-xs text-white/80">
+                                          <div data-export-scroll-fix="true" className="flex flex-nowrap items-center gap-2 overflow-x-auto text-xs text-white/80 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                                             <span className="truncate">{profileDraftProgram}</span>
                                             <span className="opacity-70">•</span>
                                             <span>Year {profileDraft.year}</span>
                                             {profileDraft.expectedGraduation && (
-                                              <Badge variant="secondary" className="bg-white/25 text-white hover:bg-white/30">
+                                              <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/25 text-white hover:bg-white/30">
                                                 Grad {profileDraft.expectedGraduation}
                                               </Badge>
                                             )}
@@ -1493,6 +2144,167 @@ export default function Home() {
                                 </motion.div>
                               </div>
                             </motion.div>
+
+                              <Dialog open={profileDataDialogOpen} onOpenChange={setProfileDataDialogOpen}>
+                                <DialogContent overlayClassName="z-[13055]" className="z-[13060] max-w-md">
+                                  <DialogHeader>
+                                    <DialogTitle>All Tools Data</DialogTitle>
+                                    <DialogDescription>
+                                      Download one backup file for Course Tracker, Schedule Maker, and Academic Planner, or import it on a fresh setup.
+                                    </DialogDescription>
+                                  </DialogHeader>
+
+                                  <div className="flex flex-col items-center gap-3 pt-2">
+                                    <Button
+                                      className="w-full max-w-xs justify-center gap-2 transition-all duration-300 ease-in-out"
+                                      onClick={exportUnifiedToolsData}
+                                      disabled={unifiedDataExporting}
+                                    >
+                                      {unifiedDataExporting ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Preparing backup...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Download className="h-4 w-4" />
+                                          Download all tools data
+                                        </>
+                                      )}
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      className="w-full max-w-xs justify-center gap-2 transition-all duration-300 ease-in-out"
+                                      onClick={openUnifiedDataImportPicker}
+                                      disabled={unifiedDataImporting || unifiedDataResetting}
+                                    >
+                                      {unifiedDataImporting ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Importing backup...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Upload className="h-4 w-4" />
+                                          Import all tools data
+                                        </>
+                                      )}
+                                    </Button>
+                                    <Button
+                                      variant="destructive"
+                                      className="w-full max-w-xs justify-center gap-2 transition-all duration-300 ease-in-out"
+                                      onClick={() => setUnifiedDataResetConfirmOpen(true)}
+                                      disabled={unifiedDataExporting || unifiedDataImporting || unifiedDataResetting}
+                                    >
+                                      {unifiedDataResetting ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Resetting data...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Trash2 className="h-4 w-4" />
+                                          Reset all tools data
+                                        </>
+                                      )}
+                                    </Button>
+                                    <p className="text-xs text-muted-foreground">
+                                      This unified backup complements the existing per-tool import/export options.
+                                    </p>
+                                  </div>
+                                </DialogContent>
+                              </Dialog>
+                              <Dialog open={profileImageBackgroundDialogOpen} onOpenChange={setProfileImageBackgroundDialogOpen}>
+                                <DialogContent
+                                  overlayClassName="z-[13062] ease-in-out data-[state=open]:duration-300 data-[state=closed]:duration-200"
+                                  className="z-[13065] max-w-md ease-in-out data-[state=open]:duration-300 data-[state=closed]:duration-200"
+                                >
+                                  <DialogHeader>
+                                    <DialogTitle>Profile Image Background</DialogTitle>
+                                    <DialogDescription>
+                                      Choose how the exported image background should appear.
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                  <div className="flex flex-col gap-2 pt-1">
+                                    <Button
+                                      className="w-full justify-center gap-2"
+                                      onClick={() => exportProfileOverviewWithBackground("transparent")}
+                                      disabled={profileImageExporting}
+                                    >
+                                      {profileImageExporting ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Rendering image...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Download className="h-4 w-4" />
+                                          Transparent background
+                                        </>
+                                      )}
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      className="w-full justify-center gap-2"
+                                      onClick={() => exportProfileOverviewWithBackground("solid")}
+                                      disabled={profileImageExporting}
+                                    >
+                                      <Download className="h-4 w-4" />
+                                      Use current background color
+                                    </Button>
+                                  </div>
+                                  <div className="flex justify-end">
+                                    <Button
+                                      variant="ghost"
+                                      onClick={() => setProfileImageBackgroundDialogOpen(false)}
+                                      disabled={profileImageExporting}
+                                    >
+                                      Cancel
+                                    </Button>
+                                  </div>
+                                </DialogContent>
+                              </Dialog>
+                              <Dialog open={unifiedDataResetConfirmOpen} onOpenChange={setUnifiedDataResetConfirmOpen}>
+                                <DialogContent
+                                  overlayClassName="z-[13070] ease-in-out data-[state=open]:duration-300 data-[state=closed]:duration-200"
+                                  className="z-[13080] max-w-md ease-in-out data-[state=open]:duration-300 data-[state=closed]:duration-200"
+                                >
+                                  <DialogHeader>
+                                    <DialogTitle>Reset All Tools Data?</DialogTitle>
+                                    <DialogDescription>
+                                      This will remove saved data for Course Tracker, Schedule Maker, and Academic Planner from this browser.
+                                      This action cannot be undone.
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                  <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                                    <Button
+                                      variant="outline"
+                                      onClick={() => setUnifiedDataResetConfirmOpen(false)}
+                                      disabled={unifiedDataResetting}
+                                    >
+                                      Cancel
+                                    </Button>
+                                    <Button
+                                      variant="destructive"
+                                      onClick={resetUnifiedToolsData}
+                                      disabled={unifiedDataResetting}
+                                      className="gap-2"
+                                    >
+                                      {unifiedDataResetting ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Resetting...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Trash2 className="h-4 w-4" />
+                                          Yes, reset data
+                                        </>
+                                      )}
+                                    </Button>
+                                  </div>
+                                </DialogContent>
+                              </Dialog>
                           </div>
                         </motion.div>
                       </motion.div>

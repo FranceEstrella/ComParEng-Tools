@@ -218,10 +218,74 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const [cpeSkipPromptOpen, setCpeSkipPromptOpen] = useState(false)
   const [cpeSkipPromptContext, setCpeSkipPromptContext] = useState<"missing-upload" | "confirm">("missing-upload")
   const [generalSkipPromptOpen, setGeneralSkipPromptOpen] = useState(false)
+  const [skipImporting, setSkipImporting] = useState(false)
+  const [skipImportStatusOpen, setSkipImportStatusOpen] = useState(false)
+  const [skipImportStatus, setSkipImportStatus] = useState<"loading" | "success" | "error">("loading")
+  const [skipImportStatusMessage, setSkipImportStatusMessage] = useState("Importing all tools data...")
   const [creditLimitDialogOpen, setCreditLimitDialogOpen] = useState(false)
   const [creditLimitMin, setCreditLimitMin] = useState(RECOMMENDED_UNITS_MIN)
   const [creditLimitMax, setCreditLimitMax] = useState(RECOMMENDED_UNITS_MAX)
   const [creditLimitError, setCreditLimitError] = useState<string | null>(null)
+  const unifiedBackupInputRef = useRef<HTMLInputElement>(null)
+  const skipImportStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipImportCompleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearSkipImportTimers = useCallback(() => {
+    if (skipImportStatusTimeoutRef.current) {
+      clearTimeout(skipImportStatusTimeoutRef.current)
+      skipImportStatusTimeoutRef.current = null
+    }
+    if (skipImportCompleteTimeoutRef.current) {
+      clearTimeout(skipImportCompleteTimeoutRef.current)
+      skipImportCompleteTimeoutRef.current = null
+    }
+  }, [])
+
+  const showSkipImportStatus = useCallback(
+    (status: "loading" | "success" | "error", message: string, autoCloseMs?: number) => {
+      if (skipImportStatusTimeoutRef.current) {
+        clearTimeout(skipImportStatusTimeoutRef.current)
+        skipImportStatusTimeoutRef.current = null
+      }
+
+      setSkipImportStatus(status)
+      setSkipImportStatusMessage(message)
+      setSkipImportStatusOpen(true)
+
+      if (typeof autoCloseMs === "number" && autoCloseMs > 0) {
+        skipImportStatusTimeoutRef.current = setTimeout(() => {
+          setSkipImportStatusOpen(false)
+          skipImportStatusTimeoutRef.current = null
+        }, autoCloseMs)
+      }
+    },
+    [],
+  )
+
+  const shouldIncludeUnifiedDataKey = useCallback((key: string): boolean => {
+    const staticKeys = new Set([
+      "courseStatuses",
+      "courseTrackerPreferences",
+      "trackerPreferences",
+      "courseCodeAliases",
+      "feedbackHistory",
+      "scheduleMakerData",
+      "planner.lastRegenerateResult",
+      "planner.autoSaveEnabled",
+      "planner.creditLimits",
+      "planner.savedPlan",
+    ])
+
+    if (staticKeys.has(key)) return true
+
+    return (
+      key.startsWith("courseTracker") ||
+      key.startsWith("courseTracker.") ||
+      key.startsWith("scheduleMaker") ||
+      key.startsWith("planner.") ||
+      key.startsWith("compareng.")
+    )
+  }, [])
 
   const syncCreditLimitsFromStorage = useCallback(() => {
     if (typeof window === "undefined") return
@@ -253,11 +317,16 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
 
   useEffect(() => {
     if (open) {
+      clearSkipImportTimers()
       setCurrentIndex(0)
       setThemePreview("light")
       setCpeAnswer(null)
       setCurriculumImportState("idle")
       setCurriculumImportMessage(null)
+      setSkipImporting(false)
+      setSkipImportStatusOpen(false)
+      setSkipImportStatus("loading")
+      setSkipImportStatusMessage("Importing all tools data...")
       setShowCurriculumHow(false)
       setHasCustomCurriculum(false)
       setCreditLimitDialogOpen(false)
@@ -267,7 +336,13 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         curriculumFileInputRef.current.value = ""
       }
     }
-  }, [open, syncCreditLimitsFromStorage])
+  }, [clearSkipImportTimers, open, syncCreditLimitsFromStorage])
+
+  useEffect(() => {
+    return () => {
+      clearSkipImportTimers()
+    }
+  }, [clearSkipImportTimers])
 
   const activeSlide = slides[currentIndex]
   const progressValue = useMemo(() => ((currentIndex + 1) / slides.length) * 100, [currentIndex])
@@ -407,6 +482,72 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
 
   const handleGeneralSkipStay = () => {
     setGeneralSkipPromptOpen(false)
+  }
+
+  const openUnifiedBackupPicker = () => {
+    if (skipImporting) return
+    unifiedBackupInputRef.current?.click()
+  }
+
+  const handleUnifiedBackupImport = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file || skipImporting) return
+
+    setSkipImporting(true)
+    showSkipImportStatus("loading", "Importing all tools data...")
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const raw = String(reader.result || "")
+        const parsed = JSON.parse(raw)
+        const incoming = parsed?.localStorage
+
+        if (!incoming || typeof incoming !== "object") {
+          throw new Error("Invalid backup format")
+        }
+
+        let importedCount = 0
+        Object.entries(incoming as Record<string, unknown>).forEach(([key, value]) => {
+          if (!shouldIncludeUnifiedDataKey(key)) return
+          if (typeof value !== "string") return
+          window.localStorage.setItem(key, value)
+          importedCount += 1
+        })
+
+        window.dispatchEvent(new CustomEvent("compareng:unified-data-imported"))
+
+        const successStatusDurationMs = 1800
+        setGeneralSkipPromptOpen(false)
+        showSkipImportStatus("success", `Import complete. Restored ${importedCount} entries.`, successStatusDurationMs)
+
+        if (skipImportCompleteTimeoutRef.current) {
+          clearTimeout(skipImportCompleteTimeoutRef.current)
+        }
+        skipImportCompleteTimeoutRef.current = setTimeout(() => {
+          try {
+            window.localStorage.removeItem("whatsNew.seenVersion")
+          } catch {
+            // ignore storage failures
+          }
+          setSkipImportStatusOpen(false)
+          finishOnboarding({ source: "skip" })
+        }, successStatusDurationMs + 150)
+      } catch (error) {
+        console.error("Failed to import all tools data from onboarding", error)
+        showSkipImportStatus("error", "Import failed. Invalid backup file.", 2200)
+      } finally {
+        setSkipImporting(false)
+      }
+    }
+
+    reader.onerror = () => {
+      showSkipImportStatus("error", "Import failed. Could not read backup file.", 2200)
+      setSkipImporting(false)
+    }
+
+    reader.readAsText(file)
+    event.target.value = ""
   }
 
   const handleGeneralSkipConfirm = () => {
@@ -1011,6 +1152,40 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
 
   return (
     <>
+      <input
+        type="file"
+        ref={unifiedBackupInputRef}
+        accept=".json,application/json"
+        onChange={handleUnifiedBackupImport}
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+
+      <Dialog open={skipImportStatusOpen} onOpenChange={setSkipImportStatusOpen}>
+        <DialogContent
+          hideCloseButton
+          overlayClassName="z-[14080] ease-in-out data-[state=open]:duration-300 data-[state=closed]:duration-200"
+          className="z-[14090] max-w-sm ease-in-out data-[state=open]:duration-300 data-[state=closed]:duration-200"
+        >
+          <DialogHeader>
+            <DialogTitle>
+              {skipImportStatus === "loading" ? "Importing Data" : skipImportStatus === "success" ? "Import Complete" : "Import Failed"}
+            </DialogTitle>
+            <DialogDescription>{skipImportStatusMessage}</DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-center py-3">
+            {skipImportStatus === "loading" ? (
+              <RefreshCw className="h-8 w-8 animate-spin text-blue-600" />
+            ) : skipImportStatus === "success" ? (
+              <ShieldCheck className="h-8 w-8 text-emerald-600" />
+            ) : (
+              <Upload className="h-8 w-8 text-rose-600" />
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
         hideCloseButton
@@ -1195,6 +1370,30 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
               return later from the homepage.
             </DialogDescription>
           </DialogHeader>
+          <div className="rounded-2xl border border-dashed bg-blue-50/70 p-4 text-sm text-blue-900 dark:border-blue-400/40 dark:bg-blue-500/10 dark:text-blue-100">
+            <p className="font-semibold">Already have an all tools data file?</p>
+            <p className="mt-1 text-xs opacity-90">
+              Import your downloaded backup to restore everything, then we'll skip onboarding automatically.
+            </p>
+            <Button
+              variant="secondary"
+              className="mt-3 w-full gap-2"
+              onClick={openUnifiedBackupPicker}
+              disabled={skipImporting}
+            >
+              {skipImporting ? (
+                <>
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  Importing...
+                </>
+              ) : (
+                <>
+                  <Upload className="h-4 w-4" />
+                  Import all tools data
+                </>
+              )}
+            </Button>
+          </div>
           <div className="rounded-2xl border border-dashed bg-slate-50 p-4 text-sm text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-white">
             <p className="font-semibold">Before you skip:</p>
             <ul className="mt-2 list-disc space-y-1 pl-5">
