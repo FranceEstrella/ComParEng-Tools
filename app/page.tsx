@@ -1592,14 +1592,18 @@ export default function Home() {
                             exit={{ opacity: 0 }}
                             transition={{ duration: 0.18, ease: "easeOut" }}
                           >
-                            <div
+                            <motion.div
                               ref={fullProfileCardRef}
                               data-export-root="profile-overview-dialog"
                               role="dialog"
                               aria-modal="true"
                               aria-labelledby="full-profile-title"
+                              layout
                               className="relative flex h-screen max-h-[calc(100vh-16px)] flex-col overflow-y-auto rounded-none border-0 bg-white text-slate-900 shadow-2xl ring-0 outline-none dark:bg-slate-900 dark:text-white sm:h-auto sm:max-h-[85vh] sm:w-full sm:max-w-3xl sm:overflow-hidden sm:rounded-3xl sm:border sm:border-slate-200/80 sm:ring-1 sm:ring-black/10 dark:sm:border-slate-800 dark:sm:ring-white/10"
                               style={{ background: rankTier.gradient }}
+                              transition={{
+                                layout: { duration: 0.28, ease: [0.22, 1, 0.36, 1] },
+                              }}
                               tabIndex={-1}
                             >
                               <div className="sticky top-0 z-10 h-1 w-full bg-gradient-to-r from-transparent via-white/60 to-transparent dark:via-slate-900/60" />
@@ -1607,6 +1611,7 @@ export default function Home() {
                               <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-black/35 via-black/25 to-white/10" />
                               <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-white/5" />
                               <motion.div
+                                layout
                                 className="relative flex flex-col gap-4 p-4 sm:p-6"
                                 initial={{ opacity: 0 }}
                                 animate={{ opacity: 1 }}
@@ -1619,7 +1624,12 @@ export default function Home() {
                                   animate={{ x: profileEditorVisible ? "-100%" : "0%" }}
                                   transition={{ duration: 0.32, ease: [0.4, 0, 0.2, 1] }}
                                 >
-                                  <div ref={profileOverviewCaptureRef} className="w-full shrink-0 flex flex-col gap-4 min-h-0 max-w-3xl mx-auto">
+                                  <div
+                                    ref={profileOverviewCaptureRef}
+                                    className={`w-full shrink-0 flex flex-col gap-4 min-h-0 max-w-3xl mx-auto transition-[height,opacity] duration-200 ${
+                                      profileEditorVisible ? "h-0 overflow-hidden pointer-events-none opacity-0" : "h-auto opacity-100"
+                                    }`}
+                                  >
                                     <div className="flex items-start justify-between gap-4">
                                       <div className="flex min-w-0 flex-1 items-start gap-4">
                                         <div
@@ -1974,7 +1984,11 @@ export default function Home() {
                                     </div>
                                   </div>
 
-                                  <div className="w-full shrink-0 space-y-4 max-w-3xl mx-auto">
+                                  <div
+                                    className={`w-full shrink-0 space-y-4 max-w-3xl mx-auto transition-[height,opacity] duration-200 ${
+                                      profileEditorVisible ? "h-auto opacity-100" : "h-0 overflow-hidden pointer-events-none opacity-0"
+                                    }`}
+                                  >
                                     <div className="flex items-start justify-between gap-4">
                                       <div className="space-y-1 text-left">
                                         <p className="text-[11px] uppercase tracking-[0.22em] text-white/80">Profile settings</p>
@@ -2345,7 +2359,7 @@ export default function Home() {
                                   </div>
                                 </DialogContent>
                               </Dialog>
-                          </div>
+                          </motion.div>
                         </motion.div>
                       </motion.div>
                     )}
