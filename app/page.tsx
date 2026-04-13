@@ -297,6 +297,7 @@ export default function Home() {
   const [profileDataDialogOpen, setProfileDataDialogOpen] = useState(false)
   const [unifiedDataResetConfirmOpen, setUnifiedDataResetConfirmOpen] = useState(false)
   const [profileDataButtonExpanded, setProfileDataButtonExpanded] = useState(false)
+  const [profileOverviewActionsOpen, setProfileOverviewActionsOpen] = useState(false)
   const [profileImageExporting, setProfileImageExporting] = useState(false)
   const [profileImageBackgroundDialogOpen, setProfileImageBackgroundDialogOpen] = useState(false)
   const [profileImageCapturing, setProfileImageCapturing] = useState(false)
@@ -652,7 +653,14 @@ export default function Home() {
   useEffect(() => {
     if (fullProfileDialogOpen) return
     setProfileEditorVisible(false)
+    setProfileOverviewActionsOpen(false)
   }, [fullProfileDialogOpen])
+
+  useEffect(() => {
+    if (profileEditorVisible) {
+      setProfileOverviewActionsOpen(false)
+    }
+  }, [profileEditorVisible])
 
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout> | null = null
@@ -1044,15 +1052,48 @@ export default function Home() {
     const previousBorderRadius = captureTarget.style.borderRadius
     const previousPadding = captureTarget.style.padding
     const previousRowGap = captureTarget.style.rowGap
+    const previousWidth = captureTarget.style.width
+    const previousMinWidth = captureTarget.style.minWidth
+    const previousMaxWidth = captureTarget.style.maxWidth
     const hideElements = Array.from(captureTarget.querySelectorAll("[data-export-hide='true']")) as HTMLElement[]
     const showElements = Array.from(captureTarget.querySelectorAll("[data-export-show='true']")) as HTMLElement[]
     const scrollFixElements = Array.from(captureTarget.querySelectorAll("[data-export-scroll-fix='true']")) as HTMLElement[]
+    const desktopGridElement = captureTarget.querySelector("[data-export-force-desktop-grid='true']") as HTMLElement | null
+    const desktopHeaderShellElement = captureTarget.querySelector("[data-export-force-desktop-shell='true']") as HTMLElement | null
+    const desktopPillsContainer = captureTarget.querySelector("[data-export-force-desktop-pills='true']") as HTMLElement | null
+    const desktopPillElements = Array.from(captureTarget.querySelectorAll("[data-export-force-desktop-pill='true']")) as HTMLElement[]
     const previousHiddenDisplays = hideElements.map((element) => element.style.display)
     const previousShowDisplays = showElements.map((element) => element.style.display)
     const previousScrollFixStyles = scrollFixElements.map((element) => ({
       overflow: element.style.overflow,
       maxHeight: element.style.maxHeight,
       height: element.style.height,
+    }))
+    const previousDesktopGridStyle = desktopGridElement
+      ? {
+          gridTemplateColumns: desktopGridElement.style.gridTemplateColumns,
+        }
+      : null
+    const previousDesktopHeaderShellStyle = desktopHeaderShellElement
+      ? {
+          border: desktopHeaderShellElement.style.border,
+          background: desktopHeaderShellElement.style.background,
+          padding: desktopHeaderShellElement.style.padding,
+          borderRadius: desktopHeaderShellElement.style.borderRadius,
+          backdropFilter: desktopHeaderShellElement.style.backdropFilter,
+          gap: desktopHeaderShellElement.style.gap,
+        }
+      : null
+    const previousDesktopPillsContainerStyle = desktopPillsContainer
+      ? {
+          flexWrap: desktopPillsContainer.style.flexWrap,
+          alignItems: desktopPillsContainer.style.alignItems,
+          overflowX: desktopPillsContainer.style.overflowX,
+        }
+      : null
+    const previousDesktopPillStyles = desktopPillElements.map((element) => ({
+      whiteSpace: element.style.whiteSpace,
+      maxWidth: element.style.maxWidth,
     }))
 
     try {
@@ -1067,6 +1108,9 @@ export default function Home() {
       captureTarget.style.borderRadius = "24px"
       captureTarget.style.padding = "14px"
       captureTarget.style.rowGap = "0.75rem"
+      captureTarget.style.width = "896px"
+      captureTarget.style.minWidth = "896px"
+      captureTarget.style.maxWidth = "896px"
       hideElements.forEach((element) => {
         element.style.display = "none"
       })
@@ -1077,6 +1121,26 @@ export default function Home() {
         element.style.overflow = "visible"
         element.style.maxHeight = "none"
         element.style.height = "auto"
+      })
+      if (desktopGridElement) {
+        desktopGridElement.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))"
+      }
+      if (desktopHeaderShellElement) {
+        desktopHeaderShellElement.style.border = "0"
+        desktopHeaderShellElement.style.background = "transparent"
+        desktopHeaderShellElement.style.padding = "0"
+        desktopHeaderShellElement.style.borderRadius = "0"
+        desktopHeaderShellElement.style.backdropFilter = "none"
+        desktopHeaderShellElement.style.gap = "1rem"
+      }
+      if (desktopPillsContainer) {
+        desktopPillsContainer.style.flexWrap = "nowrap"
+        desktopPillsContainer.style.alignItems = "center"
+        desktopPillsContainer.style.overflowX = "auto"
+      }
+      desktopPillElements.forEach((element) => {
+        element.style.whiteSpace = "nowrap"
+        element.style.maxWidth = "none"
       })
 
       if (typeof document !== "undefined" && "fonts" in document) {
@@ -1129,10 +1193,34 @@ export default function Home() {
         element.style.maxHeight = previous.maxHeight
         element.style.height = previous.height
       })
+      if (desktopGridElement && previousDesktopGridStyle) {
+        desktopGridElement.style.gridTemplateColumns = previousDesktopGridStyle.gridTemplateColumns
+      }
+      if (desktopHeaderShellElement && previousDesktopHeaderShellStyle) {
+        desktopHeaderShellElement.style.border = previousDesktopHeaderShellStyle.border
+        desktopHeaderShellElement.style.background = previousDesktopHeaderShellStyle.background
+        desktopHeaderShellElement.style.padding = previousDesktopHeaderShellStyle.padding
+        desktopHeaderShellElement.style.borderRadius = previousDesktopHeaderShellStyle.borderRadius
+        desktopHeaderShellElement.style.backdropFilter = previousDesktopHeaderShellStyle.backdropFilter
+        desktopHeaderShellElement.style.gap = previousDesktopHeaderShellStyle.gap
+      }
+      if (desktopPillsContainer && previousDesktopPillsContainerStyle) {
+        desktopPillsContainer.style.flexWrap = previousDesktopPillsContainerStyle.flexWrap
+        desktopPillsContainer.style.alignItems = previousDesktopPillsContainerStyle.alignItems
+        desktopPillsContainer.style.overflowX = previousDesktopPillsContainerStyle.overflowX
+      }
+      desktopPillElements.forEach((element, index) => {
+        const previous = previousDesktopPillStyles[index]
+        element.style.whiteSpace = previous.whiteSpace
+        element.style.maxWidth = previous.maxWidth
+      })
       captureTarget.style.background = previousBackground
       captureTarget.style.borderRadius = previousBorderRadius
       captureTarget.style.padding = previousPadding
       captureTarget.style.rowGap = previousRowGap
+      captureTarget.style.width = previousWidth
+      captureTarget.style.minWidth = previousMinWidth
+      captureTarget.style.maxWidth = previousMaxWidth
       setProfileImageCapturing(false)
       setProgressRankInfoView(previousProgressRankInfoView)
       setAcademicProgressInfoView(previousAcademicProgressInfoView)
@@ -1630,25 +1718,25 @@ export default function Home() {
                                       profileEditorVisible ? "h-0 overflow-hidden pointer-events-none opacity-0" : "h-auto opacity-100"
                                     }`}
                                   >
-                                    <div className="flex items-start justify-between gap-4">
-                                      <div className="flex min-w-0 flex-1 items-start gap-4">
+                                    <div data-export-force-desktop-shell="true" className="flex items-start justify-between gap-3 rounded-2xl border border-white/20 bg-black/15 p-3 backdrop-blur-[2px] sm:gap-4 sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0 sm:backdrop-blur-0">
+                                      <div className="flex min-w-0 flex-1 items-start gap-3 sm:gap-4">
                                         <div
-                                          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-base font-semibold uppercase tracking-wide ring-2 ring-white/60 shadow-inner ml-1 mt-1 text-white"
+                                          className="ml-0 mt-0 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold uppercase tracking-wide ring-2 ring-white/60 shadow-inner text-white sm:ml-1 sm:mt-1 sm:h-12 sm:w-12 sm:text-base"
                                           style={{ background: profileAccent, textShadow: "0 0 6px rgba(0,0,0,0.55)" }}
                                         >
                                           {profileInitials}
                                         </div>
-                                        <div className="min-w-0 space-y-1 text-left">
-                                          <p className="text-[11px] uppercase tracking-[0.22em] text-white/80">Profile overview</p>
-                                          <p id="full-profile-title" className="truncate text-xl font-semibold leading-tight text-white">
+                                        <div className="min-w-0 space-y-0.5 text-left sm:space-y-1">
+                                          <p className="text-[10px] uppercase tracking-[0.18em] text-white/80 sm:text-[11px] sm:tracking-[0.22em]">Profile overview</p>
+                                          <p id="full-profile-title" className="truncate text-lg font-semibold leading-tight text-white sm:text-xl">
                                             {profileName}
                                           </p>
-                                          <p className="truncate text-sm text-white/90">{profileProgram}</p>
-                                          <div data-export-hide="true" data-export-scroll-fix="true" className="flex flex-nowrap items-center gap-2 overflow-x-auto pt-1 text-xs text-white/85 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                                            <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/20 text-white hover:bg-white/25">
+                                          <p className="truncate text-xs text-white/90 sm:text-sm">{profileProgram}</p>
+                                          <div data-export-hide="true" data-export-scroll-fix="true" data-export-force-desktop-pills="true" className="flex flex-wrap items-start gap-2 overflow-visible pt-1 text-xs text-white/85 sm:flex-nowrap sm:items-center sm:overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                                            <Badge data-export-force-desktop-pill="true" variant="secondary" className="max-w-full shrink-0 whitespace-normal text-center leading-tight bg-white/20 text-white hover:bg-white/25 sm:whitespace-nowrap">
                                               Year {profileCard.year}
                                             </Badge>
-                                            <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/20 text-white hover:bg-white/25">
+                                            <Badge data-export-force-desktop-pill="true" variant="secondary" className="max-w-full shrink-0 whitespace-normal text-center leading-tight bg-white/20 text-white hover:bg-white/25 sm:whitespace-nowrap">
                                               Rank: {rankTier.name}
                                             </Badge>
                                             {profileCard.expectedGraduation && (
@@ -1658,7 +1746,7 @@ export default function Home() {
                                                 animate={{ scale: profileDataButtonExpanded ? 0.98 : 1, y: profileDataButtonExpanded ? 0.5 : 0 }}
                                                 transition={{ duration: 0.22, ease: "easeInOut" }}
                                               >
-                                                <Badge variant="secondary" className="shrink-0 whitespace-nowrap bg-white/20 text-white hover:bg-white/25">
+                                                <Badge data-export-force-desktop-pill="true" variant="secondary" className="max-w-full shrink-0 whitespace-normal text-center leading-tight bg-white/20 text-white hover:bg-white/25 sm:whitespace-nowrap">
                                                   <AnimatePresence mode="wait" initial={false}>
                                                     <motion.span
                                                       key={expectedGraduationBadgeLabel ?? profileCard.expectedGraduation}
@@ -1676,7 +1764,7 @@ export default function Home() {
                                           </div>
                                         </div>
                                       </div>
-                                      <div className="flex shrink-0 items-center justify-end gap-2 pl-2 sm:min-w-[244px]" data-export-hide="true">
+                                      <div className="hidden shrink-0 items-center justify-end gap-2 pl-2 sm:flex sm:min-w-[244px]" data-export-hide="true">
                                         <motion.button
                                           type="button"
                                           className="relative flex h-9 shrink-0 items-center overflow-hidden rounded-full bg-white text-slate-900 shadow dark:bg-white/10 dark:text-white"
@@ -1761,6 +1849,82 @@ export default function Home() {
                                           <X className="h-4 w-4" />
                                         </Button>
                                       </div>
+                                      <div className="relative flex shrink-0 items-center justify-end pl-1 sm:hidden" data-export-hide="true">
+                                        <Button
+                                          type="button"
+                                          size="icon"
+                                          variant="secondary"
+                                          className="h-9 w-9 shrink-0 rounded-full border border-white/50 bg-white/95 text-slate-900 shadow hover:bg-white dark:border-white/20 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                                          onClick={() => setProfileOverviewActionsOpen((prev) => !prev)}
+                                          aria-label={profileOverviewActionsOpen ? "Close profile actions" : "Open profile actions"}
+                                        >
+                                          {profileOverviewActionsOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+                                        </Button>
+                                        <AnimatePresence>
+                                          {profileOverviewActionsOpen && (
+                                            <motion.div
+                                              initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                                              exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                                              transition={{ duration: 0.18, ease: "easeOut" }}
+                                              className="absolute right-0 top-11 z-20 w-48 rounded-xl border border-white/35 bg-white/95 p-2 shadow-xl backdrop-blur dark:border-white/15 dark:bg-slate-900/95"
+                                            >
+                                              <div className="flex flex-col gap-1">
+                                                <Button
+                                                  type="button"
+                                                  variant="ghost"
+                                                  className="h-8 justify-start px-2 text-xs"
+                                                  onClick={() => {
+                                                    setProfileOverviewActionsOpen(false)
+                                                    setProfileDataDialogOpen(true)
+                                                  }}
+                                                >
+                                                  <Database className="mr-2 h-3.5 w-3.5" />
+                                                  Data options
+                                                </Button>
+                                                <Button
+                                                  type="button"
+                                                  variant="ghost"
+                                                  className="h-8 justify-start px-2 text-xs"
+                                                  onClick={() => {
+                                                    setProfileOverviewActionsOpen(false)
+                                                    openProfileImageBackgroundDialog()
+                                                  }}
+                                                  disabled={profileImageExporting}
+                                                >
+                                                  <Download className="mr-2 h-3.5 w-3.5" />
+                                                  Save to image
+                                                </Button>
+                                                <Button
+                                                  type="button"
+                                                  variant="ghost"
+                                                  className="h-8 justify-start px-2 text-xs"
+                                                  onClick={() => {
+                                                    setProfileOverviewActionsOpen(false)
+                                                    openProfileEditor()
+                                                  }}
+                                                >
+                                                  <Pencil className="mr-2 h-3.5 w-3.5" />
+                                                  Edit
+                                                </Button>
+                                                <Button
+                                                  type="button"
+                                                  variant="ghost"
+                                                  className="h-8 justify-start px-2 text-xs text-rose-600 dark:text-rose-300"
+                                                  onClick={() => {
+                                                    setProfileOverviewActionsOpen(false)
+                                                    setFullProfileDialogOpen(false)
+                                                    setProfileEditorVisible(false)
+                                                  }}
+                                                >
+                                                  <X className="mr-2 h-3.5 w-3.5" />
+                                                  Close
+                                                </Button>
+                                              </div>
+                                            </motion.div>
+                                          )}
+                                        </AnimatePresence>
+                                      </div>
                                       <div
                                         data-export-show="true"
                                         data-export-show-display="flex"
@@ -1780,7 +1944,7 @@ export default function Home() {
                                       </div>
                                     </div>
 
-                                    <div className="grid gap-4 md:grid-cols-2">
+                                    <div data-export-force-desktop-grid="true" className="grid gap-4 md:grid-cols-2">
                                       <Card className="flex h-full flex-col shadow-sm">
                                         <CardHeader className="pb-2 text-center">
                                           <CardTitle className="flex items-center justify-center gap-2 text-base">
