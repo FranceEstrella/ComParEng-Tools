@@ -462,6 +462,21 @@ interface PairingPromptState {
   pairSection?: CourseSection | null
 }
 
+interface SameSectionBlockedEntry {
+  section: CourseSection
+  missingPrerequisites: string[]
+}
+
+interface ReadyToAddSuggestion {
+  code: string
+  name: string
+  readySectionCount: number
+  conflictingSectionCount: number
+  suggestedSection: CourseSection | null
+  fallbackSection: CourseSection | null
+  status: "active" | "ready"
+}
+
 interface TermYearVersionState {
   activeVersionId: string
   versions: ScheduleVersion[]
@@ -1177,6 +1192,23 @@ export default function ScheduleMaker() {
         open: true
         primary: CourseSection
         matches: CourseSection[]
+      }
+  >(null)
+  const [sameSectionBlockedDialog, setSameSectionBlockedDialog] = useState<
+    | null
+    | {
+        open: true
+        blockedByPrerequisites: SameSectionBlockedEntry[]
+        blockedAsPassed: CourseSection[]
+      }
+  >(null)
+  const [readyToAddDialogOpen, setReadyToAddDialogOpen] = useState(false)
+  const [selectedReadyToAddCourseCodes, setSelectedReadyToAddCourseCodes] = useState<string[]>([])
+  const [readyToAddConflictConfirmDialog, setReadyToAddConflictConfirmDialog] = useState<
+    | null
+    | {
+        open: true
+        courseCodes: string[]
       }
   >(null)
   const [nonSchedulableSelectionNotice, setNonSchedulableSelectionNotice] = useState<
@@ -3164,6 +3196,28 @@ export default function ScheduleMaker() {
 
   const normalizeSection = useCallback((value: string) => (value || "").trim().toUpperCase(), [])
 
+  const getPrerequisiteLabel = useCallback(
+    (prerequisiteId: string) => {
+      const trackerCourse = trackerCourseById.get(prerequisiteId)
+      if (trackerCourse?.code) {
+        return getDisplayCode(trackerCourse.code)
+      }
+
+      const initialCourse = initialCourseById.get(prerequisiteId)
+      if (initialCourse?.code) {
+        return getDisplayCode(initialCourse.code)
+      }
+
+      return prerequisiteId
+    },
+    [getDisplayCode, initialCourseById, trackerCourseById],
+  )
+
+  const isSchedulableSection = useCallback((section: CourseSection) => {
+    const normalizedDayValue = (section.meetingDays || "").toUpperCase().replace(/[\s/]+/g, "")
+    return normalizedDayValue !== "SU"
+  }, [])
+
   const buildSameSectionMatches = useCallback(
     (primary: CourseSection) => {
       const normalized = normalizeSection(primary.section)
@@ -3203,6 +3257,217 @@ export default function ScheduleMaker() {
     [availableCourses, normalizeSection, selectedCourses],
   )
 
+  const addSameSectionMatches = useCallback(
+    (matches: CourseSection[], forceAdd = false) => {
+      if (matches.length === 0) return
+
+      const isIrregularMode =
+        solarOSESStudentTypeOverride === "auto"
+          ? !regularStudentDetected
+          : solarOSESStudentTypeOverride === "irregular"
+
+      const blockedByPrerequisites: SameSectionBlockedEntry[] = []
+      const blockedAsPassed: CourseSection[] = []
+      const addedCanonicalCodes: string[] = []
+
+      matches.forEach((section) => {
+        const canonical = getCanonicalCourseCode(section.courseCode)
+        const readiness = readinessByCanonical.get(canonical)
+        const isPassed = readiness?.isPassed ?? false
+        const missingPrerequisites = readiness?.missingPrerequisites ?? []
+        const prerequisitesMet = readiness?.prerequisitesMet ?? true
+
+        if (!forceAdd && isPassed) {
+          blockedAsPassed.push(section)
+          return
+        }
+
+        if (!forceAdd && isIrregularMode && !prerequisitesMet && missingPrerequisites.length > 0) {
+          blockedByPrerequisites.push({
+            section,
+            missingPrerequisites,
+          })
+          return
+        }
+
+        addCourse(section)
+        addedCanonicalCodes.push(canonical)
+      })
+
+      if (addedCanonicalCodes.length > 0) {
+        setSelectedCourseCodes((prev) => Array.from(new Set([...prev, ...addedCanonicalCodes])))
+      }
+
+      if (!forceAdd && (blockedByPrerequisites.length > 0 || blockedAsPassed.length > 0)) {
+        setSameSectionBlockedDialog({
+          open: true,
+          blockedByPrerequisites,
+          blockedAsPassed,
+        })
+      }
+    },
+    [addCourse, getCanonicalCourseCode, readinessByCanonical, regularStudentDetected, solarOSESStudentTypeOverride],
+  )
+
+  const handleAddBlockedSameSectionAnyway = useCallback(() => {
+    if (!sameSectionBlockedDialog?.open) return
+    addSameSectionMatches(
+      [
+        ...sameSectionBlockedDialog.blockedByPrerequisites.map((entry) => entry.section),
+        ...sameSectionBlockedDialog.blockedAsPassed,
+      ],
+      true,
+    )
+    setSameSectionBlockedDialog(null)
+  }, [addSameSectionMatches, sameSectionBlockedDialog])
+
+  const readyToAddSuggestions = useMemo(() => {
+    const selectedCanonicalSet = new Set(selectedCourses.map((course) => getSelectedCourseCanonicalCode(course)))
+    const schedulableSectionsByCanonical = new Map<string, CourseSection[]>()
+
+    availableCourses.forEach((section) => {
+      if (!isSchedulableSection(section)) return
+      const canonical = getCanonicalCourseCode(section.courseCode)
+      const list = schedulableSectionsByCanonical.get(canonical) || []
+      list.push(section)
+      schedulableSectionsByCanonical.set(canonical, list)
+    })
+
+    const suggestions: ReadyToAddSuggestion[] = []
+
+    schedulableSectionsByCanonical.forEach((schedulableSections, canonical) => {
+      if (selectedCanonicalSet.has(canonical)) return
+
+      const readiness = readinessByCanonical.get(canonical)
+      const isActive = readiness?.isActive ?? false
+      const isReady = readiness?.prerequisitesMet ?? false
+      const isPassed = readiness?.isPassed ?? false
+
+      if (isPassed) return
+      if (!isActive && !isReady) return
+      if (!isActive && isReady && !initialCourseByCanonical.has(canonical)) return
+
+      const nonConflictingSections = schedulableSections.filter((section) => !hasScheduleConflict(section))
+      const readySectionCount = nonConflictingSections.length
+      const conflictingSectionCount = schedulableSections.length - readySectionCount
+
+      suggestions.push({
+        code: canonical,
+        name: getCourseNameAndCredits(canonical).name,
+        readySectionCount,
+        conflictingSectionCount,
+        suggestedSection: nonConflictingSections[0] ?? null,
+        fallbackSection: schedulableSections[0] ?? null,
+        status: isActive ? "active" : "ready",
+      })
+    })
+
+    suggestions.sort((a, b) => {
+      const aHasReady = a.readySectionCount > 0
+      const bHasReady = b.readySectionCount > 0
+      if (aHasReady !== bHasReady) {
+        return aHasReady ? -1 : 1
+      }
+
+      if (a.status !== b.status) {
+        return a.status === "active" ? -1 : 1
+      }
+
+      if (a.readySectionCount !== b.readySectionCount) {
+        return b.readySectionCount - a.readySectionCount
+      }
+
+      return a.code.localeCompare(b.code)
+    })
+
+    return {
+      active: suggestions.filter((entry) => entry.status === "active"),
+      ready: suggestions.filter((entry) => entry.status === "ready"),
+    }
+  }, [availableCourses, getCanonicalCourseCode, hasScheduleConflict, initialCourseByCanonical, isSchedulableSection, readinessByCanonical, selectedCourses])
+
+  const allReadyToAddSuggestions = useMemo(
+    () => [...readyToAddSuggestions.active, ...readyToAddSuggestions.ready],
+    [readyToAddSuggestions.active, readyToAddSuggestions.ready],
+  )
+
+  useEffect(() => {
+    if (!readyToAddDialogOpen) {
+      setSelectedReadyToAddCourseCodes([])
+    }
+  }, [readyToAddDialogOpen])
+
+  const toggleReadyToAddCourseSelection = useCallback((courseCode: string, checked: boolean) => {
+    const canonical = getCanonicalCourseCode(courseCode)
+    setSelectedReadyToAddCourseCodes((prev) => {
+      const next = new Set(prev)
+      if (checked) {
+        next.add(canonical)
+      } else {
+        next.delete(canonical)
+      }
+      return Array.from(next)
+    })
+  }, [getCanonicalCourseCode])
+
+  const handleAddSelectedReadyToAddCourses = useCallback((forceConflictOnly = false) => {
+    if (selectedReadyToAddCourseCodes.length === 0) return
+
+    const suggestionsByCode = new Map<string, ReadyToAddSuggestion>()
+    allReadyToAddSuggestions.forEach((entry) => {
+      suggestionsByCode.set(getCanonicalCourseCode(entry.code), entry)
+    })
+
+    if (!forceConflictOnly) {
+      const conflictOnlyCourseCodes = selectedReadyToAddCourseCodes.filter((code) => {
+        const canonical = getCanonicalCourseCode(code)
+        const suggestion = suggestionsByCode.get(canonical)
+        return Boolean(suggestion && suggestion.readySectionCount === 0)
+      })
+
+      if (conflictOnlyCourseCodes.length > 0) {
+        setReadyToAddConflictConfirmDialog({
+          open: true,
+          courseCodes: conflictOnlyCourseCodes,
+        })
+        return
+      }
+    }
+
+    const selectedNow = new Set(selectedCourses.map((course) => getSelectedCourseCanonicalCode(course)))
+    const addedCodes: string[] = []
+
+    selectedReadyToAddCourseCodes.forEach((code) => {
+      const canonical = getCanonicalCourseCode(code)
+      if (selectedNow.has(canonical)) return
+      const suggestion = suggestionsByCode.get(canonical)
+      const sectionToAdd = suggestion?.suggestedSection ?? suggestion?.fallbackSection
+      if (!sectionToAdd) return
+
+      addCourse(sectionToAdd)
+      selectedNow.add(canonical)
+      addedCodes.push(canonical)
+    })
+
+    if (addedCodes.length > 0) {
+      setSelectedCourseCodes((prev) => Array.from(new Set([...prev, ...addedCodes])))
+    }
+
+    setReadyToAddConflictConfirmDialog(null)
+    setReadyToAddDialogOpen(false)
+  }, [addCourse, allReadyToAddSuggestions, getCanonicalCourseCode, selectedCourses, selectedReadyToAddCourseCodes])
+
+  const closeSameSectionBlockedDialog = useCallback(
+    (showReadySuggestions: boolean) => {
+      setSameSectionBlockedDialog(null)
+      if (!showReadySuggestions) return
+      if (readyToAddSuggestions.active.length === 0 && readyToAddSuggestions.ready.length === 0) return
+      setSelectedReadyToAddCourseCodes([])
+      setReadyToAddDialogOpen(true)
+    },
+    [readyToAddSuggestions.active.length, readyToAddSuggestions.ready.length],
+  )
+
   const confirmSameSectionAdd = useCallback(() => {
     if (!sameSectionPrompt?.open) return
     const { matches } = sameSectionPrompt
@@ -3213,16 +3478,11 @@ export default function ScheduleMaker() {
     }
 
     if (matches.length > 0) {
-      matches.forEach((section) => addCourse(section))
-      setSelectedCourseCodes((prev) => {
-        const next = new Set(prev)
-        matches.forEach((section) => next.add(getCanonicalCourseCode(section.courseCode)))
-        return Array.from(next)
-      })
+      addSameSectionMatches(matches)
     }
 
     closeSameSectionPrompt()
-  }, [addCourse, closeSameSectionPrompt, getCanonicalCourseCode, persistScheduleMakerPreferences, rememberSameSectionAddToggle, sameSectionPrompt])
+  }, [addSameSectionMatches, closeSameSectionPrompt, persistScheduleMakerPreferences, rememberSameSectionAddToggle, sameSectionPrompt])
 
   const maybeHandleSameSectionPrompt = useCallback(
     (primary: CourseSection) => {
@@ -3232,12 +3492,7 @@ export default function ScheduleMaker() {
       if (matches.length === 0) return
 
       if (rememberSameSectionAddDecision === "confirm") {
-        matches.forEach((section) => addCourse(section))
-        setSelectedCourseCodes((prev) => {
-          const next = new Set(prev)
-          matches.forEach((section) => next.add(getCanonicalCourseCode(section.courseCode)))
-          return Array.from(next)
-        })
+        addSameSectionMatches(matches)
         return
       }
 
@@ -3246,7 +3501,7 @@ export default function ScheduleMaker() {
       setRememberSameSectionAddToggle(false)
       setSameSectionPrompt({ open: true, primary, matches })
     },
-    [addCourse, buildSameSectionMatches, getCanonicalCourseCode, regularStudentDetected, rememberSameSectionAddDecision, sameSectionFeatureEnabled],
+    [addSameSectionMatches, buildSameSectionMatches, regularStudentDetected, rememberSameSectionAddDecision, sameSectionFeatureEnabled],
   )
 
   const courseCatalog = React.useMemo(() => {
@@ -6503,17 +6758,10 @@ const renderScheduleView = () => {
             <Button
               variant="outline"
               className="w-full sm:w-auto gap-2"
-              onClick={openStudentPortal}
-            >
-              <ExternalLink className="h-4 w-4" />
-              Open Course Offerings page
-            </Button>
-            <Button
-              className="w-full sm:w-auto gap-2"
               onClick={handleStudentPortalLaunch}
             >
               <ExternalLink className="h-4 w-4" />
-              Open Student Portal
+              Open Course Offerings page
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -6732,8 +6980,18 @@ const renderScheduleView = () => {
           <div className="text-sm text-slate-600 dark:text-slate-300">
             {error}
           </div>
-          <DialogFooter>
-            <Button onClick={() => setErrorDialogOpen(false)}>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            {!hasRealCourseData ? (
+              <Button
+                variant="outline"
+                className="w-full gap-2 sm:w-auto"
+                onClick={handleStudentPortalLaunch}
+              >
+                <ExternalLink className="h-4 w-4" />
+                Open Course Offerings
+              </Button>
+            ) : null}
+            <Button className="w-full sm:w-auto" onClick={() => setErrorDialogOpen(false)}>
               Dismiss
             </Button>
           </DialogFooter>
@@ -6953,6 +7211,219 @@ const renderScheduleView = () => {
             </Button>
             <Button onClick={confirmSameSectionAdd} className="w-full sm:w-auto">
               Add all matched courses
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(sameSectionBlockedDialog?.open)}
+        onOpenChange={(open) => {
+          if (!open) closeSameSectionBlockedDialog(true)
+        }}
+      >
+        <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileWarning className="h-5 w-5 text-amber-600" />
+              Some courses were not added
+            </DialogTitle>
+            <DialogDescription>
+              Auto-add skipped some matches based on course readiness rules.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-md border border-amber-300/60 bg-amber-50/80 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+              <span>Blocked courses summary</span>
+              <Badge variant="secondary" className="text-[10px]">
+                {((sameSectionBlockedDialog?.blockedByPrerequisites.length ?? 0) + (sameSectionBlockedDialog?.blockedAsPassed.length ?? 0))} skipped
+              </Badge>
+            </div>
+
+            {Boolean(sameSectionBlockedDialog?.blockedByPrerequisites.length) && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-100">Blocked by prerequisites</p>
+                <div className="max-h-44 space-y-2 overflow-y-auto rounded-md border border-slate-200/80 bg-white p-2 text-sm dark:border-slate-700 dark:bg-slate-900">
+                  {(sameSectionBlockedDialog?.blockedByPrerequisites || []).map((entry) => (
+                    <div
+                      key={`${entry.section.courseCode}-${entry.section.section}`}
+                      className="rounded border border-slate-200/80 bg-slate-50/70 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/50"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[13px] font-semibold text-slate-900 dark:text-slate-100">
+                          {getDisplayCode(entry.section.courseCode)} {entry.section.section}
+                        </p>
+                        <Badge variant="outline" className="text-[10px]">
+                          Not ready
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-[12px] text-slate-600 dark:text-slate-300">
+                        Missing prerequisites: {entry.missingPrerequisites.map(getPrerequisiteLabel).join(", ")}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {Boolean(sameSectionBlockedDialog?.blockedAsPassed.length) && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-100">Already marked as passed</p>
+                <div className="max-h-44 space-y-2 overflow-y-auto rounded-md border border-slate-200/80 bg-white p-2 text-sm dark:border-slate-700 dark:bg-slate-900">
+                  {(sameSectionBlockedDialog?.blockedAsPassed || []).map((section) => (
+                    <div
+                      key={`${section.courseCode}-${section.section}`}
+                      className="rounded border border-slate-200/80 bg-slate-50/70 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/50"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[13px] font-semibold text-slate-900 dark:text-slate-100">
+                          {getDisplayCode(section.courseCode)} {section.section}
+                        </p>
+                        <Badge variant="outline" className="text-[10px]">
+                          Passed
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-[12px] text-slate-600 dark:text-slate-300">
+                        This course is already completed in Course Tracker.
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              You can keep these skipped, or force-add them now and adjust later.
+            </p>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => closeSameSectionBlockedDialog(true)} className="w-full sm:w-auto">
+              Keep skipped
+            </Button>
+            <Button onClick={handleAddBlockedSameSectionAnyway} className="w-full sm:w-auto">
+              Add them anyway
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={readyToAddDialogOpen} onOpenChange={setReadyToAddDialogOpen}>
+        <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Suggested courses to add next</DialogTitle>
+            <DialogDescription>
+              Select courses to add. Each row shows sections that fit your current calendar and sections that conflict.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {readyToAddSuggestions.active.length > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-slate-800 dark:text-slate-100">Currently active</p>
+                  <Badge variant="secondary" className="text-[10px]">{readyToAddSuggestions.active.length}</Badge>
+                </div>
+                <div className="max-h-40 space-y-2 overflow-y-auto rounded-md border border-slate-200/80 bg-white p-2 dark:border-slate-700 dark:bg-slate-900">
+                  {readyToAddSuggestions.active.map((course) => (
+                    <div key={course.code} className="rounded border border-slate-200/80 bg-slate-50/70 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/50">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex min-w-0 items-start gap-2">
+                          <Checkbox
+                            id={`ready-to-add-${course.code}`}
+                            checked={selectedReadyToAddCourseCodes.includes(getCanonicalCourseCode(course.code))}
+                            onCheckedChange={(value) => toggleReadyToAddCourseSelection(course.code, Boolean(value))}
+                          />
+                          <div className="min-w-0">
+                            <p className="text-[13px] font-semibold text-slate-900 dark:text-slate-100">{getDisplayCode(course.code)}</p>
+                            <p className="text-[12px] text-slate-600 dark:text-slate-300">{course.name}</p>
+                          </div>
+                        </div>
+                        <Badge variant="outline" className="text-[10px]">
+                          {course.readySectionCount === 0 ? "Conflict" : "Active"}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                        {course.readySectionCount} section(s) can be added now, {course.conflictingSectionCount} section(s) in conflict
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {readyToAddSuggestions.ready.length > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-slate-800 dark:text-slate-100">Ready but not active</p>
+                  <Badge variant="secondary" className="text-[10px]">{readyToAddSuggestions.ready.length}</Badge>
+                </div>
+                <div className="max-h-40 space-y-2 overflow-y-auto rounded-md border border-slate-200/80 bg-white p-2 dark:border-slate-700 dark:bg-slate-900">
+                  {readyToAddSuggestions.ready.map((course) => (
+                    <div key={course.code} className="rounded border border-slate-200/80 bg-slate-50/70 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/50">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex min-w-0 items-start gap-2">
+                          <Checkbox
+                            id={`ready-to-add-${course.code}`}
+                            checked={selectedReadyToAddCourseCodes.includes(getCanonicalCourseCode(course.code))}
+                            onCheckedChange={(value) => toggleReadyToAddCourseSelection(course.code, Boolean(value))}
+                          />
+                          <div className="min-w-0">
+                            <p className="text-[13px] font-semibold text-slate-900 dark:text-slate-100">{getDisplayCode(course.code)}</p>
+                            <p className="text-[12px] text-slate-600 dark:text-slate-300">{course.name}</p>
+                          </div>
+                        </div>
+                        <Badge variant="outline" className="text-[10px]">
+                          {course.readySectionCount === 0 ? "Conflict" : "Ready"}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                        {course.readySectionCount} section(s) can be added now, {course.conflictingSectionCount} section(s) in conflict
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              onClick={() => handleAddSelectedReadyToAddCourses(false)}
+              disabled={selectedReadyToAddCourseCodes.length < 1}
+              className="w-full sm:w-auto"
+            >
+              Add all courses selected
+            </Button>
+            <Button onClick={() => setReadyToAddDialogOpen(false)} className="w-full sm:w-auto">
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(readyToAddConflictConfirmDialog?.open)}
+        onOpenChange={(open) => {
+          if (!open) setReadyToAddConflictConfirmDialog(null)
+        }}
+      >
+        <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add courses with no ready sections?</DialogTitle>
+            <DialogDescription>
+              Some selected courses only have conflicting sections right now. Adding them may introduce overlaps in your calendar.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 rounded-md border border-amber-300/60 bg-amber-50/70 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+            {(readyToAddConflictConfirmDialog?.courseCodes || []).map((code) => (
+              <p key={code} className="text-[13px] font-medium">
+                {getDisplayCode(code)}
+              </p>
+            ))}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setReadyToAddConflictConfirmDialog(null)} className="w-full sm:w-auto">
+              Cancel
+            </Button>
+            <Button onClick={() => handleAddSelectedReadyToAddCourses(true)} className="w-full sm:w-auto">
+              Add anyway
             </Button>
           </DialogFooter>
         </DialogContent>
