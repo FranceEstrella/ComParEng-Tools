@@ -299,6 +299,7 @@ export default function Home() {
   const [profileDataButtonExpanded, setProfileDataButtonExpanded] = useState(false)
   const [profileImageExporting, setProfileImageExporting] = useState(false)
   const [profileImageBackgroundDialogOpen, setProfileImageBackgroundDialogOpen] = useState(false)
+  const [profileImageCapturing, setProfileImageCapturing] = useState(false)
   const [unifiedDataExporting, setUnifiedDataExporting] = useState(false)
   const [unifiedDataImporting, setUnifiedDataImporting] = useState(false)
   const [unifiedDataResetting, setUnifiedDataResetting] = useState(false)
@@ -601,6 +602,11 @@ export default function Home() {
       return
     }
 
+    // Freeze rotating helper copy while taking an export snapshot.
+    if (profileImageCapturing) {
+      return
+    }
+
     const intervalId = window.setInterval(() => {
       setProgressRankInfoView((prev) => (prev === "affirmation" ? "badges" : "affirmation"))
       setAcademicProgressInfoView((prev) => (prev === "affirmation" ? "graduation" : "affirmation"))
@@ -609,7 +615,7 @@ export default function Home() {
     return () => {
       window.clearInterval(intervalId)
     }
-  }, [fullProfileDialogOpen])
+  }, [fullProfileDialogOpen, profileImageCapturing])
 
   useEffect(() => {
     if (profileEditorVisible) return
@@ -1031,6 +1037,9 @@ export default function Home() {
     setProfileImageExporting(true)
     showUnifiedImportStatus("loading", "Rendering profile overview image...", undefined, "download")
 
+    const previousProgressRankInfoView = progressRankInfoView
+    const previousAcademicProgressInfoView = academicProgressInfoView
+
     const previousBackground = captureTarget.style.background
     const previousBorderRadius = captureTarget.style.borderRadius
     const previousPadding = captureTarget.style.padding
@@ -1047,6 +1056,13 @@ export default function Home() {
     }))
 
     try {
+      setProfileImageCapturing(true)
+      setProgressRankInfoView("affirmation")
+      setAcademicProgressInfoView("graduation")
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve())
+      })
+
       captureTarget.style.background = backgroundMode === "transparent" ? "transparent" : rankTier.gradient
       captureTarget.style.borderRadius = "24px"
       captureTarget.style.padding = "14px"
@@ -1117,9 +1133,18 @@ export default function Home() {
       captureTarget.style.borderRadius = previousBorderRadius
       captureTarget.style.padding = previousPadding
       captureTarget.style.rowGap = previousRowGap
+      setProfileImageCapturing(false)
+      setProgressRankInfoView(previousProgressRankInfoView)
+      setAcademicProgressInfoView(previousAcademicProgressInfoView)
       setProfileImageExporting(false)
     }
-  }, [profileImageExporting, rankTier.gradient, showUnifiedImportStatus])
+  }, [
+    academicProgressInfoView,
+    profileImageExporting,
+    progressRankInfoView,
+    rankTier.gradient,
+    showUnifiedImportStatus,
+  ])
 
   const openProfileImageBackgroundDialog = useCallback(() => {
     if (profileImageExporting) return
@@ -1746,26 +1771,27 @@ export default function Home() {
                                     </div>
 
                                     <div className="grid gap-4 md:grid-cols-2">
-                                      <Card className="shadow-sm">
-                                        <CardHeader className="pb-2 text-left">
-                                          <CardTitle className="flex items-center gap-2 text-base">
+                                      <Card className="flex h-full flex-col shadow-sm">
+                                        <CardHeader className="pb-2 text-center">
+                                          <CardTitle className="flex items-center justify-center gap-2 text-base">
                                             <Trophy className="h-4 w-4 text-amber-500" />
-                                            Progress & rank
+                                            Progress & Rank
                                           </CardTitle>
                                           <CardDescription data-export-hide="true">Current XP and level</CardDescription>
                                         </CardHeader>
-                                        <CardContent className="space-y-2.5 text-left">
+                                        <CardContent className="flex flex-1 flex-col justify-center gap-2.5 text-center">
                                           <div className="flex justify-center">
                                             <div className="inline-flex items-center gap-2.5 rounded-full px-4 py-1.5 text-sm font-semibold text-white shadow-sm" style={{ background: rankTier.gradient }}>
                                               <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/20 text-xs">★</span>
                                               {rankTier.name}
                                             </div>
                                           </div>
-                                          <div className="flex items-center justify-between text-sm font-medium">
+                                          <div className="flex items-center justify-center gap-2 text-sm font-medium">
                                             <span>Level {levelInfo.level}</span>
+                                            <span className="text-muted-foreground">•</span>
                                             <span className="text-muted-foreground">{Math.round(levelInfo.progress * 100)}%</span>
                                           </div>
-                                          <Progress value={Math.round(levelInfo.progress * 100)} className="bg-slate-200 dark:bg-slate-800">
+                                          <Progress value={Math.round(levelInfo.progress * 100)} className="mx-auto w-full max-w-xs bg-slate-200 dark:bg-slate-800">
                                             <div
                                               className="h-full w-full flex-1 rounded-full"
                                               style={{
@@ -1774,17 +1800,17 @@ export default function Home() {
                                               }}
                                             />
                                           </Progress>
-                                          <div className="grid grid-cols-2 gap-2 text-xs">
+                                          <div className="mx-auto grid w-full max-w-xs grid-cols-2 gap-2 text-xs">
                                             <div className="rounded-md bg-slate-100 px-2 py-1.5 dark:bg-slate-900/60">
                                               <p className="font-semibold text-slate-900 dark:text-white">{gamificationSnapshot.xp.toLocaleString()} XP</p>
                                               <p className="text-[11px] text-muted-foreground">Total XP</p>
                                             </div>
-                                            <div className="rounded-md bg-slate-100 px-2 py-1.5 text-right dark:bg-slate-900/60">
+                                            <div className="rounded-md bg-slate-100 px-2 py-1.5 dark:bg-slate-900/60">
                                               <p className="font-semibold text-slate-900 dark:text-white">{xpToNextLevel.toLocaleString()} XP</p>
                                               <p className="text-[11px] text-muted-foreground">To next level</p>
                                             </div>
                                           </div>
-                                          <div className="rounded-md border border-slate-200/80 bg-slate-50/80 px-2.5 py-1.5 text-[11px] text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-200">
+                                          <div data-export-hide="true" className="mx-auto w-full max-w-xs rounded-md border border-slate-200/80 bg-slate-50/80 px-2.5 py-1.5 text-[11px] text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-200">
                                             <AnimatePresence mode="wait" initial={false}>
                                               {progressRankInfoView === "affirmation" ? (
                                                 <motion.p
@@ -1820,20 +1846,21 @@ export default function Home() {
                                         </CardContent>
                                       </Card>
 
-                                      <Card className="shadow-sm">
-                                        <CardHeader className="pb-2 text-left">
-                                          <CardTitle className="flex items-center gap-2 text-base">
+                                      <Card className="flex h-full flex-col shadow-sm">
+                                        <CardHeader className="pb-2 text-center">
+                                          <CardTitle className="flex items-center justify-center gap-2 text-base">
                                             <Medal className="h-4 w-4 text-emerald-500" />
-                                            Academic progress
+                                            Academic Progress
                                           </CardTitle>
                                           <CardDescription data-export-hide="true">Syncs from Course Tracker</CardDescription>
                                         </CardHeader>
-                                        <CardContent className="space-y-3 text-left">
-                                          <div className="flex items-center justify-between text-sm font-medium">
+                                        <CardContent className="flex flex-1 flex-col justify-center gap-3 text-center">
+                                          <div className="flex items-center justify-center gap-2 text-sm font-medium">
                                             <span>Overall completion</span>
+                                            <span className="text-muted-foreground">•</span>
                                             <span>{completionPercent}%</span>
                                           </div>
-                                          <Progress value={completionPercent} className="bg-slate-200 dark:bg-slate-800">
+                                          <Progress value={completionPercent} className="mx-auto w-full max-w-xs bg-slate-200 dark:bg-slate-800">
                                             <div
                                               className="h-full w-full flex-1 rounded-full"
                                               style={{
@@ -1842,7 +1869,7 @@ export default function Home() {
                                               }}
                                             />
                                           </Progress>
-                                          <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                                          <div className="mx-auto grid w-full max-w-xs grid-cols-3 gap-2 text-xs text-muted-foreground">
                                             <div className="rounded-md bg-slate-100 px-2 py-1 dark:bg-slate-900/60">
                                               <p className="font-semibold text-slate-900 dark:text-white">{progressTotals.passed}</p>
                                               <p className="text-[11px]">Passed</p>
@@ -1856,7 +1883,7 @@ export default function Home() {
                                               <p className="text-[11px]">Pending</p>
                                             </div>
                                           </div>
-                                          <div className="rounded-lg border border-emerald-200/80 bg-emerald-50/70 px-3 py-2 text-center dark:border-emerald-500/30 dark:bg-emerald-500/10">
+                                          <div data-export-hide="true" className="mx-auto w-full max-w-xs rounded-lg border border-emerald-200/80 bg-emerald-50/70 px-3 py-2 text-center dark:border-emerald-500/30 dark:bg-emerald-500/10">
                                             <AnimatePresence mode="wait" initial={false}>
                                               {academicProgressInfoView === "affirmation" ? (
                                                 <motion.p
@@ -1888,6 +1915,19 @@ export default function Home() {
                                               )}
                                             </AnimatePresence>
                                           </div>
+                                          <div
+                                            data-export-show="true"
+                                            data-export-show-display="block"
+                                            className="hidden mx-auto w-full max-w-xs rounded-lg border border-emerald-200/80 bg-emerald-50/70 px-3 py-2 text-center dark:border-emerald-500/30 dark:bg-emerald-500/10"
+                                          >
+                                            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-200">
+                                              Estimated graduation
+                                            </p>
+                                            <div className="mt-1 flex items-center justify-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                                              <Calendar className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+                                              <span className="leading-snug">{expectedGradLabel}</span>
+                                            </div>
+                                          </div>
                                         </CardContent>
                                       </Card>
                                     </div>
@@ -1899,7 +1939,7 @@ export default function Home() {
                                       <div className="flex items-center gap-2 pb-3">
                                         <Award className="h-4 w-4 text-indigo-500" />
                                         <div className="flex items-baseline gap-2">
-                                          <p className="text-base font-semibold">Badges earned</p>
+                                          <p className="text-base font-semibold">Badges Earned</p>
                                           <span className="text-xs text-muted-foreground">{unlockedBadges.length} total</span>
                                         </div>
                                       </div>
