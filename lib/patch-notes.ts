@@ -4,7 +4,7 @@ export interface PatchNote {
   title: string
   silent?: boolean
   changes: {
-    type: "new" | "improved" | "fixed" | "known-issue"
+    type: "extension" | "new" | "improved" | "fixed" | "known-issue"
     description: string
   }[]
   hotfixes?: {
@@ -14,6 +14,78 @@ export interface PatchNote {
 }
 
 export const patchNotes: PatchNote[] = [
+  {
+    version: "1.50",
+    date: "April 14, 2026",
+    title: "Major update: Extension automation and app-wide polish",
+    changes: [
+      {
+        type: "extension",
+        description:
+          "Added auto-refresh capability for the course offerings page via the extension so latest offerings stay in sync with less manual reloading.",
+      },
+      {
+        type: "extension",
+        description:
+          "Added auto-import of grade attempts from the extension into Course Tracker with stronger import-state handling.",
+      },
+      {
+        type: "extension",
+        description:
+          "Added extension-driven auto-add of active courses into Schedule Maker for faster initial setup.",
+      },
+      {
+        type: "new",
+        description:
+          "Introduced unified import/export flows and profile overview export options for easier backup and transfer across tools.",
+      },
+      {
+        type: "new",
+        description:
+          "Revamped onboarding with richer interactive previews and integrated FAQs entry points.",
+      },
+      {
+        type: "new",
+        description:
+          "Added smarter same-section guidance in Schedule Maker to reduce trial-and-error while building schedules.",
+      },
+      {
+        type: "improved",
+        description:
+          "Improved Schedule Maker no-data recovery and made dialog actions more contextual.",
+      },
+      {
+        type: "improved",
+        description:
+          "Improved Academic Planner loading and refresh indicators, including clearer plan generation in-progress states.",
+      },
+      {
+        type: "improved",
+        description:
+          "Improved Profile Overview mobile layout and polished profile card/export presentation.",
+      },
+      {
+        type: "improved",
+        description:
+          "Hardened API integration reliability with shared CORS handling and better response/error behavior.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Fixed Schedule Maker not updating reliably after settings changes in specific flows.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Fixed awkward bottom spacing in the Profile Overview edit screen on mobile.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Tightened production CSP behavior and nonce wiring to reduce script-policy regressions while preserving development compatibility.",
+      },
+    ],
+  },
   {
     version: "1.49",
     date: "April 7, 2026",
@@ -606,11 +678,17 @@ const compareSemver = (a: string, b: string) => {
   return 0
 }
 
+const dateToEpoch = (date: string) => {
+  const parsed = Date.parse(date)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
 const changeTypeOrder: Record<PatchNote["changes"][number]["type"], number> = {
-  new: 0,
-  improved: 1,
-  fixed: 2,
-  "known-issue": 3,
+  extension: 0,
+  new: 1,
+  improved: 2,
+  fixed: 3,
+  "known-issue": 4,
 }
 
 export const orderedPatchNotes: PatchNote[] = [...patchNotes]
@@ -618,4 +696,8 @@ export const orderedPatchNotes: PatchNote[] = [...patchNotes]
     ...note,
     changes: [...note.changes].sort((a, b) => changeTypeOrder[a.type] - changeTypeOrder[b.type]),
   }))
-  .sort((a, b) => compareSemver(b.version, a.version))
+  .sort((a, b) => {
+    const dateDiff = dateToEpoch(b.date) - dateToEpoch(a.date)
+    if (dateDiff !== 0) return dateDiff
+    return compareSemver(b.version, a.version)
+  })

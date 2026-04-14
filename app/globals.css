@@ -1,5 +1,88 @@
 @import url("https://fonts.googleapis.com/css2?family=Audiowide&display=swap");
 
+@keyframes dialogOverlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dialogOverlayOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes dialogContentIn {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes dialogContentOut {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.96);
+  }
+}
+
+@keyframes dialogContentFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dialogContentFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.dialog-overlay-motion[data-state="open"] {
+  animation: dialogOverlayIn 220ms ease-out both;
+}
+
+.dialog-overlay-motion[data-state="closed"] {
+  animation: dialogOverlayOut 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.dialog-content-motion[data-state="open"] {
+  animation: dialogContentIn 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.dialog-content-motion[data-state="closed"] {
+  animation: dialogContentOut 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.dialog-content-static-motion[data-state="open"] {
+  animation: dialogContentFadeIn 220ms ease-out both !important;
+}
+
+.dialog-content-static-motion[data-state="closed"] {
+  animation: dialogContentFadeOut 280ms cubic-bezier(0.22, 1, 0.36, 1) both !important;
+}
+
+.major-intro-pill-enter {
+  animation: majorIntroPillEnter 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes majorIntroPillEnter {
+  0% {
+    opacity: 0;
+    transform: scale(0.85) translateY(12px);
+    filter: blur(1px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    filter: blur(0);
+  }
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -272,6 +355,231 @@ body {
 .patch-notes-confetti {
   animation: patchNotesConfetti 2.2s ease-out forwards;
   --confetti-drift: 0px;
+}
+
+@keyframes majorUpdateDialogEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+    filter: saturate(0.9) brightness(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: saturate(1) brightness(1);
+  }
+}
+
+@keyframes majorUpdateHighlightEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes majorIntroIconEnter {
+  0% {
+    opacity: 0;
+    transform: scale(0.6) rotate(-18deg);
+    filter: blur(1px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+    filter: blur(0);
+  }
+}
+
+@keyframes majorIntroTextEnter {
+  0% {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes majorHeaderEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.major-update-dialog-enter {
+  animation: majorUpdateDialogEnter 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.major-update-highlight-enter {
+  opacity: 0;
+  animation: majorUpdateHighlightEnter 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.major-intro-shell {
+  backdrop-filter: blur(6px);
+}
+
+.major-intro-icon-enter {
+  animation: majorIntroIconEnter 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.major-intro-text-enter {
+  animation: majorIntroTextEnter 0.38s ease-in both;
+}
+
+.major-header-shell {
+  overflow: hidden;
+  transition: opacity 0.38s ease-in, transform 0.38s ease-in;
+}
+
+.major-header-shell-closed {
+  opacity: 0;
+  transform: translateY(6px);
+  max-height: 0;
+  margin-bottom: 0;
+  pointer-events: none;
+}
+
+.major-header-shell-open {
+  opacity: 1;
+  transform: translateY(0);
+  max-height: 120px;
+}
+
+.major-header-enter {
+  animation: majorHeaderEnter 0.42s ease-in both;
+}
+
+@keyframes majorHighlightsFocus {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes majorHighlightsLift {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes majorDetailsEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes majorNoteGroupEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.major-highlights-focus {
+  animation: majorHighlightsFocus 0.45s ease-in both;
+}
+
+.major-highlights-lift {
+  transform: translateY(-2px);
+  animation: majorHighlightsLift 0.38s ease-in-out both;
+}
+
+.major-details-enter {
+  animation: majorDetailsEnter 0.42s ease-in both;
+}
+
+.major-details-shell {
+  display: grid;
+  grid-template-rows: 0fr;
+  transform-origin: top;
+  transition: grid-template-rows 0.96s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.56s ease-in, transform 0.96s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: grid-template-rows, opacity, transform;
+}
+
+.major-details-shell-closed {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+
+.major-details-shell-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.major-details-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.major-note-group-enter {
+  opacity: 0;
+  animation: majorNoteGroupEnter 0.42s ease-in both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .major-update-dialog-enter,
+  .major-update-highlight-enter,
+  .major-intro-icon-enter,
+  .major-intro-text-enter,
+  .major-highlights-focus,
+  .major-highlights-lift,
+  .major-header-enter,
+  .major-details-enter,
+  .major-details-shell,
+  .major-details-shell-open,
+  .major-details-shell-closed,
+  .major-note-group-enter {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    filter: none !important;
+  }
+
+  .major-details-shell,
+  .major-details-shell-open,
+  .major-details-shell-closed {
+    grid-template-rows: 1fr !important;
+    pointer-events: auto !important;
+    transition: none !important;
+  }
+
+  .major-header-shell,
+  .major-header-shell-open,
+  .major-header-shell-closed {
+    max-height: none !important;
+    margin-bottom: 0.5rem !important;
+    pointer-events: auto !important;
+    transition: none !important;
+  }
 }
 
 @keyframes program-roller-steps {
