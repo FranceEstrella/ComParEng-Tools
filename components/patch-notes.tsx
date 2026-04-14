@@ -197,7 +197,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
     },
     {
       icon: <ShieldCheck className="h-5 w-5" />,
-      label: "Security hardening",
+      label: "Hardened Security",
       detail: "CORS handling and CSP nonce/policy updates improve integration stability and safety.",
     },
   ]
