@@ -102,6 +102,15 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
   }, [activeNote.changes, changeGroupMeta, visibleChanges])
   const isMajorUpdate = Boolean(!activeNote.silent && latestNonSilent && activeNote.version === latestNonSilent.version)
   const isMajorStageActive = (stage: MajorIntroStage) => majorStageRank[majorIntroStage] >= majorStageRank[stage]
+  const hasOverflowUpdates = isCompactLayout && activeNote.changes.length > changeLimit
+  const useFixedMobileActions = isMajorUpdate && isCompactLayout && isMajorStageActive("details")
+  const showFixedShowAll = hasOverflowUpdates && useFixedMobileActions
+  const showCloseInActionBar = !isMajorUpdate || !isCompactLayout || isMajorStageActive("header")
+  const showActionBar = !isMajorUpdate
+    ? true
+    : isCompactLayout
+      ? isMajorStageActive("details") && (showFixedShowAll || showCloseInActionBar)
+      : isMajorStageActive("header")
   const majorStageHeights = isCompactLayout
     ? {
         hidden: 220,
@@ -251,7 +260,7 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
           <Button
             variant="outline"
             className="bg-white/80 text-slate-900 border-slate-300 hover:bg-white dark:bg-white/10 dark:text-white dark:border-white/40 dark:hover:bg-white/20"
-            onClick={() => setActiveVersion(latest?.version)}
+            onClick={() => setActiveVersion(latestNonSilent?.version ?? latest?.version)}
           >
             {buttonLabel}
           </Button>
@@ -315,7 +324,8 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             isMajorUpdate
               ? "[scrollbar-color:rgba(167,243,208,0.55)_transparent] [&::-webkit-scrollbar-thumb]:bg-emerald-200/45 [&::-webkit-scrollbar-thumb:hover]:bg-emerald-200/70"
               : "[scrollbar-color:rgba(148,163,184,0.55)_transparent] [&::-webkit-scrollbar-thumb]:bg-slate-300/70 dark:[&::-webkit-scrollbar-thumb]:bg-slate-600/70 [&::-webkit-scrollbar-thumb:hover]:bg-slate-400/80 dark:[&::-webkit-scrollbar-thumb:hover]:bg-slate-500/80",
-            isCompactLayout ? "p-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)]" : "p-6"
+            isCompactLayout ? "p-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)]" : "p-6",
+            isMajorUpdate && isCompactLayout && isMajorStageActive("header") && "[scrollbar-gutter:unset]"
           )}
         >
         {!isMajorUpdate && (
@@ -352,14 +362,20 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
             </div>
 
             <DialogHeader className={cn(
-              "relative z-20 mb-2 major-header-shell",
+              "relative z-20 mb-2 w-full major-header-shell",
               isCompactLayout && "items-center text-center",
+              isMajorUpdate && isCompactLayout && isMajorStageActive("header") && "sticky -top-8 z-30 -mx-4 px-4 pt-[calc(env(safe-area-inset-top,0px)+2rem)] pb-2 overflow-visible bg-gradient-to-b from-[#052a28] via-[#052a28]/95 to-transparent backdrop-blur-md before:pointer-events-none before:absolute before:content-[''] before:top-0 before:bottom-0 before:-left-4 before:w-4 before:bg-gradient-to-b before:from-[#052a28] before:via-[#052a28]/95 before:to-transparent after:pointer-events-none after:absolute after:content-[''] after:top-0 after:bottom-0 after:-right-6 after:w-6 after:bg-gradient-to-b after:from-[#052a28] after:via-[#052a28]/95 after:to-transparent",
               isMajorStageActive("header") ? "major-header-shell-open major-header-enter" : "major-header-shell-closed"
             )}
             >
-              <DialogTitle className="flex items-center gap-2 text-emerald-200">
-                <Sparkles className="h-5 w-5 animate-pulse" />
-                v{activeNote.version} — {activeNote.title}
+              <DialogTitle className={cn(
+                "text-emerald-200",
+                isCompactLayout
+                  ? "mx-auto flex w-full max-w-[19.5rem] items-start justify-center gap-1.5 text-left leading-tight"
+                  : "flex items-center gap-1"
+              )}>
+                <Sparkles className={cn("animate-pulse shrink-0", isCompactLayout ? "mt-0.5 h-8 w-8" : "h-7 w-7")} />
+                <span className={cn(isCompactLayout ? "pt-0.5" : "")}>v{activeNote.version} — {activeNote.title}</span>
               </DialogTitle>
               <DialogDescription className={cn(
                 "text-sm text-emerald-100/80 pb-2",
@@ -375,14 +391,14 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
                 "relative z-10 mt-2 mb-4 overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-[#0a2327] via-[#0a2327] to-emerald-900/60 p-6 text-white shadow-2xl transition-transform duration-500 ease-in-out",
                 majorIntroStage === "highlights" && "major-highlights-focus",
                 isMajorStageActive("details") && "major-highlights-lift",
-                isCompactLayout && "max-h-72 overflow-y-auto pr-1 [overscroll-behavior:contain] [scrollbar-width:thin] [scrollbar-color:rgba(167,243,208,0.55)_transparent] [scroll-behavior:smooth] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-emerald-200/45 [&::-webkit-scrollbar-thumb:hover]:bg-emerald-200/70"
+                isCompactLayout && "max-h-72 overflow-y-auto px-4 [scrollbar-gutter:auto] [overscroll-behavior:contain] [scrollbar-width:none] [scroll-behavior:smooth] [&::-webkit-scrollbar]:w-0"
               )}>
-                <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-200/80">Major Highlights</p>
+                <p className="text-center text-xs font-bold uppercase tracking-[0.18em] text-emerald-200/80">Major Highlights</p>
                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
                   {majorHighlights.map((item, index) => (
                     <div
                       key={item.label}
-                      className="major-update-highlight-enter flex items-start gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm transition hover:border-emerald-200/60 hover:bg-emerald-500/10"
+                      className="major-update-highlight-enter flex w-full items-start gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm transition hover:border-emerald-200/60 hover:bg-emerald-500/10"
                       style={{ animationDelay: `${120 + index * 70}ms` }}
                     >
                       <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-100 animate-[pulse_4s_ease-in-out_infinite]">
@@ -444,9 +460,19 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
               </ul>
             </section>
           ))}
-          {isCompactLayout && activeNote.changes.length > changeLimit && (
+          {hasOverflowUpdates && !useFixedMobileActions && (
             <div className="pt-1">
-              <Button variant="link" size="sm" className="px-0" onClick={() => setShowAllChanges((prev) => !prev)}>
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn(
+                  "h-9 rounded-full px-4 font-semibold",
+                  isMajorUpdate
+                    ? "border-emerald-200/80 bg-emerald-100 text-emerald-950 shadow-[0_6px_18px_rgba(16,185,129,0.28)] hover:bg-white"
+                    : "border-slate-400 bg-slate-100 text-slate-900 hover:bg-slate-200"
+                )}
+                onClick={() => setShowAllChanges((prev) => !prev)}
+              >
                 {showAllChanges ? "Show fewer updates" : `Show all ${activeNote.changes.length} updates`}
               </Button>
             </div>
@@ -474,13 +500,37 @@ export default function PatchNotesButton({ autoOpenOnce = false, buttonLabel = "
         )}
         <div className={cn(
           "overflow-hidden transition-[max-height,opacity] duration-500",
-          isMajorUpdate && !isMajorStageActive("header")
+          !showActionBar
             ? "max-h-0 opacity-0 pointer-events-none"
-            : "max-h-14 opacity-100"
+            : (useFixedMobileActions ? "max-h-40 opacity-100" : "max-h-16 opacity-100"),
+          isMajorUpdate && isCompactLayout && isMajorStageActive("details") && "fixed bottom-0 left-0 right-0 z-40 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 bg-gradient-to-t from-[#052a28] via-[#052a28]/95 to-transparent backdrop-blur"
         )}>
-          <DialogFooter className={cn(isCompactLayout && "pt-2")}>
-            <Button variant="outline" onClick={handleCloseClick}>Close</Button>
-          </DialogFooter>
+          {showFixedShowAll && (
+            <div className="mb-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn(
+                  "h-9 w-full rounded-full px-4 font-semibold",
+                  isMajorUpdate
+                    ? "border-emerald-200/80 bg-emerald-100 text-emerald-950 shadow-[0_6px_18px_rgba(16,185,129,0.28)] hover:bg-white"
+                    : "border-slate-400 bg-slate-100 text-slate-900 hover:bg-slate-200"
+                )}
+                onClick={() => setShowAllChanges((prev) => !prev)}
+              >
+                {showAllChanges ? "Show fewer updates" : `Show all ${activeNote.changes.length} updates`}
+              </Button>
+            </div>
+          )}
+          {showCloseInActionBar && (
+            <DialogFooter className={cn(isCompactLayout && !useFixedMobileActions && "pt-2")}>
+              <Button variant="outline" className={cn(isCompactLayout && "w-full")}
+                onClick={handleCloseClick}
+              >
+                Close
+              </Button>
+            </DialogFooter>
+          )}
         </div>
         </div>
         </DialogContent>

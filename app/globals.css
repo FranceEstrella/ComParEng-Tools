@@ -438,11 +438,12 @@ body {
 }
 
 .major-header-shell {
-  overflow: hidden;
+  overflow: visible;
   transition: opacity 0.38s ease-in, transform 0.38s ease-in;
 }
 
 .major-header-shell-closed {
+  overflow: hidden;
   opacity: 0;
   transform: translateY(6px);
   max-height: 0;
