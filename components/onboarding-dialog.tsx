@@ -1894,7 +1894,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         className={cn(
           "border-none bg-transparent p-0 shadow-none",
           isMobileLayout
-            ? "inset-0 h-auto w-auto max-h-none max-w-none translate-x-0 translate-y-0 rounded-none"
+            ? "dialog-content-static-motion inset-0 h-auto w-auto max-h-none max-w-none translate-x-0 translate-y-0 rounded-none"
             : "max-w-3xl"
         )}
       >
