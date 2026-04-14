@@ -15,6 +15,7 @@ import { parseCurriculumHtml } from "@/lib/curriculum-import"
 import { registerExternalCourses } from "@/lib/course-data"
 import { saveCourseStatuses } from "@/lib/course-storage"
 import { RECOMMENDED_UNITS_MIN, RECOMMENDED_UNITS_MAX } from "@/lib/config"
+import { COMPARENG_EXTENSION_IDS } from "@/lib/extension-ids"
 import OnboardingSchedulePreview from "@/components/onboarding/schedule-preview"
 import OnboardingCourseTrackerPreview from "@/components/onboarding/course-tracker-preview"
 import OnboardingAcademicPlannerPreview from "@/components/onboarding/academic-planner-preview"
@@ -24,7 +25,9 @@ import {
   BookOpen,
   BookOpenCheck,
   Calendar,
+  CheckCircle2,
   Download,
+  ExternalLink,
   GraduationCap,
   Laptop,
   MessageSquare,
@@ -63,6 +66,7 @@ type SlideId =
   | "reward-system"
   | "profile-summary"
   | "extension"
+  | "ready-setup"
   | "live-data"
   | "theme"
   | "cpe-check"
@@ -76,7 +80,28 @@ type Slide = {
   icon: ReactNode
 }
 
+type OnboardingImportedGradePayload = {
+  runId: string
+  extractedAt: number
+  attempts: Array<{
+    courseCode: string
+    finalGrade: string
+    schoolYear: string
+    portalTermLabel: string
+    term: string
+    chronologicalIndex: number
+  }>
+  summary?: {
+    processedTerms?: number
+    stoppedAt?: string
+    extractedCount?: number
+    accepted?: number
+  }
+}
+
 const CREDIT_LIMITS_STORAGE_KEY = "planner.creditLimits"
+const ONBOARDING_GRADE_IMPORT_HANDOFF_KEY = "compareng.onboarding.gradeImportHandoff.v1"
+const COMPLETION_CHECK_ANIMATION_MS = 1100
 const WELCOME_ICON_SIZE_PX =180
 const WELCOME_ICON_WRAPPER_SIZE_PX = 180
 
@@ -86,6 +111,7 @@ const slideAccentClasses: Partial<Record<SlideId, string>> = {
   "academic-planner": "text-emerald-600 dark:text-emerald-300",
   "reward-system": "text-amber-400",
   "profile-summary": "text-violet-600 dark:text-violet-300",
+  "ready-setup": "text-cyan-600 dark:text-cyan-300",
 }
 
 const slides: Slide[] = [
@@ -149,20 +175,6 @@ const slides: Slide[] = [
     icon: <PlugZap className="h-10 w-10 text-rose-600 animate-pulse" />,
   },
   {
-    id: "live-data",
-    label: "Live Data",
-    title: "What every student should know",
-    description: "Your imports stay private, power every tool, and are easy to share or refresh when plans change.",
-    icon: <ShieldCheck className="h-10 w-10 text-emerald-600 animate-pulse" />,
-  },
-  {
-    id: "theme",
-    label: "Theme",
-    title: "Pick a vibe",
-    description: "Light or dark, the UI adapts instantly. Try the mini preview below - it's a safe sandbox for the real toggle up top.",
-    icon: <Palette className="h-10 w-10 text-pink-600 animate-pulse" />,
-  },
-  {
     id: "cpe-check",
     label: "You",
     title: "Are you a Computer Engineering student?",
@@ -177,6 +189,27 @@ const slides: Slide[] = [
         priority
       />
     ),
+  },
+  {
+    id: "ready-setup",
+    label: "Setup",
+    title: "Prep your tools before you start",
+    description: "Trigger grade auto-import and open Course Offerings now so Course Tracker and Schedule Maker are ready right after onboarding.",
+    icon: <Rocket className="h-10 w-10 text-cyan-600 animate-pulse" />,
+  },
+  {
+    id: "live-data",
+    label: "Live Data",
+    title: "What every student should know",
+    description: "Your imports stay private, power every tool, and are easy to share or refresh when plans change.",
+    icon: <ShieldCheck className="h-10 w-10 text-emerald-600 animate-pulse" />,
+  },
+  {
+    id: "theme",
+    label: "Theme",
+    title: "Pick a vibe",
+    description: "Light or dark, the UI adapts instantly. Try the mini preview below - it's a safe sandbox for the real toggle up top.",
+    icon: <Palette className="h-10 w-10 text-pink-600 animate-pulse" />,
   },
   {
     id: "wrap-up",
@@ -222,6 +255,14 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const [skipImportStatusOpen, setSkipImportStatusOpen] = useState(false)
   const [skipImportStatus, setSkipImportStatus] = useState<"loading" | "success" | "error">("loading")
   const [skipImportStatusMessage, setSkipImportStatusMessage] = useState("Importing all tools data...")
+  const [onboardingGradeImportStatus, setOnboardingGradeImportStatus] = useState<"idle" | "running" | "success" | "completed" | "error">("idle")
+  const [onboardingGradeImportMessage, setOnboardingGradeImportMessage] = useState<string | null>(null)
+  const [onboardingOfferingsStatus, setOnboardingOfferingsStatus] = useState<"idle" | "running" | "success" | "completed" | "error">("idle")
+  const [onboardingOfferingsMessage, setOnboardingOfferingsMessage] = useState<string | null>(null)
+  const [onboardingGradeImportStartedAt, setOnboardingGradeImportStartedAt] = useState(0)
+  const [onboardingOfferingsStartedAt, setOnboardingOfferingsStartedAt] = useState(0)
+  const [showGradeCompletionCheck, setShowGradeCompletionCheck] = useState(false)
+  const [showOfferingsCompletionCheck, setShowOfferingsCompletionCheck] = useState(false)
   const [creditLimitDialogOpen, setCreditLimitDialogOpen] = useState(false)
   const [creditLimitMin, setCreditLimitMin] = useState(RECOMMENDED_UNITS_MIN)
   const [creditLimitMax, setCreditLimitMax] = useState(RECOMMENDED_UNITS_MAX)
@@ -229,6 +270,11 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const unifiedBackupInputRef = useRef<HTMLInputElement>(null)
   const skipImportStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipImportCompleteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onboardingLastHandledGradeRunIdRef = useRef("")
+  const readySetupAutoAdvanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const readySetupAutoAdvanceTriggeredRef = useRef(false)
+  const gradeCompletionCheckTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const offeringsCompletionCheckTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const clearSkipImportTimers = useCallback(() => {
     if (skipImportStatusTimeoutRef.current) {
@@ -239,6 +285,43 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       clearTimeout(skipImportCompleteTimeoutRef.current)
       skipImportCompleteTimeoutRef.current = null
     }
+  }, [])
+
+  const clearCompletionCheckTimers = useCallback(() => {
+    if (gradeCompletionCheckTimeoutRef.current) {
+      clearTimeout(gradeCompletionCheckTimeoutRef.current)
+      gradeCompletionCheckTimeoutRef.current = null
+    }
+    if (offeringsCompletionCheckTimeoutRef.current) {
+      clearTimeout(offeringsCompletionCheckTimeoutRef.current)
+      offeringsCompletionCheckTimeoutRef.current = null
+    }
+  }, [])
+
+  const markGradeExtractionCompleted = useCallback((message: string) => {
+    setOnboardingGradeImportStatus("completed")
+    setOnboardingGradeImportMessage(message)
+    setShowGradeCompletionCheck(true)
+    if (gradeCompletionCheckTimeoutRef.current) {
+      clearTimeout(gradeCompletionCheckTimeoutRef.current)
+    }
+    gradeCompletionCheckTimeoutRef.current = setTimeout(() => {
+      setShowGradeCompletionCheck(false)
+      gradeCompletionCheckTimeoutRef.current = null
+    }, COMPLETION_CHECK_ANIMATION_MS)
+  }, [])
+
+  const markOfferingsExtractionCompleted = useCallback((message: string) => {
+    setOnboardingOfferingsStatus("completed")
+    setOnboardingOfferingsMessage(message)
+    setShowOfferingsCompletionCheck(true)
+    if (offeringsCompletionCheckTimeoutRef.current) {
+      clearTimeout(offeringsCompletionCheckTimeoutRef.current)
+    }
+    offeringsCompletionCheckTimeoutRef.current = setTimeout(() => {
+      setShowOfferingsCompletionCheck(false)
+      offeringsCompletionCheckTimeoutRef.current = null
+    }, COMPLETION_CHECK_ANIMATION_MS)
   }, [])
 
   const showSkipImportStatus = useCallback(
@@ -327,6 +410,20 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       setSkipImportStatusOpen(false)
       setSkipImportStatus("loading")
       setSkipImportStatusMessage("Importing all tools data...")
+      setOnboardingGradeImportStatus("idle")
+      setOnboardingGradeImportMessage(null)
+      setOnboardingOfferingsStatus("idle")
+      setOnboardingOfferingsMessage(null)
+      setOnboardingGradeImportStartedAt(0)
+      setOnboardingOfferingsStartedAt(0)
+      setShowGradeCompletionCheck(false)
+      setShowOfferingsCompletionCheck(false)
+      clearCompletionCheckTimers()
+      readySetupAutoAdvanceTriggeredRef.current = false
+      if (readySetupAutoAdvanceTimeoutRef.current) {
+        clearTimeout(readySetupAutoAdvanceTimeoutRef.current)
+        readySetupAutoAdvanceTimeoutRef.current = null
+      }
       setShowCurriculumHow(false)
       setHasCustomCurriculum(false)
       setCreditLimitDialogOpen(false)
@@ -336,15 +433,21 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         curriculumFileInputRef.current.value = ""
       }
     }
-  }, [clearSkipImportTimers, open, syncCreditLimitsFromStorage])
+  }, [clearCompletionCheckTimers, clearSkipImportTimers, open, syncCreditLimitsFromStorage])
 
   useEffect(() => {
     return () => {
       clearSkipImportTimers()
+      clearCompletionCheckTimers()
+      if (readySetupAutoAdvanceTimeoutRef.current) {
+        clearTimeout(readySetupAutoAdvanceTimeoutRef.current)
+        readySetupAutoAdvanceTimeoutRef.current = null
+      }
     }
-  }, [clearSkipImportTimers])
+  }, [clearCompletionCheckTimers, clearSkipImportTimers])
 
   const activeSlide = slides[currentIndex]
+  const hasTriggeredOnboardingExtractor = onboardingGradeImportStartedAt > 0 || onboardingOfferingsStartedAt > 0
   const progressValue = useMemo(() => ((currentIndex + 1) / slides.length) * 100, [currentIndex])
   const needsCustomUpload = activeSlide.id === "cpe-check" && cpeAnswer === "no" && !hasCustomCurriculum
   const isWelcomeSlide = activeSlide.id === "welcome"
@@ -393,7 +496,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       promptExtensionConfirmation("skip")
       return
     }
-    const generalSkipSlides: SlideId[] = ["welcome", "course-tracker", "schedule-maker", "academic-planner", "reward-system", "profile-summary", "live-data", "theme"]
+    const generalSkipSlides: SlideId[] = ["welcome", "course-tracker", "schedule-maker", "academic-planner", "reward-system", "profile-summary", "ready-setup", "live-data", "theme"]
     if (generalSkipSlides.includes(activeSlide.id)) {
       setGeneralSkipPromptOpen(true)
       return
@@ -463,6 +566,450 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const handleOpenCourseTracker = () => {
     finishOnboarding({ deferWhatsNew: true, source: "jump" })
     router.push("/course-tracker")
+  }
+
+  const finalizeOnboardingGradeImportFromPayload = useCallback(
+    (payload: OnboardingImportedGradePayload, requestedAt: number) => {
+      const runId = String(payload?.runId || "").trim()
+      const extractedAt = Number(payload?.extractedAt || 0)
+      const attempts = Array.isArray(payload?.attempts) ? payload.attempts : []
+      if (!runId || !attempts.length) return false
+      if (!Number.isFinite(extractedAt) || extractedAt < requestedAt) return false
+      if (onboardingLastHandledGradeRunIdRef.current === runId) return false
+
+      onboardingLastHandledGradeRunIdRef.current = runId
+
+      const summaryAccepted = Number(payload?.summary?.accepted)
+      const summaryExtracted = Number(payload?.summary?.extractedCount)
+      const accepted = Number.isFinite(summaryAccepted)
+        ? summaryAccepted
+        : Number.isFinite(summaryExtracted)
+          ? summaryExtracted
+          : attempts.length
+      const processedTerms = Number(payload?.summary?.processedTerms)
+      const stoppedAt = String(payload?.summary?.stoppedAt || "").trim()
+
+      const summaryParts = [
+        `Done extracting grades. Imported ${accepted} grade attempt${accepted === 1 ? "" : "s"}.`,
+      ]
+      if (Number.isFinite(processedTerms) && processedTerms > 0) {
+        summaryParts.push(`Processed ${processedTerms} term${processedTerms === 1 ? "" : "s"}.`)
+      }
+      if (stoppedAt) {
+        summaryParts.push(`Latest term scanned: ${stoppedAt}.`)
+      }
+
+      markGradeExtractionCompleted(summaryParts.join(" "))
+
+      try {
+        window.localStorage.setItem(
+          ONBOARDING_GRADE_IMPORT_HANDOFF_KEY,
+          JSON.stringify({
+            requestedAt,
+            completedAt: extractedAt || Date.now(),
+            source: "onboarding-ready-setup",
+            runId,
+          }),
+        )
+      } catch {
+        // Ignore storage failures.
+      }
+
+      return true
+    },
+    [markGradeExtractionCompleted],
+  )
+
+  const readLatestOnboardingImportedGradePayload = useCallback((): OnboardingImportedGradePayload | null => {
+    if (typeof window === "undefined") return null
+
+    const parsePayload = (raw: string | null): OnboardingImportedGradePayload | null => {
+      if (!raw) return null
+      try {
+        const parsed = JSON.parse(raw)
+        const runId = String(parsed?.runId || "").trim()
+        const attempts = Array.isArray(parsed?.attempts) ? parsed.attempts : []
+        const extractedAt = Number(parsed?.extractedAt || 0)
+        if (!runId || !attempts.length || !Number.isFinite(extractedAt) || extractedAt <= 0) return null
+        return {
+          runId,
+          attempts,
+          extractedAt,
+          summary: parsed?.summary && typeof parsed.summary === "object" ? parsed.summary : undefined,
+        }
+      } catch {
+        return null
+      }
+    }
+
+    const modern = parsePayload(window.localStorage.getItem("comparengGradeAttemptsLatest"))
+    if (modern) return modern
+    return parsePayload(window.localStorage.getItem("gradeAttemptsPayload"))
+  }, [])
+
+  const handleOpenCourseOfferings = () => {
+    if (typeof window === "undefined") return
+    const startedAt = Date.now()
+    setOnboardingOfferingsStartedAt(startedAt)
+
+    const waitForCourseOfferingsExtractionCompletion = async (startedAtMs: number) => {
+      for (let attempt = 0; attempt < 45; attempt += 1) {
+        try {
+          const response = await fetch("/api/get-available-courses", {
+            method: "GET",
+            cache: "no-store",
+          })
+
+          if (response.ok) {
+            const data = await response.json()
+            const rows = Array.isArray(data?.data) ? data.data : []
+            const lastUpdated = Number(data?.lastUpdated || 0)
+            if (rows.length > 0 && lastUpdated >= startedAtMs) {
+              markOfferingsExtractionCompleted(
+                `Course data extracted. Loaded ${rows.length} section${rows.length === 1 ? "" : "s"}.`,
+              )
+              return
+            }
+          }
+        } catch {
+          // Ignore transient polling failures during onboarding.
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 2000))
+      }
+    }
+
+    setOnboardingOfferingsStatus("running")
+    setOnboardingOfferingsMessage("Opening Course Offerings. Keep the tab open so the extractor can capture sections.")
+    const offeringsTab = window.open("https://solar.feutech.edu.ph/course/offerings", "_blank")
+    if (offeringsTab && typeof offeringsTab.focus === "function") {
+      offeringsTab.focus()
+      setOnboardingOfferingsStatus("success")
+      setOnboardingOfferingsMessage("Course Offerings opened. Select the latest term and school year so the extension can fetch current sections.")
+      void waitForCourseOfferingsExtractionCompletion(startedAt)
+      return
+    }
+    setOnboardingOfferingsStatus("error")
+    setOnboardingOfferingsMessage("We couldn't open Course Offerings. Allow pop-ups for this site, then try again.")
+  }
+
+  const handleOnboardingAutoGradeImport = async () => {
+    const solarLoginRetryHint = "Make sure you are logged in to your SOLAR account first, then click Trigger Auto Import Grade again."
+    const shouldShowSolarHint = (message: string) =>
+      /Receiving end does not exist|Could not establish connection|Extension context invalidated|No such native application|Failed to contact configured extension IDs/i.test(message)
+
+    const formatGradeImportError = (message: string) => {
+      if (!shouldShowSolarHint(message)) return message
+      return `${solarLoginRetryHint}\n\n${message}`
+    }
+
+    const startedAt = Date.now()
+    setOnboardingGradeImportStartedAt(startedAt)
+
+    setOnboardingGradeImportMessage(null)
+    setOnboardingGradeImportStatus("running")
+
+    const runtime = (window as any)?.chrome?.runtime
+    if (!runtime?.sendMessage) {
+      setOnboardingGradeImportStatus("error")
+      setOnboardingGradeImportMessage(
+        `${solarLoginRetryHint}\n\nChrome extension runtime not detected. Open this app in Chrome with the extractor installed.`,
+      )
+      try {
+        window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+      } catch {
+        // Ignore storage failures.
+      }
+      return
+    }
+
+    try {
+      window.localStorage.setItem(
+        ONBOARDING_GRADE_IMPORT_HANDOFF_KEY,
+        JSON.stringify({ requestedAt: startedAt, source: "onboarding-ready-setup" }),
+      )
+    } catch {
+      // Ignore storage failures.
+    }
+
+    const gradesPortalTab = window.open("https://solar.feutech.edu.ph/student/grades", "_blank")
+        const waitForGradeExtractionCompletion = async (startedAtMs: number) => {
+          for (let attempt = 0; attempt < 45; attempt += 1) {
+            const localPayload = readLatestOnboardingImportedGradePayload()
+            if (localPayload && finalizeOnboardingGradeImportFromPayload(localPayload, startedAtMs)) {
+              return
+            }
+
+            try {
+              const response = await fetch("/api/get-imported-grade-attempts", {
+                method: "GET",
+                cache: "no-store",
+              })
+
+              if (response.ok) {
+                const data = await response.json()
+                const importUpdatedAt = Number(data?.updatedAt || 0)
+                const extractedAt = Number(data?.payload?.extractedAt || importUpdatedAt || 0)
+                const accepted = Number(data?.payload?.summary?.accepted ?? data?.payload?.attempts?.length ?? 0)
+                if (importUpdatedAt >= startedAtMs || extractedAt >= startedAtMs) {
+                  const payloadFromApi: OnboardingImportedGradePayload = {
+                    runId: String(data?.payload?.runId || `api-${importUpdatedAt}`),
+                    extractedAt,
+                    attempts: Array.isArray(data?.payload?.attempts) ? data.payload.attempts : new Array(Math.max(0, accepted)).fill(null),
+                    summary: data?.payload?.summary && typeof data.payload.summary === "object"
+                      ? data.payload.summary
+                      : { accepted },
+                  }
+                  const finalized = finalizeOnboardingGradeImportFromPayload(payloadFromApi, startedAtMs)
+                  if (!finalized) {
+                    markGradeExtractionCompleted(
+                      `Done extracting grades. Imported ${accepted} grade attempt${accepted === 1 ? "" : "s"}.`,
+                    )
+                  }
+                  try {
+                    window.localStorage.setItem(
+                      ONBOARDING_GRADE_IMPORT_HANDOFF_KEY,
+                      JSON.stringify({
+                        requestedAt: startedAtMs,
+                        completedAt: importUpdatedAt || extractedAt || Date.now(),
+                        source: "onboarding-ready-setup",
+                      }),
+                    )
+                  } catch {
+                    // Ignore storage failures.
+                  }
+                  return
+                }
+              }
+            } catch {
+              // Ignore transient polling failures during onboarding.
+            }
+
+            await new Promise((resolve) => window.setTimeout(resolve, 2000))
+          }
+        }
+
+    if (gradesPortalTab && typeof gradesPortalTab.focus === "function") {
+      gradesPortalTab.focus()
+    }
+
+    const sendStartRequest = () =>
+      new Promise<any>((resolve) => {
+        let settled = false
+        let lastFailureMessage = ""
+        const finish = (value: any) => {
+          if (settled) return
+          settled = true
+          window.clearTimeout(timeoutId)
+          resolve(value)
+        }
+
+        const timeoutId = window.setTimeout(() => {
+          finish({ success: false, message: "Timed out waiting for extension response." })
+        }, 4000)
+
+        const trySendByIndex = (index: number) => {
+          if (index >= COMPARENG_EXTENSION_IDS.length) {
+            finish({ success: false, message: lastFailureMessage || "Failed to contact configured extension IDs." })
+            return
+          }
+
+          const extensionId = COMPARENG_EXTENSION_IDS[index]
+          try {
+            runtime.sendMessage(extensionId, { action: "startOSESGradeExtraction" }, (result: any) => {
+              const runtimeError = (window as any)?.chrome?.runtime?.lastError
+              if (runtimeError) {
+                const rawMessage = String(runtimeError.message || "Extension response channel closed.")
+                lastFailureMessage = rawMessage.includes("message channel closed")
+                  ? "Extension did not respond before the message channel closed. Keep the extension page active, then try again."
+                  : rawMessage
+
+                const tryNext =
+                  /Receiving end does not exist|Could not establish connection|No such native application|Extension context invalidated/i.test(rawMessage)
+                if (tryNext) {
+                  trySendByIndex(index + 1)
+                  return
+                }
+
+                finish({ success: false, message: lastFailureMessage })
+                return
+              }
+
+              if (result?.success || index === COMPARENG_EXTENSION_IDS.length - 1) {
+                finish(result)
+                return
+              }
+
+              lastFailureMessage = String(result?.message || "Extension request failed.")
+              trySendByIndex(index + 1)
+            })
+          } catch (error: any) {
+            lastFailureMessage = String(error?.message || "Failed to contact extension runtime.")
+            trySendByIndex(index + 1)
+          }
+        }
+
+        trySendByIndex(0)
+      })
+
+    try {
+      let response: any = { success: false, message: "Unable to start grade extraction." }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        response = await sendStartRequest()
+        if (response?.success) break
+        await new Promise((resolve) => window.setTimeout(resolve, 900))
+      }
+
+      if (!response?.success) {
+        setOnboardingGradeImportStatus("error")
+        setOnboardingGradeImportMessage(formatGradeImportError(response?.message || "Failed to start grade extraction in extension."))
+        try {
+          window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+        } catch {
+          // Ignore storage failures.
+        }
+        return
+      }
+
+      setOnboardingGradeImportStatus("success")
+      setOnboardingGradeImportMessage("Grade auto-import started. Keep the Student Grades tab open while the extension extracts your records.")
+      void waitForGradeExtractionCompletion(startedAt)
+    } catch {
+      setOnboardingGradeImportStatus("error")
+      setOnboardingGradeImportMessage(formatGradeImportError("Failed to start grade extraction in extension."))
+      try {
+        window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+      } catch {
+        // Ignore storage failures.
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (onboardingGradeImportStartedAt <= 0) return
+    if (onboardingGradeImportStatus === "completed" || onboardingGradeImportStatus === "error") return
+
+    let busy = false
+
+    const tryConsumeLatest = async () => {
+      if (busy) return
+      busy = true
+      try {
+        const payload = readLatestOnboardingImportedGradePayload()
+        if (payload) {
+          finalizeOnboardingGradeImportFromPayload(payload, onboardingGradeImportStartedAt)
+        }
+      } finally {
+        busy = false
+      }
+    }
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== "comparengGradeAttemptsLatest" && event.key !== "gradeAttemptsPayload") {
+        return
+      }
+      void tryConsumeLatest()
+    }
+
+    const handleBridgeEvent = () => {
+      void tryConsumeLatest()
+    }
+
+    const handleBridgeMessage = (event: MessageEvent) => {
+      const data = event?.data
+      if (!data || data.source !== "compareng-course-data-extractor-extension") return
+      if (data.type !== "gradeAttemptsUpdated") return
+      void tryConsumeLatest()
+    }
+
+    void tryConsumeLatest()
+    const intervalId = window.setInterval(() => {
+      void tryConsumeLatest()
+    }, 1500)
+    window.addEventListener("storage", handleStorage)
+    window.addEventListener("compareng:gradeAttemptsUpdated", handleBridgeEvent as EventListener)
+    window.addEventListener("message", handleBridgeMessage)
+
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener("storage", handleStorage)
+      window.removeEventListener("compareng:gradeAttemptsUpdated", handleBridgeEvent as EventListener)
+      window.removeEventListener("message", handleBridgeMessage)
+    }
+  }, [
+    finalizeOnboardingGradeImportFromPayload,
+    onboardingGradeImportStartedAt,
+    onboardingGradeImportStatus,
+    readLatestOnboardingImportedGradePayload,
+  ])
+
+  useEffect(() => {
+    if (!open) return
+    if (activeSlide.id !== "ready-setup") return
+    if (onboardingGradeImportStatus !== "completed" || onboardingOfferingsStatus !== "completed") return
+    if (showGradeCompletionCheck || showOfferingsCompletionCheck) return
+    if (readySetupAutoAdvanceTriggeredRef.current) return
+
+    readySetupAutoAdvanceTriggeredRef.current = true
+    readySetupAutoAdvanceTimeoutRef.current = setTimeout(() => {
+      setCurrentIndex((prev) => Math.min(prev + 1, slides.length - 1))
+      readySetupAutoAdvanceTimeoutRef.current = null
+    }, 900)
+  }, [
+    activeSlide.id,
+    onboardingGradeImportStatus,
+    onboardingOfferingsStatus,
+    open,
+    showGradeCompletionCheck,
+    showOfferingsCompletionCheck,
+  ])
+
+  const handleRefreshOnboardingExtractorStatuses = async () => {
+    if (typeof window === "undefined") return
+
+    if (onboardingGradeImportStartedAt > 0 && onboardingGradeImportStatus !== "completed") {
+      try {
+        const response = await fetch("/api/get-imported-grade-attempts", {
+          method: "GET",
+          cache: "no-store",
+        })
+        if (response.ok) {
+          const data = await response.json()
+          const updatedAt = Number(data?.updatedAt || 0)
+          const extractedAt = Number(data?.payload?.extractedAt || updatedAt || 0)
+          const accepted = Number(data?.payload?.summary?.accepted ?? data?.payload?.attempts?.length ?? 0)
+          if (updatedAt >= onboardingGradeImportStartedAt || extractedAt >= onboardingGradeImportStartedAt) {
+            markGradeExtractionCompleted(
+              `Done extracting grades. Imported ${accepted} grade attempt${accepted === 1 ? "" : "s"}.`,
+            )
+          }
+        }
+      } catch {
+        // Ignore refresh failures.
+      }
+    }
+
+    if (onboardingOfferingsStartedAt > 0 && onboardingOfferingsStatus !== "completed") {
+      try {
+        const response = await fetch("/api/get-available-courses", {
+          method: "GET",
+          cache: "no-store",
+        })
+        if (response.ok) {
+          const data = await response.json()
+          const rows = Array.isArray(data?.data) ? data.data : []
+          const lastUpdated = Number(data?.lastUpdated || 0)
+          if (rows.length > 0 && lastUpdated >= onboardingOfferingsStartedAt) {
+            markOfferingsExtractionCompleted(
+              `Course data extracted. Loaded ${rows.length} section${rows.length === 1 ? "" : "s"}.`,
+            )
+          }
+        }
+      } catch {
+        // Ignore refresh failures.
+      }
+    }
   }
 
   const handleExtensionConfirm = () => {
@@ -776,7 +1323,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       case "reward-system":
         return (
           <div className="space-y-2">
-            <Card className="border-amber-200/20 bg-gradient-to-br from-[#2a180f] via-[#19141e] to-[#0d0b12] text-amber-50 shadow-[0_16px_40px_rgba(0,0,0,0.42)]">
+            <Card className="!border-amber-300/30 !bg-[linear-gradient(140deg,#3f290f_0%,#171017_45%,#060507_100%)] !text-amber-50 shadow-[0_16px_40px_rgba(0,0,0,0.42)]">
               <CardContent className="space-y-2 p-3">
                 <Badge variant="secondary" className="h-5 bg-amber-100/15 px-2 text-[10px] text-amber-100">
                   Gamified progress
@@ -790,19 +1337,19 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 text-[11px] text-amber-50">
-                  <div className="rounded-lg border border-amber-200/20 bg-amber-100/5 px-2 py-1.5 backdrop-blur-[1px]">
+                  <div className="rounded-lg border border-amber-200/20 bg-[#221914] px-2 py-1.5">
                     <p className="font-semibold">Reward overlay</p>
                     <p className="mt-0.5 text-[10px] text-amber-100/85">Animated XP gain, level progress, and badge unlock moments.</p>
                   </div>
-                  <div className="rounded-lg border border-amber-200/20 bg-amber-100/5 px-2 py-1.5 backdrop-blur-[1px]">
+                  <div className="rounded-lg border border-amber-200/20 bg-[#221914] px-2 py-1.5">
                     <p className="font-semibold">Milestone XP</p>
                     <p className="mt-0.5 text-[10px] text-amber-100/85">Each completed term or year adds to your total XP progression.</p>
                   </div>
-                  <div className="rounded-lg border border-amber-200/20 bg-amber-100/5 px-2 py-1.5 backdrop-blur-[1px]">
+                  <div className="rounded-lg border border-amber-200/20 bg-[#221914] px-2 py-1.5">
                     <p className="font-semibold">Badges earned</p>
                     <p className="mt-0.5 text-[10px] text-amber-100/85">Each completed term and year contributes to your collection.</p>
                   </div>
-                  <div className="rounded-lg border border-orange-200/40 bg-orange-400/10 px-2 py-1.5">
+                  <div className="rounded-lg border border-orange-200/40 bg-[#3a2318] px-2 py-1.5">
                     <p className="font-semibold text-orange-100">Tip</p>
                     <p className="mt-0.5 text-[10px] text-orange-50/90">Close the overlay to continue tracking, then jump to Profile for your full history.</p>
                   </div>
@@ -815,9 +1362,9 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       case "profile-summary":
         return (
           <div className="space-y-2">
-            <Card className="border-violet-200/35 bg-gradient-to-br from-[#38338d] via-[#5a4fc2] to-[#9a84ea] text-white shadow-[0_16px_40px_rgba(68,56,152,0.35)]">
+            <Card className="border-violet-200/35 bg-[linear-gradient(145deg,#1a1440_0%,#2a2061_48%,#3a2f7f_100%)] text-white shadow-[0_16px_40px_rgba(30,26,70,0.5)]">
               <CardContent className="space-y-2 p-3">
-                <Badge variant="secondary" className="h-5 bg-violet-200/20 px-2 text-[10px] text-violet-50">
+                <Badge variant="secondary" className="h-5 border border-violet-300/45 bg-[#2b255f] px-2 text-[10px] text-violet-100">
                   Profile overview
                 </Badge>
                 <div>
@@ -829,21 +1376,21 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 text-[11px] text-violet-50">
-                  <div className="rounded-lg border border-violet-200/35 bg-black/20 px-2 py-1.5 backdrop-blur-[1px]">
-                    <p className="font-semibold">Academic completion</p>
-                    <p className="mt-0.5 text-[10px] text-violet-100/90">Check overall passed, active, and pending course progress.</p>
+                  <div className="rounded-lg border border-violet-100/40 bg-[#171237] px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+                    <p className="font-semibold text-violet-50">Academic completion</p>
+                    <p className="mt-0.5 text-[10px] text-violet-100">Check overall passed, active, and pending course progress.</p>
                   </div>
-                  <div className="rounded-lg border border-violet-200/35 bg-black/20 px-2 py-1.5 backdrop-blur-[1px]">
-                    <p className="font-semibold">Rank and XP</p>
-                    <p className="mt-0.5 text-[10px] text-violet-100/90">See your current level plus XP needed for the next milestone.</p>
+                  <div className="rounded-lg border border-violet-100/40 bg-[#171237] px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+                    <p className="font-semibold text-violet-50">Rank and XP</p>
+                    <p className="mt-0.5 text-[10px] text-violet-100">See your current level plus XP needed for the next milestone.</p>
                   </div>
-                  <div className="rounded-lg border border-violet-200/35 bg-black/20 px-2 py-1.5 backdrop-blur-[1px]">
-                    <p className="font-semibold">Badge history</p>
-                    <p className="mt-0.5 text-[10px] text-violet-100/90">Browse all earned term and year badges in one list.</p>
+                  <div className="rounded-lg border border-violet-100/40 bg-[#171237] px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+                    <p className="font-semibold text-violet-50">Badge history</p>
+                    <p className="mt-0.5 text-[10px] text-violet-100">Browse all earned term and year badges in one list.</p>
                   </div>
-                  <div className="rounded-lg border border-violet-200/40 bg-violet-300/15 px-2 py-1.5">
+                  <div className="rounded-lg border border-violet-200/55 bg-[#2b2261] px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                     <p className="font-semibold text-violet-100">Tip</p>
-                    <p className="mt-0.5 text-[10px] text-violet-50/90">Use the color chips in the preview to switch the profile background theme.</p>
+                    <p className="mt-0.5 text-[10px] text-violet-50">Use the color chips in the preview to switch the profile background theme.</p>
                   </div>
                 </div>
               </CardContent>
@@ -908,6 +1455,160 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
             <p className="text-xs text-muted-foreground">
               No Chrome? Export CSV from another browser, then import inside the Schedule Maker.
             </p>
+          </div>
+        )
+      case "ready-setup":
+        return (
+          <div className="space-y-3">
+            <Card className="border-cyan-200/80 bg-gradient-to-br from-cyan-50 via-white to-blue-50 dark:border-cyan-400/20 dark:from-cyan-500/10 dark:via-slate-900 dark:to-blue-500/10">
+              <CardContent className="space-y-3 p-4">
+                <Badge className="h-5 bg-cyan-100 px-2 text-[10px] text-cyan-800 dark:bg-cyan-500/20 dark:text-cyan-100" variant="secondary">
+                  Final setup
+                </Badge>
+                <p className="text-sm text-slate-700 dark:text-slate-200">
+                  Run these now so your tools are primed the moment onboarding ends.
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Button
+                    className="h-10 justify-center gap-2 bg-cyan-600 text-white hover:bg-cyan-500"
+                    onClick={handleOnboardingAutoGradeImport}
+                    disabled={onboardingGradeImportStatus === "running"}
+                  >
+                    <RefreshCw className={cn("h-4 w-4", onboardingGradeImportStatus === "running" && "animate-spin")} />
+                    {onboardingGradeImportStatus === "running" ? "Starting import..." : "Trigger Auto Import Grade"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="h-10 justify-center gap-2"
+                    onClick={handleOpenCourseOfferings}
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    Open Course Offerings
+                  </Button>
+                </div>
+                {hasTriggeredOnboardingExtractor && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-8 justify-start px-0 text-xs text-cyan-700 hover:text-cyan-800 dark:text-cyan-200 dark:hover:text-cyan-100"
+                    onClick={handleRefreshOnboardingExtractorStatuses}
+                  >
+                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                    Refresh extractor statuses
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+            <div className="grid gap-1.5 sm:grid-cols-2 text-[11px]">
+              <div
+                className={cn(
+                  "rounded-lg border px-2 py-1.5 shadow-sm",
+                  showGradeCompletionCheck && onboardingGradeImportStatus === "completed"
+                    ? "border-emerald-700 bg-emerald-600 dark:border-emerald-500 dark:bg-emerald-600"
+                    :
+                  onboardingGradeImportStatus === "completed"
+                    ? "border-emerald-300 bg-emerald-50/90 dark:border-emerald-400/40 dark:bg-emerald-500/10"
+                    : "border-slate-200 bg-white/90 dark:border-white/10 dark:bg-white/5"
+                )}
+              >
+                {showGradeCompletionCheck && onboardingGradeImportStatus === "completed" ? (
+                  <div className="flex items-center justify-center gap-2 py-2 text-white animate-in zoom-in-95 fade-in duration-300">
+                    <CheckCircle2 className="h-4 w-4 animate-pulse" />
+                    <p className="text-[11px] font-semibold">Grades Fetched</p>
+                  </div>
+                ) : (
+                  <>
+                    <p className="font-semibold text-slate-900 dark:text-slate-100">
+                      {onboardingGradeImportStatus === "completed" ? "Grades Fetched" : "Grade extractor status"}
+                    </p>
+                    <p
+                      className={cn(
+                        "mt-0.5 text-[10px]",
+                        onboardingGradeImportStatus === "success"
+                          ? "text-emerald-700 dark:text-emerald-200"
+                          : onboardingGradeImportStatus === "completed"
+                            ? "text-emerald-700 dark:text-emerald-200"
+                          : onboardingGradeImportStatus === "error"
+                            ? "text-rose-700 dark:text-rose-200"
+                            : onboardingGradeImportStatus === "running"
+                              ? "text-cyan-700 dark:text-cyan-200"
+                              : "text-muted-foreground"
+                      )}
+                    >
+                      {onboardingGradeImportMessage ||
+                        (onboardingGradeImportStatus === "idle"
+                          ? "Waiting to trigger auto grade import."
+                          : onboardingGradeImportStatus === "running"
+                            ? "Starting grade extraction..."
+                            : onboardingGradeImportStatus === "completed"
+                              ? "Done extracting grades."
+                            : onboardingGradeImportStatus === "success"
+                              ? "Grade extraction in progress."
+                              : "Grade extraction failed. Check extension and SOLAR login, then try again.")}
+                    </p>
+                  </>
+                )}
+              </div>
+              <div
+                className={cn(
+                  "rounded-lg border px-2 py-1.5 shadow-sm",
+                  showOfferingsCompletionCheck && onboardingOfferingsStatus === "completed"
+                    ? "border-emerald-700 bg-emerald-600 dark:border-emerald-500 dark:bg-emerald-600"
+                    :
+                  onboardingOfferingsStatus === "completed"
+                    ? "border-emerald-300 bg-emerald-50/90 dark:border-emerald-400/40 dark:bg-emerald-500/10"
+                    : "border-slate-200 bg-white/90 dark:border-white/10 dark:bg-white/5"
+                )}
+              >
+                {showOfferingsCompletionCheck && onboardingOfferingsStatus === "completed" ? (
+                  <div className="flex items-center justify-center gap-2 py-2 text-white animate-in zoom-in-95 fade-in duration-300">
+                    <CheckCircle2 className="h-4 w-4 animate-pulse" />
+                    <p className="text-[11px] font-semibold">Course Data Extracted</p>
+                  </div>
+                ) : (
+                  <>
+                    <p className="font-semibold text-slate-900 dark:text-slate-100">
+                      {onboardingOfferingsStatus === "completed" ? "Course Data Extracted" : "Course offerings extractor status"}
+                    </p>
+                    <p
+                      className={cn(
+                        "mt-0.5 text-[10px]",
+                        onboardingOfferingsStatus === "success"
+                          ? "text-emerald-700 dark:text-emerald-200"
+                          : onboardingOfferingsStatus === "completed"
+                            ? "text-emerald-700 dark:text-emerald-200"
+                          : onboardingOfferingsStatus === "error"
+                            ? "text-rose-700 dark:text-rose-200"
+                            : onboardingOfferingsStatus === "running"
+                              ? "text-cyan-700 dark:text-cyan-200"
+                              : "text-muted-foreground"
+                      )}
+                    >
+                      {onboardingOfferingsMessage ||
+                        (onboardingOfferingsStatus === "idle"
+                          ? "Waiting to open Course Offerings."
+                          : onboardingOfferingsStatus === "running"
+                            ? "Opening Course Offerings..."
+                            : onboardingOfferingsStatus === "completed"
+                              ? "Done extracting course data."
+                            : onboardingOfferingsStatus === "success"
+                              ? "Course Offerings opened and ready for extraction."
+                              : "Course Offerings launch failed. Try again.")}
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 text-[11px] text-slate-700 dark:text-slate-200">
+              <div className="rounded-lg border border-slate-200 bg-white/90 px-2 py-1.5 shadow-sm dark:border-white/10 dark:bg-white/5">
+                <p className="font-semibold">Grades first</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Auto import opens Student Grades and asks the extension to extract your attempts.</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white/90 px-2 py-1.5 shadow-sm dark:border-white/10 dark:bg-white/5">
+                <p className="font-semibold">Offerings ready</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Open Course Offerings so Schedule Maker can receive live sections right away.</p>
+              </div>
+            </div>
           </div>
         )
       case "live-data":
@@ -1201,7 +1902,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         <div
           className={cn(
             "relative flex h-full max-h-[90vh] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-white/10 dark:bg-slate-900",
-            isRewardThemeSlide && "border-amber-200/20 bg-gradient-to-br from-[#2a180f] via-[#19141e] to-[#0d0b12] text-amber-50",
+            isRewardThemeSlide && "!border-amber-300/30 !bg-[linear-gradient(145deg,#3f290f_0%,#171017_42%,#060507_100%)] !text-amber-50",
             isMobileLayout && "h-full min-h-full max-h-none overflow-y-auto rounded-none border-none"
           )}
         >
@@ -1240,7 +1941,13 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                 <span className="text-muted-foreground">{currentIndex + 1} / {slides.length}</span>
               </div>
               {hasCompletedOnce && (
-                <Badge variant="outline" className="text-xs">
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "text-xs",
+                    isRewardThemeSlide && "border-amber-300/60 bg-[#1b1411] text-amber-100"
+                  )}
+                >
                   Replay
                 </Badge>
               )}
@@ -1262,7 +1969,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                 <div
                   className={cn(
                     "flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-900 dark:bg-white/10 dark:text-white",
-                    isRewardThemeSlide && "bg-amber-100/10 text-amber-100",
+                    isRewardThemeSlide && "border border-amber-300/45 bg-[#211813] text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.2)]",
                     (isMobileLayout || isWelcomeSlide) && "mb-1"
                   )}
                   style={

@@ -78,6 +78,7 @@ const APP_VERSION = orderedPatchNotes[0]?.version ?? "Dev"
 const GAMIFICATION_STORAGE_KEY = "courseTracker.gamification.v1"
 const PROFILE_STORAGE_KEY = "courseTracker.profile.v1"
 const GRADE_IMPORT_HISTORY_STORAGE_KEY = "courseTracker.gradeImportHistory.v1"
+const ONBOARDING_GRADE_IMPORT_HANDOFF_KEY = "compareng.onboarding.gradeImportHandoff.v1"
 const TERM_BADGE_XP_BY_YEAR: Record<number, number> = {
   1: 600,
   2: 900,
@@ -2746,6 +2747,7 @@ export default function CourseTracker() {
 
   const completionInitRef = useRef(false)
   const gradeImportHistoryHydratedRef = useRef(false)
+  const onboardingGradeHandoffCheckedRef = useRef(false)
   const lastHandledGradeRunIdRef = useRef("")
   const gradeAlertToneRef = useRef<number | null>(null)
   const completedYearsRef = useRef<Set<number>>(new Set())
@@ -3840,6 +3842,158 @@ export default function CourseTracker() {
     startAutoGradeImport()
   }, [closeGradeImportSummary, startAutoGradeImport])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (onboardingGradeHandoffCheckedRef.current) return
+
+    let handoff: { requestedAt: number } | null = null
+    try {
+      const raw = window.localStorage.getItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      const requestedAt = Number(parsed?.requestedAt || 0)
+      if (!Number.isFinite(requestedAt) || requestedAt <= 0) {
+        window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+        return
+      }
+      handoff = { requestedAt }
+    } catch {
+      window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+      return
+    }
+
+    if (!handoff) return
+    onboardingGradeHandoffCheckedRef.current = true
+
+    const tryHydrateFromOnboardingImport = async () => {
+      const readLocalPayload = (): ImportedGradePayload | null => {
+        const parsePayload = (raw: string | null): ImportedGradePayload | null => {
+          if (!raw) return null
+          try {
+            const parsed = JSON.parse(raw)
+            const runId = String(parsed?.runId || "").trim()
+            const attempts = Array.isArray(parsed?.attempts) ? parsed.attempts : []
+            const extractedAt = Number(parsed?.extractedAt || 0)
+            if (!runId || !attempts.length || !Number.isFinite(extractedAt) || extractedAt <= 0) return null
+            return {
+              runId,
+              attempts,
+              extractedAt,
+              summary: parsed?.summary && typeof parsed.summary === "object" ? parsed.summary : undefined,
+            }
+          } catch {
+            return null
+          }
+        }
+
+        return (
+          parsePayload(window.localStorage.getItem("comparengGradeAttemptsLatest")) ||
+          parsePayload(window.localStorage.getItem("gradeAttemptsPayload"))
+        )
+      }
+
+      // If summary already exists from saved state, surface it immediately and consume handoff marker.
+      if (gradeImportSummary) {
+        setGradeImportError(null)
+        setTrackerSetupDialogOpen(false)
+        setNextStepsDialogOpen(false)
+        setGradeImportSummaryOpen(true)
+        window.localStorage.setItem("courseTracker.setupSeen", "true")
+        window.localStorage.setItem("courseTracker.nextStepsSeen", "true")
+        setHasSeenSetupDialog(true)
+        setHasSeenNextStepsDialog(true)
+        window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+        return
+      }
+
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const localPayload = readLocalPayload()
+        if (localPayload && localPayload.extractedAt >= handoff.requestedAt) {
+          setGradeImportError(null)
+          setGradeImportRunning(false)
+          setGradeImportFetchedSuccess(false)
+          setTrackerSetupDialogOpen(false)
+          setNextStepsDialogOpen(false)
+          handleImportedGradePayload(localPayload)
+          window.localStorage.setItem("courseTracker.setupSeen", "true")
+          window.localStorage.setItem("courseTracker.nextStepsSeen", "true")
+          setHasSeenSetupDialog(true)
+          setHasSeenNextStepsDialog(true)
+          window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+          return
+        }
+
+        try {
+          const response = await fetch("/api/get-imported-grade-attempts", {
+            method: "GET",
+            cache: "no-store",
+          })
+
+          if (!response.ok) {
+            await new Promise((resolve) => window.setTimeout(resolve, 1000))
+            continue
+          }
+
+          const data = await response.json()
+          const importUpdatedAt = Number(data?.updatedAt || 0)
+          const payload = data?.payload && typeof data.payload === "object" ? data.payload : null
+          const attempts = Array.isArray(payload?.attempts) ? payload.attempts : []
+          const runId = String(payload?.runId || "").trim()
+
+          if (!runId || attempts.length === 0 || importUpdatedAt < handoff.requestedAt) {
+            await new Promise((resolve) => window.setTimeout(resolve, 1000))
+            continue
+          }
+
+          const normalizedPayload: ImportedGradePayload = {
+            runId,
+            extractedAt: Number(payload?.extractedAt || importUpdatedAt || Date.now()),
+            attempts,
+            summary: payload?.summary && typeof payload.summary === "object" ? payload.summary : undefined,
+          }
+
+          setGradeImportError(null)
+          setGradeImportRunning(false)
+          setGradeImportFetchedSuccess(false)
+          setTrackerSetupDialogOpen(false)
+          setNextStepsDialogOpen(false)
+          handleImportedGradePayload(normalizedPayload)
+          window.localStorage.setItem("courseTracker.setupSeen", "true")
+          window.localStorage.setItem("courseTracker.nextStepsSeen", "true")
+          setHasSeenSetupDialog(true)
+          setHasSeenNextStepsDialog(true)
+          window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+          return
+        } catch {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000))
+        }
+      }
+    }
+
+    void tryHydrateFromOnboardingImport()
+  }, [gradeImportSummary, handleImportedGradePayload])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (!gradeImportSummary || gradeImportSummaryOpen) return
+
+    try {
+      const raw = window.localStorage.getItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+      if (!raw) return
+      setGradeImportError(null)
+      setTrackerSetupDialogOpen(false)
+      setNextStepsDialogOpen(false)
+      setGradeImportSummaryOpen(true)
+      window.localStorage.setItem("courseTracker.setupSeen", "true")
+      window.localStorage.setItem("courseTracker.nextStepsSeen", "true")
+      setHasSeenSetupDialog(true)
+      setHasSeenNextStepsDialog(true)
+      window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
+    } catch {
+      // Ignore storage parsing errors.
+    }
+  }, [gradeImportSummary, gradeImportSummaryOpen])
+
   const readLatestImportedGradePayload = useCallback((): ImportedGradePayload | null => {
     if (typeof window === "undefined") return null
 
@@ -4063,6 +4217,10 @@ export default function CourseTracker() {
 
   useEffect(() => {
     if (!coursesHydrated) return
+
+    if (typeof window !== "undefined" && window.localStorage.getItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)) {
+      return
+    }
 
     if (markedCourseCount > 0) {
       if (noProgressDismissed) {

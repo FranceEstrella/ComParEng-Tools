@@ -416,7 +416,7 @@ export default function OnboardingSchedulePreview() {
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-2.5 text-slate-100 shadow-sm dark:border-white/10 dark:from-slate-950 dark:via-slate-900 dark:to-slate-800">
+      <div className="rounded-2xl border border-slate-700 bg-slate-900 p-2.5 text-slate-100 shadow-sm dark:border-white/10 dark:bg-slate-900">
         <div className="mb-1.5 flex items-center justify-between gap-2">
           <div>
             <p className="text-[13px] font-semibold text-slate-50">My Schedule</p>
@@ -436,7 +436,7 @@ export default function OnboardingSchedulePreview() {
         </div>
 
         <div className="grid gap-1.5 sm:grid-cols-[1fr_auto]">
-          <div className="flex flex-wrap gap-1 rounded-lg border border-dashed border-white/20 bg-white/5 p-1.5">
+          <div className="flex flex-wrap gap-1 rounded-lg border border-dashed border-white/20 bg-[#121a2b] p-1.5">
             {unplacedCourses.length > 0 ? (
               unplacedCourses.map((course) => <DraggableCourseChip key={course.id} course={course} />)
             ) : (
@@ -444,13 +444,13 @@ export default function OnboardingSchedulePreview() {
             )}
           </div>
           <DroppableSlot id="dropzone:remove">
-            <div className="h-full min-h-8 rounded-lg border border-dashed border-rose-300/60 bg-rose-500/10 px-2 py-1 text-[9px] font-semibold text-rose-100">
+            <div className="h-full min-h-8 rounded-lg border border-dashed border-rose-300/60 bg-[#3a0f1e] px-2 py-1 text-[9px] font-semibold text-rose-100">
               Drop here to remove
             </div>
           </DroppableSlot>
         </div>
 
-        <div className="relative z-0 mt-1.5 rounded-xl border border-white/10 bg-slate-950/70">
+        <div className="relative z-0 mt-1.5 rounded-xl border border-white/10 bg-[#02040a]">
           <div
             className="grid w-full"
             style={{ gridTemplateColumns: `${TIME_COLUMN_WIDTH}px repeat(${DAYS.length}, minmax(0, 1fr))` }}
@@ -523,7 +523,7 @@ export default function OnboardingSchedulePreview() {
                 "h-6 px-2 text-[10px]",
                 activeVersion === "v1"
                   ? "bg-emerald-600 text-white hover:bg-emerald-500"
-                  : "border-white/20 bg-white/5 text-slate-100 hover:bg-white/10"
+                  : "border-white/20 bg-[#1a2438] text-slate-100 hover:bg-[#243247]"
               )}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => applyVersion("v1")}
@@ -538,7 +538,7 @@ export default function OnboardingSchedulePreview() {
                 "h-6 px-2 text-[10px]",
                 activeVersion === "v2"
                   ? "bg-amber-500 text-slate-900 hover:bg-amber-400"
-                  : "border-white/20 bg-white/5 text-slate-100 hover:bg-white/10"
+                  : "border-white/20 bg-[#1a2438] text-slate-100 hover:bg-[#243247]"
               )}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => applyVersion("v2")}
@@ -549,7 +549,7 @@ export default function OnboardingSchedulePreview() {
               type="button"
               variant="ghost"
               size="sm"
-              className="h-6 px-2 text-[10px] text-slate-100 hover:bg-white/10"
+              className="h-6 px-2 text-[10px] text-slate-100 hover:bg-[#243247]"
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => applyVersion(activeVersion)}
             >
@@ -560,7 +560,7 @@ export default function OnboardingSchedulePreview() {
         </div>
 
         {conflictCount > 0 && (
-          <div className="mt-1.5 flex items-start gap-1.5 rounded-lg border border-rose-300/60 bg-rose-50/70 px-2 py-1 text-[10px] text-rose-800 dark:border-rose-400/40 dark:bg-rose-500/10 dark:text-rose-100">
+          <div className="mt-1.5 flex items-start gap-1.5 rounded-lg border border-rose-300/60 bg-[#3b0d1a] px-2 py-1 text-[10px] text-rose-100 dark:border-rose-400/40 dark:bg-[#3b0d1a] dark:text-rose-100">
             <AlertTriangle className="mt-0.5 h-3 w-3" />
             <p>Red outlines mean overlap. Move one block to resolve.</p>
           </div>
