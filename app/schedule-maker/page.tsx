@@ -3410,8 +3410,9 @@ export default function ScheduleMaker() {
     })
   }, [getCanonicalCourseCode])
 
-  const handleAddSelectedReadyToAddCourses = useCallback((forceConflictOnly = false) => {
-    if (selectedReadyToAddCourseCodes.length === 0) return
+  const handleAddSelectedReadyToAddCourses = useCallback((forceConflictOnly = false, targetCourseCodes?: string[]) => {
+    const codesToProcess = targetCourseCodes ?? selectedReadyToAddCourseCodes
+    if (codesToProcess.length === 0) return
 
     const suggestionsByCode = new Map<string, ReadyToAddSuggestion>()
     allReadyToAddSuggestions.forEach((entry) => {
@@ -3419,7 +3420,7 @@ export default function ScheduleMaker() {
     })
 
     if (!forceConflictOnly) {
-      const conflictOnlyCourseCodes = selectedReadyToAddCourseCodes.filter((code) => {
+      const conflictOnlyCourseCodes = codesToProcess.filter((code) => {
         const canonical = getCanonicalCourseCode(code)
         const suggestion = suggestionsByCode.get(canonical)
         return Boolean(suggestion && suggestion.readySectionCount === 0)
@@ -3437,7 +3438,7 @@ export default function ScheduleMaker() {
     const selectedNow = new Set(selectedCourses.map((course) => getSelectedCourseCanonicalCode(course)))
     const addedCodes: string[] = []
 
-    selectedReadyToAddCourseCodes.forEach((code) => {
+    codesToProcess.forEach((code) => {
       const canonical = getCanonicalCourseCode(code)
       if (selectedNow.has(canonical)) return
       const suggestion = suggestionsByCode.get(canonical)
@@ -7393,7 +7394,7 @@ const renderScheduleView = () => {
               Add all courses selected
             </Button>
             <Button onClick={() => setReadyToAddDialogOpen(false)} className="w-full sm:w-auto">
-              Got it
+              No thanks
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -7419,8 +7420,18 @@ const renderScheduleView = () => {
             ))}
           </div>
           <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => setReadyToAddConflictConfirmDialog(null)} className="w-full sm:w-auto">
-              Cancel
+            <Button
+              variant="outline"
+              onClick={() => {
+                const blocked = new Set((readyToAddConflictConfirmDialog?.courseCodes || []).map((code) => getCanonicalCourseCode(code)))
+                const remaining = selectedReadyToAddCourseCodes.filter((code) => !blocked.has(getCanonicalCourseCode(code)))
+                setSelectedReadyToAddCourseCodes(remaining)
+                setReadyToAddConflictConfirmDialog(null)
+                handleAddSelectedReadyToAddCourses(false, remaining)
+              }}
+              className="w-full sm:w-auto"
+            >
+              Remove and continue
             </Button>
             <Button onClick={() => handleAddSelectedReadyToAddCourses(true)} className="w-full sm:w-auto">
               Add anyway
