@@ -52,20 +52,9 @@ self.addEventListener("fetch", (event) => {
   }
 
   const acceptHeader = request.headers.get("Accept") || ""
-  const isApiRequest = url.pathname.startsWith("/api/") || acceptHeader.includes("application/json")
   const isNavigationRequest =
     request.mode === "navigate" ||
     (acceptHeader.includes("text/html") && !url.pathname.startsWith("/_next"))
-
-  if (isApiRequest) {
-    event.respondWith(
-      fetch(request).catch(async () => {
-        const cached = await caches.match(request)
-        return cached || offlineResponse.clone()
-      })
-    )
-    return
-  }
 
   if (isNavigationRequest) {
     event.respondWith(

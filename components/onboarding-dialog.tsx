@@ -647,6 +647,54 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
     return parsePayload(window.localStorage.getItem("gradeAttemptsPayload"))
   }, [])
 
+  const COURSE_OFFERINGS_STORAGE_KEYS = [
+    "comparengCourseOfferingsLatest",
+    "comparengCourseDataLatest",
+    "courseOfferingsPayload",
+  ]
+
+  const readLatestOnboardingCourseOfferingsPayload = useCallback(() => {
+    if (typeof window === "undefined") return null
+
+    const parsePayload = (raw: string | null) => {
+      if (!raw) return null
+      try {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          return { rows: parsed, extractedAt: 0, term: null as string | null, schoolYear: null as string | null }
+        }
+
+        if (!parsed || typeof parsed !== "object") return null
+        const rows =
+          Array.isArray((parsed as any).data)
+            ? (parsed as any).data
+            : Array.isArray((parsed as any).courses)
+              ? (parsed as any).courses
+              : Array.isArray((parsed as any).rows)
+                ? (parsed as any).rows
+                : null
+
+        if (!rows) return null
+
+        return {
+          rows,
+          extractedAt: Number((parsed as any).extractedAt || (parsed as any).updatedAt || (parsed as any).lastUpdated || 0),
+          term: typeof (parsed as any).term === "string" ? (parsed as any).term : null,
+          schoolYear: typeof (parsed as any).schoolYear === "string" ? (parsed as any).schoolYear : null,
+        }
+      } catch {
+        return null
+      }
+    }
+
+    for (const key of COURSE_OFFERINGS_STORAGE_KEYS) {
+      const parsed = parsePayload(window.localStorage.getItem(key))
+      if (parsed) return parsed
+    }
+
+    return null
+  }, [])
+
   const handleOpenCourseOfferings = () => {
     if (typeof window === "undefined") return
     const startedAt = Date.now()
@@ -654,25 +702,14 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
 
     const waitForCourseOfferingsExtractionCompletion = async (startedAtMs: number) => {
       for (let attempt = 0; attempt < 45; attempt += 1) {
-        try {
-          const response = await fetch("/api/get-available-courses", {
-            method: "GET",
-            cache: "no-store",
-          })
-
-          if (response.ok) {
-            const data = await response.json()
-            const rows = Array.isArray(data?.data) ? data.data : []
-            const lastUpdated = Number(data?.lastUpdated || 0)
-            if (rows.length > 0 && lastUpdated >= startedAtMs) {
-              markOfferingsExtractionCompleted(
-                `Course data extracted. Loaded ${rows.length} section${rows.length === 1 ? "" : "s"}.`,
-              )
-              return
-            }
-          }
-        } catch {
-          // Ignore transient polling failures during onboarding.
+        const payload = readLatestOnboardingCourseOfferingsPayload()
+        const extractedAt = Number(payload?.extractedAt || 0)
+        const rows = Array.isArray(payload?.rows) ? payload?.rows : []
+        if (rows.length > 0 && (extractedAt <= 0 || extractedAt >= startedAtMs)) {
+          markOfferingsExtractionCompleted(
+            `Course data extracted. Loaded ${rows.length} section${rows.length === 1 ? "" : "s"}.`,
+          )
+          return
         }
 
         await new Promise((resolve) => window.setTimeout(resolve, 2000))
@@ -738,51 +775,6 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
             const localPayload = readLatestOnboardingImportedGradePayload()
             if (localPayload && finalizeOnboardingGradeImportFromPayload(localPayload, startedAtMs)) {
               return
-            }
-
-            try {
-              const response = await fetch("/api/get-imported-grade-attempts", {
-                method: "GET",
-                cache: "no-store",
-              })
-
-              if (response.ok) {
-                const data = await response.json()
-                const importUpdatedAt = Number(data?.updatedAt || 0)
-                const extractedAt = Number(data?.payload?.extractedAt || importUpdatedAt || 0)
-                const accepted = Number(data?.payload?.summary?.accepted ?? data?.payload?.attempts?.length ?? 0)
-                if (importUpdatedAt >= startedAtMs || extractedAt >= startedAtMs) {
-                  const payloadFromApi: OnboardingImportedGradePayload = {
-                    runId: String(data?.payload?.runId || `api-${importUpdatedAt}`),
-                    extractedAt,
-                    attempts: Array.isArray(data?.payload?.attempts) ? data.payload.attempts : new Array(Math.max(0, accepted)).fill(null),
-                    summary: data?.payload?.summary && typeof data.payload.summary === "object"
-                      ? data.payload.summary
-                      : { accepted },
-                  }
-                  const finalized = finalizeOnboardingGradeImportFromPayload(payloadFromApi, startedAtMs)
-                  if (!finalized) {
-                    markGradeExtractionCompleted(
-                      `Done extracting grades. Imported ${accepted} grade attempt${accepted === 1 ? "" : "s"}.`,
-                    )
-                  }
-                  try {
-                    window.localStorage.setItem(
-                      ONBOARDING_GRADE_IMPORT_HANDOFF_KEY,
-                      JSON.stringify({
-                        requestedAt: startedAtMs,
-                        completedAt: importUpdatedAt || extractedAt || Date.now(),
-                        source: "onboarding-ready-setup",
-                      }),
-                    )
-                  } catch {
-                    // Ignore storage failures.
-                  }
-                  return
-                }
-              }
-            } catch {
-              // Ignore transient polling failures during onboarding.
             }
 
             await new Promise((resolve) => window.setTimeout(resolve, 2000))
@@ -945,6 +937,67 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   ])
 
   useEffect(() => {
+    if (typeof window === "undefined") return
+    if (onboardingOfferingsStartedAt <= 0) return
+    if (onboardingOfferingsStatus === "completed" || onboardingOfferingsStatus === "error") return
+
+    let busy = false
+
+    const tryConsumeLatest = async () => {
+      if (busy) return
+      busy = true
+      try {
+        const payload = readLatestOnboardingCourseOfferingsPayload()
+        const extractedAt = Number(payload?.extractedAt || 0)
+        const rows = Array.isArray(payload?.rows) ? payload.rows : []
+        if (rows.length > 0 && (extractedAt <= 0 || extractedAt >= onboardingOfferingsStartedAt)) {
+          markOfferingsExtractionCompleted(
+            `Course data extracted. Loaded ${rows.length} section${rows.length === 1 ? "" : "s"}.`,
+          )
+        }
+      } finally {
+        busy = false
+      }
+    }
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key && !COURSE_OFFERINGS_STORAGE_KEYS.includes(event.key)) return
+      void tryConsumeLatest()
+    }
+
+    const handleBridgeEvent = () => {
+      void tryConsumeLatest()
+    }
+
+    const handleBridgeMessage = (event: MessageEvent) => {
+      const data = event?.data
+      if (!data || data.source !== "compareng-course-data-extractor-extension") return
+      if (data.type !== "courseOfferingsUpdated") return
+      void tryConsumeLatest()
+    }
+
+    void tryConsumeLatest()
+    const intervalId = window.setInterval(() => {
+      void tryConsumeLatest()
+    }, 1500)
+    window.addEventListener("storage", handleStorage)
+    window.addEventListener("compareng:courseOfferingsUpdated", handleBridgeEvent as EventListener)
+    window.addEventListener("message", handleBridgeMessage)
+
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener("storage", handleStorage)
+      window.removeEventListener("compareng:courseOfferingsUpdated", handleBridgeEvent as EventListener)
+      window.removeEventListener("message", handleBridgeMessage)
+    }
+  }, [
+    markOfferingsExtractionCompleted,
+    onboardingOfferingsStartedAt,
+    onboardingOfferingsStatus,
+    readLatestOnboardingCourseOfferingsPayload,
+  ])
+
+  useEffect(() => {
     if (!open) return
     if (activeSlide.id !== "ready-setup") return
     if (onboardingGradeImportStatus !== "completed" || onboardingOfferingsStatus !== "completed") return
@@ -969,45 +1022,24 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
     if (typeof window === "undefined") return
 
     if (onboardingGradeImportStartedAt > 0 && onboardingGradeImportStatus !== "completed") {
-      try {
-        const response = await fetch("/api/get-imported-grade-attempts", {
-          method: "GET",
-          cache: "no-store",
-        })
-        if (response.ok) {
-          const data = await response.json()
-          const updatedAt = Number(data?.updatedAt || 0)
-          const extractedAt = Number(data?.payload?.extractedAt || updatedAt || 0)
-          const accepted = Number(data?.payload?.summary?.accepted ?? data?.payload?.attempts?.length ?? 0)
-          if (updatedAt >= onboardingGradeImportStartedAt || extractedAt >= onboardingGradeImportStartedAt) {
-            markGradeExtractionCompleted(
-              `Done extracting grades. Imported ${accepted} grade attempt${accepted === 1 ? "" : "s"}.`,
-            )
-          }
-        }
-      } catch {
-        // Ignore refresh failures.
+      const payload = readLatestOnboardingImportedGradePayload()
+      const extractedAt = Number(payload?.extractedAt || 0)
+      const accepted = Number(payload?.attempts?.length || 0)
+      if (extractedAt >= onboardingGradeImportStartedAt && accepted > 0) {
+        markGradeExtractionCompleted(
+          `Done extracting grades. Imported ${accepted} grade attempt${accepted === 1 ? "" : "s"}.`,
+        )
       }
     }
 
     if (onboardingOfferingsStartedAt > 0 && onboardingOfferingsStatus !== "completed") {
-      try {
-        const response = await fetch("/api/get-available-courses", {
-          method: "GET",
-          cache: "no-store",
-        })
-        if (response.ok) {
-          const data = await response.json()
-          const rows = Array.isArray(data?.data) ? data.data : []
-          const lastUpdated = Number(data?.lastUpdated || 0)
-          if (rows.length > 0 && lastUpdated >= onboardingOfferingsStartedAt) {
-            markOfferingsExtractionCompleted(
-              `Course data extracted. Loaded ${rows.length} section${rows.length === 1 ? "" : "s"}.`,
-            )
-          }
-        }
-      } catch {
-        // Ignore refresh failures.
+      const payload = readLatestOnboardingCourseOfferingsPayload()
+      const extractedAt = Number(payload?.extractedAt || 0)
+      const rows = Array.isArray(payload?.rows) ? payload?.rows : []
+      if (rows.length > 0 && (extractedAt <= 0 || extractedAt >= onboardingOfferingsStartedAt)) {
+        markOfferingsExtractionCompleted(
+          `Course data extracted. Loaded ${rows.length} section${rows.length === 1 ? "" : "s"}.`,
+        )
       }
     }
   }

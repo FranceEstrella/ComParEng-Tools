@@ -524,6 +524,52 @@ export default function AcademicPlanner() {
     trackAnalyticsEvent("academic_planner.page_view")
   }, [])
 
+  const COURSE_OFFERINGS_STORAGE_KEYS = [
+    "comparengCourseOfferingsLatest",
+    "comparengCourseDataLatest",
+    "courseOfferingsPayload",
+  ]
+
+  const readLocalCourseOfferings = useCallback(() => {
+    if (typeof window === "undefined") return null
+
+    const parsePayload = (raw: string | null) => {
+      if (!raw) return null
+      try {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          return { rows: parsed, extractedAt: 0 }
+        }
+
+        if (!parsed || typeof parsed !== "object") return null
+        const rows =
+          Array.isArray((parsed as any).data)
+            ? (parsed as any).data
+            : Array.isArray((parsed as any).courses)
+              ? (parsed as any).courses
+              : Array.isArray((parsed as any).rows)
+                ? (parsed as any).rows
+                : null
+
+        if (!rows) return null
+
+        return {
+          rows,
+          extractedAt: Number((parsed as any).extractedAt || (parsed as any).updatedAt || (parsed as any).lastUpdated || 0),
+        }
+      } catch {
+        return null
+      }
+    }
+
+    for (const key of COURSE_OFFERINGS_STORAGE_KEYS) {
+      const parsed = parsePayload(window.localStorage.getItem(key))
+      if (parsed) return parsed
+    }
+
+    return null
+  }, [])
+
   const [courses, setCourses] = useState<Course[]>(initialCourses as unknown as Course[])
   const [coursesHydrated, setCoursesHydrated] = useState(false)
   const [availableSections, setAvailableSections] = useState<CourseSection[]>([])
@@ -979,39 +1025,9 @@ export default function AcademicPlanner() {
           }
         }
 
-        // Load available sections from same-origin endpoint to avoid client-side cross-origin failures.
-        const controller = new AbortController()
-        let response: Response
-        const fetchTimeout = setTimeout(() => controller.abort(), 10000)
-        try {
-          response = await fetch("/api/get-available-courses", {
-            method: "GET",
-            cache: "no-store",
-            signal: controller.signal,
-            headers: {
-              Accept: "application/json",
-            },
-          })
-        } finally {
-          clearTimeout(fetchTimeout)
-        }
-
-        if (!response.ok) {
-          throw new Error(`API returned status: ${response.status}`)
-        }
-
-        const contentType = response.headers.get("content-type")
-        if (!contentType || !contentType.includes("application/json")) {
-          throw new Error("API did not return JSON")
-        }
-
-        const result = await response.json()
-        if (!result.success) {
-          throw new Error(result.error || "Failed to fetch available courses")
-        }
-
+        const offerings = readLocalCourseOfferings()
         if (!cancelled) {
-          setAvailableSections(Array.isArray(result.data) ? result.data : [])
+          setAvailableSections(Array.isArray(offerings?.rows) ? offerings.rows : [])
         }
       } catch (err: any) {
         console.error("Error loading planner data:", err)
@@ -1035,7 +1051,7 @@ export default function AcademicPlanner() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [readLocalCourseOfferings])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -1095,6 +1111,41 @@ export default function AcademicPlanner() {
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
   }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const applyOfferings = () => {
+      const offerings = readLocalCourseOfferings()
+      setAvailableSections(Array.isArray(offerings?.rows) ? offerings.rows : [])
+    }
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key && !COURSE_OFFERINGS_STORAGE_KEYS.includes(event.key)) return
+      applyOfferings()
+    }
+
+    const handleBridgeEvent = () => {
+      applyOfferings()
+    }
+
+    const handleBridgeMessage = (event: MessageEvent) => {
+      const data = event?.data
+      if (!data || data.source !== "compareng-course-data-extractor-extension") return
+      if (data.type !== "courseOfferingsUpdated") return
+      applyOfferings()
+    }
+
+    window.addEventListener("storage", handleStorage)
+    window.addEventListener("compareng:courseOfferingsUpdated", handleBridgeEvent as EventListener)
+    window.addEventListener("message", handleBridgeMessage)
+
+    return () => {
+      window.removeEventListener("storage", handleStorage)
+      window.removeEventListener("compareng:courseOfferingsUpdated", handleBridgeEvent as EventListener)
+      window.removeEventListener("message", handleBridgeMessage)
+    }
+  }, [readLocalCourseOfferings])
 
   useEffect(() => {
     if (typeof window === "undefined") return

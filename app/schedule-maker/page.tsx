@@ -4889,103 +4889,83 @@ export default function ScheduleMaker() {
     return slotTime >= startTime && slotTime < endTime
   }
 
-  // Fetch available courses from the API (primary hosted domain, fallback to local)
-  const fetchAvailableCourses = useCallback(async () => {
-    const envBase = (process.env.NEXT_PUBLIC_COURSE_API_BASE || "").trim().replace(/\/$/, "")
-    const targetPool = [
-      envBase ? `${envBase}/api/get-available-courses` : "",
-      "https://compareng-tools.vercel.app/api/get-available-courses",
-      "/api/get-available-courses",
-      "http://127.0.0.1:3000/api/get-available-courses",
-    ].filter(Boolean)
+  const COURSE_OFFERINGS_STORAGE_KEYS = [
+    "comparengCourseOfferingsLatest",
+    "comparengCourseDataLatest",
+    "courseOfferingsPayload",
+  ]
+  const COURSE_OFFERINGS_TTL_MS = 60 * 60 * 1000
 
-    if (typeof window !== "undefined") {
-      const originTarget = `${window.location.origin}/api/get-available-courses`
-      targetPool.unshift(originTarget)
-    }
+  const readLocalCourseOfferings = useCallback(() => {
+    if (typeof window === "undefined") return null
 
-    const targets = Array.from(new Set(targetPool))
-
-    const parseTimestamp = (value: any) => {
-      if (!value) return null
-      if (typeof value === "number") return value
-      const parsed = Date.parse(value)
-      return Number.isNaN(parsed) ? null : parsed
-    }
-
-    const fetchWithTimeout = async (url: string, timeoutMs = 10000) => {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeoutMs)
+    const parsePayload = (raw: string | null) => {
+      if (!raw) return null
       try {
-        return await fetch(url, {
-          method: "GET",
-          cache: "no-store",
-          headers: {
-            Accept: "application/json",
-            "Cache-Control": "no-cache",
-          },
-          signal: controller.signal,
-        })
-      } finally {
-        clearTimeout(timer)
-      }
-    }
-
-    let lastError: any = null
-    const errors: string[] = []
-
-    for (const url of targets) {
-      try {
-        const response = await fetchWithTimeout(url)
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => "")
-          throw new Error(`API returned status: ${response.status}. Details: ${errorText}`)
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          return { data: parsed, extractedAt: 0, term: null as string | null, schoolYear: null as string | null }
         }
 
-        const contentType = response.headers.get("content-type")
-        if (!contentType || !contentType.includes("application/json")) {
-          const text = await response.text().catch(() => "")
-          throw new Error(`API did not return JSON. Content-Type: ${contentType || "undefined"}. Body: ${text}`)
-        }
+        if (!parsed || typeof parsed !== "object") return null
+        const data =
+          Array.isArray((parsed as any).data)
+            ? (parsed as any).data
+            : Array.isArray((parsed as any).courses)
+              ? (parsed as any).courses
+              : Array.isArray((parsed as any).rows)
+                ? (parsed as any).rows
+                : null
 
-        const result = await response.json()
-        if (!result.success) {
-          throw new Error(result.error || "Failed to fetch available courses")
-        }
-
-        const payload: CourseSection[] = Array.isArray(result.data) ? result.data : []
-        payload.forEach((course: CourseSection) => {
-          if (!validateDayString(course.meetingDays)) {
-            console.warn(`Invalid day format for ${course.courseCode}: ${course.meetingDays}`)
-          }
-        })
-
-        const fetchedTerm = normalizeFetchedTerm(result.term) ?? normalizeFetchedTerm(payload[0]?.term)
-        const fetchedSchoolYear =
-          normalizeFetchedSchoolYear(result.schoolYear) ?? normalizeFetchedSchoolYear(payload[0]?.schoolYear)
+        if (!data) return null
 
         return {
-          data: payload,
-          lastUpdated: parseTimestamp(result.lastUpdated),
-          expired: Boolean(result.isExpired),
-          fetchedTerm,
-          fetchedSchoolYear,
+          data,
+          extractedAt: Number((parsed as any).extractedAt || (parsed as any).updatedAt || (parsed as any).lastUpdated || 0),
+          term: typeof (parsed as any).term === "string" ? (parsed as any).term : null,
+          schoolYear: typeof (parsed as any).schoolYear === "string" ? (parsed as any).schoolYear : null,
         }
-      } catch (err: any) {
-        lastError = err
-        const message = err?.name === "AbortError" ? "Request timed out after 5s" : err?.message || "Unknown error"
-        errors.push(`${url} → ${message}`)
-        console.error(`Error fetching available courses from ${url}:`, err)
+      } catch {
+        return null
       }
     }
 
-    if (errors.length > 0) {
-      throw new Error(`All course endpoints failed. ${errors.join(" | ")}`)
+    for (const key of COURSE_OFFERINGS_STORAGE_KEYS) {
+      const parsed = parsePayload(window.localStorage.getItem(key))
+      if (parsed) return parsed
     }
 
-    throw new Error(lastError?.message || "Error fetching available courses")
-  }, [validateDayString])
+    return null
+  }, [])
+
+  // Read available courses from local storage (extension handoff)
+  const loadAvailableCourses = useCallback(() => {
+    const result = readLocalCourseOfferings()
+    if (!result) return null
+
+    const payload: CourseSection[] = Array.isArray(result.data) ? result.data : []
+    payload.forEach((course: CourseSection) => {
+      if (!validateDayString(course.meetingDays)) {
+        console.warn(`Invalid day format for ${course.courseCode}: ${course.meetingDays}`)
+      }
+    })
+
+    const fetchedTerm = normalizeFetchedTerm(result.term) ?? normalizeFetchedTerm(payload[0]?.term)
+    const fetchedSchoolYear =
+      normalizeFetchedSchoolYear(result.schoolYear) ?? normalizeFetchedSchoolYear(payload[0]?.schoolYear)
+
+    const now = Date.now()
+    const extractedAt = Number.isFinite(result.extractedAt) ? result.extractedAt : 0
+    const expired = extractedAt > 0 ? now - extractedAt > COURSE_OFFERINGS_TTL_MS : false
+
+    return {
+      data: payload,
+      lastUpdated: extractedAt > 0 ? extractedAt : null,
+      expired,
+      fetchedTerm,
+      fetchedSchoolYear,
+    }
+  }, [readLocalCourseOfferings, validateDayString])
 
   const loadTrackerCourseData = useCallback(() => {
     if (typeof window === "undefined") {
@@ -5129,9 +5109,19 @@ export default function ScheduleMaker() {
       }
 
       try {
-        const result = await fetchAvailableCourses()
+        const result = loadAvailableCourses()
 
-        if (result.expired) {
+        if (!result) {
+          if (!silent) {
+            setLastUpdated(null)
+            setError("No course data available. Please use the extension to extract course data.")
+            applyAvailableCourses(sampleAvailableCourses, {
+              preserveError: true,
+              skipTimestamp: true,
+              isSampleData: true,
+            })
+          }
+        } else if (result.expired) {
           applyAvailableCourses([], {
             expired: true,
             lastUpdated: result.lastUpdated,
@@ -5154,18 +5144,6 @@ export default function ScheduleMaker() {
             fetchedSchoolYear: result.fetchedSchoolYear,
           })
         }
-
-      } catch (err: any) {
-        console.error("Failed to fetch available courses:", err)
-        if (!silent) {
-          setError(err.message || "Failed to fetch available courses")
-          setLastUpdated(null)
-          applyAvailableCourses(sampleAvailableCourses, {
-            preserveError: true,
-            skipTimestamp: true,
-            isSampleData: true,
-          })
-        }
       } finally {
         if (!silent) {
           setLoading(false)
@@ -5177,7 +5155,7 @@ export default function ScheduleMaker() {
       setTrackerCourses(trackerData.courses)
       setActiveCourses(trackerData.active)
     },
-    [applyAvailableCourses, fetchAvailableCourses, loadTrackerCourseData],
+    [applyAvailableCourses, loadAvailableCourses, loadTrackerCourseData],
   )
 
   useEffect(() => {
@@ -5215,6 +5193,10 @@ export default function ScheduleMaker() {
         }
       }
 
+      if (event.key && COURSE_OFFERINGS_STORAGE_KEYS.includes(event.key)) {
+        fetchData({ silent: true })
+      }
+
       if (event.key === "courseStatuses") {
         const trackerData = loadTrackerCourseData()
         setTrackerCourses(trackerData.courses)
@@ -5224,6 +5206,29 @@ export default function ScheduleMaker() {
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
   }, [curriculumSignature, fetchData, clearScheduleSelections, loadTrackerCourseData])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const handleBridgeEvent = () => {
+      fetchData({ silent: true })
+    }
+
+    const handleBridgeMessage = (event: MessageEvent) => {
+      const data = event?.data
+      if (!data || data.source !== "compareng-course-data-extractor-extension") return
+      if (data.type !== "courseOfferingsUpdated") return
+      fetchData({ silent: true })
+    }
+
+    window.addEventListener("compareng:courseOfferingsUpdated", handleBridgeEvent as EventListener)
+    window.addEventListener("message", handleBridgeMessage)
+
+    return () => {
+      window.removeEventListener("compareng:courseOfferingsUpdated", handleBridgeEvent as EventListener)
+      window.removeEventListener("message", handleBridgeMessage)
+    }
+  }, [fetchData])
 
   const filteredCourses = availableCourses.filter((course) => {
     if (showLockedCourses || !hasTrackerProgress) {

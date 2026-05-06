@@ -3923,50 +3923,7 @@ export default function CourseTracker() {
           return
         }
 
-        try {
-          const response = await fetch("/api/get-imported-grade-attempts", {
-            method: "GET",
-            cache: "no-store",
-          })
-
-          if (!response.ok) {
-            await new Promise((resolve) => window.setTimeout(resolve, 1000))
-            continue
-          }
-
-          const data = await response.json()
-          const importUpdatedAt = Number(data?.updatedAt || 0)
-          const payload = data?.payload && typeof data.payload === "object" ? data.payload : null
-          const attempts = Array.isArray(payload?.attempts) ? payload.attempts : []
-          const runId = String(payload?.runId || "").trim()
-
-          if (!runId || attempts.length === 0 || importUpdatedAt < handoff.requestedAt) {
-            await new Promise((resolve) => window.setTimeout(resolve, 1000))
-            continue
-          }
-
-          const normalizedPayload: ImportedGradePayload = {
-            runId,
-            extractedAt: Number(payload?.extractedAt || importUpdatedAt || Date.now()),
-            attempts,
-            summary: payload?.summary && typeof payload.summary === "object" ? payload.summary : undefined,
-          }
-
-          setGradeImportError(null)
-          setGradeImportRunning(false)
-          setGradeImportFetchedSuccess(false)
-          setTrackerSetupDialogOpen(false)
-          setNextStepsDialogOpen(false)
-          handleImportedGradePayload(normalizedPayload)
-          window.localStorage.setItem("courseTracker.setupSeen", "true")
-          window.localStorage.setItem("courseTracker.nextStepsSeen", "true")
-          setHasSeenSetupDialog(true)
-          setHasSeenNextStepsDialog(true)
-          window.localStorage.removeItem(ONBOARDING_GRADE_IMPORT_HANDOFF_KEY)
-          return
-        } catch {
-          await new Promise((resolve) => window.setTimeout(resolve, 1000))
-        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1000))
       }
     }
 
