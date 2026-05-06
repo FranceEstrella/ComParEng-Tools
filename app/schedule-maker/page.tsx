@@ -4894,7 +4894,7 @@ export default function ScheduleMaker() {
     "comparengCourseDataLatest",
     "courseOfferingsPayload",
   ]
-  const COURSE_OFFERINGS_TTL_MS = 60 * 60 * 1000
+  const COURSE_OFFERINGS_TTL_MS = 60 * 1000
 
   const readLocalCourseOfferings = useCallback(() => {
     if (typeof window === "undefined") return null
@@ -5090,7 +5090,9 @@ export default function ScheduleMaker() {
       }
 
       if (options.expired) {
-        setError("Extracted course data expired after 1 hour. Please re-run the extension to fetch fresh data.")
+        setError(
+          "Course offerings expired after 1 minute. The Course Offerings tab might not be open. Keep it open so the extension can fetch data automatically.",
+        )
       } else if (normalized.length === 0) {
         setError("No course data available. Please use the extension to extract course data.")
       } else {

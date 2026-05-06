@@ -529,6 +529,7 @@ export default function AcademicPlanner() {
     "comparengCourseDataLatest",
     "courseOfferingsPayload",
   ]
+  const COURSE_OFFERINGS_TTL_MS = 60 * 1000
 
   const readLocalCourseOfferings = useCallback(() => {
     if (typeof window === "undefined") return null
@@ -1026,8 +1027,17 @@ export default function AcademicPlanner() {
         }
 
         const offerings = readLocalCourseOfferings()
+        const extractedAt = Number(offerings?.extractedAt || 0)
+        const expired = extractedAt > 0 ? (Date.now() - extractedAt) > COURSE_OFFERINGS_TTL_MS : false
         if (!cancelled) {
-          setAvailableSections(Array.isArray(offerings?.rows) ? offerings.rows : [])
+          setAvailableSections(expired ? [] : Array.isArray(offerings?.rows) ? offerings.rows : [])
+          if (expired) {
+            setError(
+              "Course offerings expired after 1 minute. The Course Offerings tab might not be open. Keep it open so the extension can fetch data automatically.",
+            )
+          } else {
+            setError(null)
+          }
         }
       } catch (err: any) {
         console.error("Error loading planner data:", err)
@@ -1117,7 +1127,16 @@ export default function AcademicPlanner() {
 
     const applyOfferings = () => {
       const offerings = readLocalCourseOfferings()
-      setAvailableSections(Array.isArray(offerings?.rows) ? offerings.rows : [])
+      const extractedAt = Number(offerings?.extractedAt || 0)
+      const expired = extractedAt > 0 ? (Date.now() - extractedAt) > COURSE_OFFERINGS_TTL_MS : false
+      setAvailableSections(expired ? [] : Array.isArray(offerings?.rows) ? offerings.rows : [])
+      if (expired) {
+        setError(
+          "Course offerings expired after 1 minute. The Course Offerings tab might not be open. Keep it open so the extension can fetch data automatically.",
+        )
+      } else {
+        setError(null)
+      }
     }
 
     const handleStorage = (event: StorageEvent) => {
