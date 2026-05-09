@@ -342,9 +342,16 @@ interface CourseSection {
   meetingDays: string
   meetingTime: string
   room: string
+  meetings?: CourseMeetingInput[]
   hasSlots: boolean
   term: string
   schoolYear: string
+}
+
+interface CourseMeetingInput {
+  meetingDays: string
+  meetingTime: string
+  room: string
 }
 
 interface ActiveCourse {
@@ -395,6 +402,7 @@ interface SelectedCourse extends CourseSection {
   canonicalCode: string
   name: string
   credits: number
+  meetings: CourseMeeting[]
   timeStart: string
   timeEnd: string
   startMinutes: number
@@ -404,8 +412,23 @@ interface SelectedCourse extends CourseSection {
   displayRoom: string
 }
 
+interface CourseMeeting {
+  meetingDays: string
+  meetingTime: string
+  room: string
+  parsedDays: DayToken[]
+  timeStart: string
+  timeEnd: string
+  startMinutes: number
+  endMinutes: number
+  displayTime: string
+  displayRoom: string
+}
+
 interface SectionPreview {
   sectionKey: string
+  previewId: string
+  meetingIndex: number
   section: CourseSection
   parsedDays: DayToken[]
   startMinutes: number
@@ -1171,6 +1194,8 @@ export default function ScheduleMaker() {
   const [timeFilter, setTimeFilter] = useState<string>("all")
   const [selectedCourseCodes, setSelectedCourseCodes] = useState<string[]>([])
   const [pairingPrompt, setPairingPrompt] = useState<PairingPromptState>({ open: false })
+  const [pendingPairingPrompt, setPendingPairingPrompt] = useState<PairingPromptState | null>(null)
+  const deferredSearchRestoreRef = useRef(false)
   const [rememberPairingAddDecision, setRememberPairingAddDecision] = useState<"confirm" | null>(null)
   const [rememberPairingAddToggle, setRememberPairingAddToggle] = useState(false)
   const [rememberPairingRemoveDecision, setRememberPairingRemoveDecision] = useState<"confirm" | null>(null)
@@ -1466,6 +1491,8 @@ export default function ScheduleMaker() {
     (overrides?: Partial<{
       sameSectionFeatureEnabled: boolean
       rememberSameSectionAddDecision: "confirm" | null
+      rememberPairingAddDecision: "confirm" | null
+      rememberPairingRemoveDecision: "confirm" | null
       regularStudentNoticeDismissed: boolean
       solarOSESStudentTypeOverride: SolarOSESStudentTypeOverride
       extensionIdPreference: ScheduleMakerExtensionIdPreference
@@ -1475,6 +1502,8 @@ export default function ScheduleMaker() {
         const next = {
           sameSectionFeatureEnabled,
           rememberSameSectionAddDecision,
+          rememberPairingAddDecision,
+          rememberPairingRemoveDecision,
           regularStudentNoticeDismissed: regularStudentNoticeDontShowAgain,
           solarOSESStudentTypeOverride,
           extensionIdPreference,
@@ -1487,6 +1516,8 @@ export default function ScheduleMaker() {
     },
     [
       extensionIdPreference,
+      rememberPairingAddDecision,
+      rememberPairingRemoveDecision,
       rememberSameSectionAddDecision,
       regularStudentNoticeDontShowAgain,
       sameSectionFeatureEnabled,
@@ -1718,6 +1749,16 @@ export default function ScheduleMaker() {
 
       const remembered = (prefs as any).rememberSameSectionAddDecision
       if (remembered === "confirm" || remembered === null) setRememberSameSectionAddDecision(remembered)
+
+      const pairingAddDecision = (prefs as any).rememberPairingAddDecision
+      if (pairingAddDecision === "confirm" || pairingAddDecision === null) {
+        setRememberPairingAddDecision(pairingAddDecision)
+      }
+
+      const pairingRemoveDecision = (prefs as any).rememberPairingRemoveDecision
+      if (pairingRemoveDecision === "confirm" || pairingRemoveDecision === null) {
+        setRememberPairingRemoveDecision(pairingRemoveDecision)
+      }
 
       const dismissed = (prefs as any).regularStudentNoticeDismissed
       if (typeof dismissed === "boolean") setRegularStudentNoticeDontShowAgain(dismissed)
@@ -2459,8 +2500,76 @@ export default function ScheduleMaker() {
     }
   }, [selectedCourses, selectedCourseCodes, customizations, courseDefaults, isClient, curriculumSignature, scheduleTitle])
 
+  const splitMeetingTokens = (value: string): string[] => {
+    if (!value) return []
+    return value
+      .split(/\s*\/\s*/)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+  }
+
+  const normalizeMeetingEntry = (entry: Partial<CourseMeetingInput>): CourseMeeting => {
+    const meetingDays = entry.meetingDays ?? ""
+    const meetingTime = entry.meetingTime ?? ""
+    const room = entry.room ?? ""
+    const derivedRange = parseTimeRange(meetingTime)
+    const timeStart = derivedRange.start
+    const timeEnd = derivedRange.end
+    const startMinutes = !Number.isNaN(derivedRange.startMinutes)
+      ? derivedRange.startMinutes
+      : parseTimeToMinutes(timeStart)
+    const endMinutes = !Number.isNaN(derivedRange.endMinutes)
+      ? derivedRange.endMinutes
+      : parseTimeToMinutes(timeEnd)
+
+    return {
+      meetingDays,
+      meetingTime,
+      room,
+      parsedDays: parseDays(meetingDays),
+      timeStart,
+      timeEnd,
+      startMinutes,
+      endMinutes,
+      displayTime: cleanTimeString(meetingTime),
+      displayRoom: cleanRoomString(room),
+    }
+  }
+
+  const buildMeetingsFromSection = (
+    course: Pick<CourseSection, "meetingDays" | "meetingTime" | "room"> & { meetings?: CourseMeetingInput[] | CourseMeeting[] },
+  ): CourseMeeting[] => {
+    if (Array.isArray(course.meetings) && course.meetings.length > 0) {
+      return course.meetings.map((meeting) => normalizeMeetingEntry(meeting))
+    }
+
+    const daysParts = splitMeetingTokens(course.meetingDays)
+    const timeParts = splitMeetingTokens(course.meetingTime)
+    const roomParts = splitMeetingTokens(course.room)
+    const meetingCount = Math.max(daysParts.length, timeParts.length, roomParts.length)
+    if (meetingCount === 0) return []
+
+    return Array.from({ length: meetingCount }, (_, index) =>
+      normalizeMeetingEntry({
+        meetingDays: daysParts[index] ?? "",
+        meetingTime: timeParts[index] ?? "",
+        room: roomParts[index] ?? "",
+      }),
+    )
+  }
+
+  const serializeMeetings = (meetingList: CourseMeeting[]): string =>
+    meetingList
+      .map((meeting) => [meeting.meetingDays, meeting.meetingTime, meeting.room]
+        .map((segment) => segment.trim())
+        .join("|"))
+      .join("::")
+
   const normalizeSelectedCourse = useCallback((course: any): SelectedCourse => {
-    const rangeSource = course?.meetingTime ?? `${course?.timeStart ?? ""}-${course?.timeEnd ?? ""}`
+    const meetings = buildMeetingsFromSection(course)
+    const primaryMeeting = meetings[0]
+    const rangeSource =
+      primaryMeeting?.meetingTime ?? course?.meetingTime ?? `${course?.timeStart ?? ""}-${course?.timeEnd ?? ""}`
     const derivedRange = parseTimeRange(rangeSource)
     const canonicalCode =
       typeof course?.canonicalCode === "string" && course.canonicalCode.trim() !== ""
@@ -2494,7 +2603,7 @@ export default function ScheduleMaker() {
     const parsedDays =
       Array.isArray(course?.parsedDays) && course.parsedDays.length > 0
         ? course.parsedDays
-        : parseDays(course?.meetingDays ?? "")
+        : primaryMeeting?.parsedDays ?? parseDays(course?.meetingDays ?? "")
 
     const { name: defaultName, credits: defaultCredits } = getCourseNameAndCredits(course?.courseCode ?? canonicalCode)
     const normalizedName =
@@ -2511,13 +2620,17 @@ export default function ScheduleMaker() {
       canonicalCode,
       name: normalizedName,
       credits: normalizedCredits,
+      meetings,
       timeStart,
       timeEnd,
       startMinutes,
       endMinutes,
       parsedDays,
-      displayTime: course?.displayTime ?? cleanTimeString(course?.meetingTime ?? `${timeStart}-${timeEnd}`),
-      displayRoom: course?.displayRoom ?? cleanRoomString(course?.room ?? ""),
+      displayTime:
+        course?.displayTime ??
+        primaryMeeting?.displayTime ??
+        cleanTimeString(course?.meetingTime ?? `${timeStart}-${timeEnd}`),
+      displayRoom: course?.displayRoom ?? primaryMeeting?.displayRoom ?? cleanRoomString(course?.room ?? ""),
     } as SelectedCourse
   }, [])
 
@@ -2887,10 +3000,14 @@ export default function ScheduleMaker() {
 
         const canonicalCode = getCanonicalCourseCode(latest.courseCode)
         const metadata = getCourseNameAndCredits(latest.courseCode)
+        const meetings = buildMeetingsFromSection(latest)
+        const primaryMeeting = meetings[0]
         const { start, end, startMinutes, endMinutes } = parseTimeRange(latest.meetingTime)
-        const parsedDays = parseDays(latest.meetingDays)
-        const displayTime = cleanTimeString(latest.meetingTime)
-        const displayRoom = cleanRoomString(latest.room)
+        const parsedDays = primaryMeeting?.parsedDays ?? parseDays(latest.meetingDays)
+        const displayTime = primaryMeeting?.displayTime ?? cleanTimeString(latest.meetingTime)
+        const displayRoom = primaryMeeting?.displayRoom ?? cleanRoomString(latest.room)
+        const meetingSignature = serializeMeetings(meetings)
+        const selectedSignature = serializeMeetings(selected.meetings || [])
         const parsedDaysChanged =
           selected.parsedDays.length !== parsedDays.length ||
           selected.parsedDays.some((day, index) => day !== parsedDays[index])
@@ -2912,7 +3029,8 @@ export default function ScheduleMaker() {
           selected.endMinutes !== endMinutes ||
           parsedDaysChanged ||
           selected.displayTime !== displayTime ||
-          selected.displayRoom !== displayRoom
+          selected.displayRoom !== displayRoom ||
+          selectedSignature !== meetingSignature
 
         if (!needsUpdate) {
           return selected
@@ -2925,6 +3043,7 @@ export default function ScheduleMaker() {
           canonicalCode,
           name: metadata.name,
           credits: metadata.credits,
+          meetings,
           timeStart: start,
           timeEnd: end,
           startMinutes,
@@ -2969,53 +3088,51 @@ export default function ScheduleMaker() {
 
   // Enhanced conflict detection
   const hasScheduleConflict = (course: CourseSection): boolean => {
-    if (!course.meetingTime || !course.meetingDays) return false
-
-    const { start: newStart, end: newEnd, startMinutes: newStartMinutes, endMinutes: newEndMinutes } = parseTimeRange(course.meetingTime)
-    const newDays = parseDays(course.meetingDays)
-    const hasNumericRange = !Number.isNaN(newStartMinutes) && !Number.isNaN(newEndMinutes)
+    const newMeetings = buildMeetingsFromSection(course)
+    if (newMeetings.length === 0) return false
     const canonicalCode = getCanonicalCourseCode(course.courseCode)
 
     return selectedCourses.some((selected) => {
       if (getSelectedCourseCanonicalCode(selected) === canonicalCode) return false
 
-      // Convert both day sets to Sets for efficient lookup
-      const selectedDaysSet = new Set(selected.parsedDays)
-      const newDaysSet = new Set(newDays)
+      const selectedMeetings = selected.meetings && selected.meetings.length > 0
+        ? selected.meetings
+        : buildMeetingsFromSection(selected)
 
-      // Check if any days overlap
-      const daysOverlap = [...newDaysSet].some(day => selectedDaysSet.has(day))
-      if (!daysOverlap) return false
+      return newMeetings.some((newMeeting) => {
+        if (newMeeting.parsedDays.length === 0) return false
 
-      const selectedStartMinutes =
-        typeof selected.startMinutes === "number" && !Number.isNaN(selected.startMinutes)
-          ? selected.startMinutes
-          : parseTimeToMinutes(selected.timeStart)
+        const selectedMatches = selectedMeetings.some((selectedMeeting) => {
+          if (selectedMeeting.parsedDays.length === 0) return false
 
-      const selectedEndMinutes =
-        typeof selected.endMinutes === "number" && !Number.isNaN(selected.endMinutes)
-          ? selected.endMinutes
-          : parseTimeToMinutes(selected.timeEnd)
+          const selectedDaysSet = new Set(selectedMeeting.parsedDays)
+          const newDaysSet = new Set(newMeeting.parsedDays)
+          const daysOverlap = [...newDaysSet].some((day) => selectedDaysSet.has(day))
+          if (!daysOverlap) return false
 
-      const canCompareNumeric =
-        hasNumericRange &&
-        !Number.isNaN(selectedStartMinutes) &&
-        !Number.isNaN(selectedEndMinutes)
+          const hasNumericRange =
+            !Number.isNaN(newMeeting.startMinutes) &&
+            !Number.isNaN(newMeeting.endMinutes) &&
+            !Number.isNaN(selectedMeeting.startMinutes) &&
+            !Number.isNaN(selectedMeeting.endMinutes)
 
-      if (canCompareNumeric) {
-        return (
-          (newStartMinutes >= selectedStartMinutes && newStartMinutes < selectedEndMinutes) ||
-          (newEndMinutes > selectedStartMinutes && newEndMinutes <= selectedEndMinutes) ||
-          (newStartMinutes <= selectedStartMinutes && newEndMinutes >= selectedEndMinutes)
-        )
-      }
+          if (hasNumericRange) {
+            return (
+              (newMeeting.startMinutes >= selectedMeeting.startMinutes && newMeeting.startMinutes < selectedMeeting.endMinutes) ||
+              (newMeeting.endMinutes > selectedMeeting.startMinutes && newMeeting.endMinutes <= selectedMeeting.endMinutes) ||
+              (newMeeting.startMinutes <= selectedMeeting.startMinutes && newMeeting.endMinutes >= selectedMeeting.endMinutes)
+            )
+          }
 
-      // Fallback to string comparison when timing data cannot be parsed reliably
-      return (
-        (newStart >= selected.timeStart && newStart < selected.timeEnd) ||
-        (newEnd > selected.timeStart && newEnd <= selected.timeEnd) ||
-        (newStart <= selected.timeStart && newEnd >= selected.timeEnd)
-      )
+          return (
+            (newMeeting.timeStart >= selectedMeeting.timeStart && newMeeting.timeStart < selectedMeeting.timeEnd) ||
+            (newMeeting.timeEnd > selectedMeeting.timeStart && newMeeting.timeEnd <= selectedMeeting.timeEnd) ||
+            (newMeeting.timeStart <= selectedMeeting.timeStart && newMeeting.timeEnd >= selectedMeeting.timeEnd)
+          )
+        })
+
+        return selectedMatches
+      })
     })
   }
 
@@ -3127,8 +3244,17 @@ export default function ScheduleMaker() {
     const canonicalCode = getCanonicalCourseCode(course.courseCode)
     console.log('[addCourse] Canonical code:', canonicalCode)
 
+    const sectionsToReplace = selectedCourses.filter(
+      (selected) =>
+        getSelectedCourseCanonicalCode(selected) === canonicalCode &&
+        selected.section !== course.section,
+    )
+    sectionsToReplace.forEach((selected) => removeCourse(selected.courseCode, selected.section))
+
+    const meetings = buildMeetingsFromSection(course)
+    const primaryMeeting = meetings[0]
     const { start, end, startMinutes, endMinutes } = parseTimeRange(course.meetingTime)
-    const parsedDays = parseDays(course.meetingDays)
+    const parsedDays = primaryMeeting?.parsedDays ?? parseDays(course.meetingDays)
     const normalizedDayValue = (course.meetingDays || "").toUpperCase().replace(/[\s/]+/g, "")
     const isCertificationOnlyEntry = normalizedDayValue === "SU"
     const metadata = getCourseNameAndCredits(course.courseCode)
@@ -3140,13 +3266,14 @@ export default function ScheduleMaker() {
       canonicalCode,
       name: metadata.name,
       credits: metadata.credits,
+      meetings,
       timeStart: start,
       timeEnd: end,
       startMinutes,
       endMinutes,
       parsedDays,
-      displayTime: cleanTimeString(course.meetingTime),
-      displayRoom: cleanRoomString(course.room),
+      displayTime: primaryMeeting?.displayTime ?? cleanTimeString(course.meetingTime),
+      displayRoom: primaryMeeting?.displayRoom ?? cleanRoomString(course.room),
     }
 
     console.log('[addCourse] About to set selected courses. Current count:', selectedCourses.length)
@@ -3632,7 +3759,39 @@ export default function ScheduleMaker() {
     [availableCanonicalSet, pairableCourses],
   )
 
-  const closePairingPrompt = () => setPairingPrompt({ open: false })
+  const closePairingPrompt = () => {
+    setPairingPrompt({ open: false })
+    if (deferredSearchRestoreRef.current) {
+      setSearchPanelVisible(true)
+      deferredSearchRestoreRef.current = false
+    }
+  }
+
+  const queuePairingPrompt = useCallback(
+    (prompt: PairingPromptState) => {
+      if (searchPanelVisible) {
+        setPendingPairingPrompt(prompt)
+        setSearchPanelVisible(false)
+        return
+      }
+      setPairingPrompt(prompt)
+    },
+    [searchPanelVisible],
+  )
+
+  useEffect(() => {
+    if (!searchPanelVisible && pendingPairingPrompt?.open) {
+      setPairingPrompt(pendingPairingPrompt)
+      setPendingPairingPrompt(null)
+    }
+  }, [pendingPairingPrompt, searchPanelVisible])
+
+  useEffect(() => {
+    if (pairingPrompt.open && searchPanelVisible) {
+      setSearchPanelVisible(false)
+      deferredSearchRestoreRef.current = true
+    }
+  }, [pairingPrompt.open, searchPanelVisible])
 
   const toggleCourseCollapse = (courseCode: string) => {
     const canonical = getCanonicalCourseCode(courseCode)
@@ -3849,7 +4008,7 @@ export default function ScheduleMaker() {
         return
       }
 
-      setPairingPrompt({
+      queuePairingPrompt({
         open: true,
         action: "remove-course",
         primaryCode: canonical,
@@ -3865,7 +4024,7 @@ export default function ScheduleMaker() {
         return
       }
 
-      setPairingPrompt({
+      queuePairingPrompt({
         open: true,
         action: "add-course",
         primaryCode: canonical,
@@ -3938,7 +4097,7 @@ export default function ScheduleMaker() {
           return
         }
 
-        setPairingPrompt({
+        queuePairingPrompt({
           open: true,
           action: "add-section",
           primarySection: section,
@@ -3971,7 +4130,7 @@ export default function ScheduleMaker() {
           return
         }
 
-        setPairingPrompt({
+        queuePairingPrompt({
           open: true,
           action: "remove-section",
           primarySection: section,
@@ -3987,22 +4146,30 @@ export default function ScheduleMaker() {
   }
 
   const buildSectionPreview = useCallback(
-    (section: CourseSection): SectionPreview | null => {
-      const { startMinutes, endMinutes } = parseTimeRange(section.meetingTime)
-      const parsedDays = parseDays(section.meetingDays)
-      if (Number.isNaN(startMinutes) || Number.isNaN(endMinutes) || parsedDays.length === 0) return null
+    (section: CourseSection): SectionPreview[] => {
+      const meetings = buildMeetingsFromSection(section)
+      if (meetings.length === 0) return []
 
       const sectionKey = buildCourseLookupKey(section.courseCode, section.section)
-      return {
-        sectionKey,
-        section,
-        parsedDays,
-        startMinutes,
-        endMinutes,
-        displayTime: cleanTimeString(section.meetingTime),
-        displayRoom: cleanRoomString(section.room),
-        color: getAutoColorForCourse(section.courseCode),
-      }
+      return meetings
+        .map((meeting, index) => ({ meeting, index }))
+        .filter(({ meeting }) =>
+          !Number.isNaN(meeting.startMinutes) &&
+          !Number.isNaN(meeting.endMinutes) &&
+          meeting.parsedDays.length > 0,
+        )
+        .map(({ meeting, index }) => ({
+          sectionKey,
+          previewId: `${sectionKey}::${index}`,
+          meetingIndex: index,
+          section,
+          parsedDays: meeting.parsedDays,
+          startMinutes: meeting.startMinutes,
+          endMinutes: meeting.endMinutes,
+          displayTime: meeting.displayTime,
+          displayRoom: meeting.displayRoom,
+          color: getAutoColorForCourse(section.courseCode),
+        }))
     },
     [getAutoColorForCourse],
   )
@@ -4044,6 +4211,13 @@ export default function ScheduleMaker() {
       const course = courseCatalog.find((c) => c.code === data.canonicalCode)
       if (!course) return
 
+      const pairCanonical = rememberPairingAddDecision === "confirm"
+        ? findPairedCanonical(course.code)
+        : null
+      const pairedCourse = pairCanonical
+        ? courseCatalog.find((entry) => entry.code === pairCanonical)
+        : null
+
       setDragOverlayCourse({
         code: course.code,
         name: course.name,
@@ -4051,13 +4225,14 @@ export default function ScheduleMaker() {
         sections: course.sections.length,
       })
 
-      const previews = course.sections
-        .map((section) => buildSectionPreview(section))
-        .filter((entry): entry is SectionPreview => Boolean(entry))
+      const previews = course.sections.flatMap((section) => buildSectionPreview(section))
+      const pairedPreviews = pairedCourse
+        ? pairedCourse.sections.flatMap((section) => buildSectionPreview(section))
+        : []
 
-      setDragPreviewSections(previews)
+      setDragPreviewSections([...previews, ...pairedPreviews])
     },
-    [buildSectionPreview, courseCatalog, searchPanelVisible],
+    [buildSectionPreview, courseCatalog, findPairedCanonical, rememberPairingAddDecision, searchPanelVisible],
   )
 
   const handleDragEndEvent = useCallback(
@@ -4078,7 +4253,7 @@ export default function ScheduleMaker() {
       console.log('[dragEnd] activeData:', activeData, 'over:', event.over?.id, 'overData:', event.over?.data?.current, 'derivedKey:', overSectionKey)
 
       const target = overSectionKey
-        ? dragPreviewSections.find((entry) => entry.sectionKey === overSectionKey)
+        ? dragPreviewSections.find((entry) => entry.previewId === overSectionKey)
         : null
 
       if (target) {
@@ -4088,6 +4263,14 @@ export default function ScheduleMaker() {
             (course) => getSelectedCourseCanonicalCode(course) === canonical,
           )
           toRemove.forEach((course) => removeCourse(course.courseCode, course.section))
+        }
+
+        if (activeData?.source === "search") {
+          const canonical = getCanonicalCourseCode(target.section.courseCode)
+          const toReplace = selectedCourses.filter(
+            (course) => getSelectedCourseCanonicalCode(course) === canonical,
+          )
+          toReplace.forEach((course) => removeCourse(course.courseCode, course.section))
         }
 
         toggleSectionSelection(target.section, true)
@@ -4111,12 +4294,16 @@ export default function ScheduleMaker() {
       setDragOverlayCourse(null)
 
       if (searchPanelRestoreRef.current) {
-        setSearchPanelVisible(true)
+        if (pairingPrompt.open || pendingPairingPrompt?.open) {
+          deferredSearchRestoreRef.current = true
+        } else {
+          setSearchPanelVisible(true)
+        }
       }
       searchPanelRestoreRef.current = false
       dragOffsetRef.current = { x: 0, y: 0 }
     },
-    [dragPreviewSections, removeCourse, selectedCourses, toggleSectionSelection],
+    [dragPreviewSections, pendingPairingPrompt, pairingPrompt.open, removeCourse, selectedCourses, toggleSectionSelection],
   )
 
   const handleDragCancelEvent = useCallback(
@@ -6398,20 +6585,25 @@ const renderScheduleView = () => {
                 const top = (startOffsetMinutes / 60) * HOUR_HEIGHT
                 const height = (heightMinutes / 60) * HOUR_HEIGHT
 
-                const hasConflict = selectedCourses.some(
-                  (course) =>
-                    course.parsedDays.includes(day) &&
-                    preview.startMinutes < course.endMinutes &&
-                    preview.endMinutes > course.startMinutes,
-                )
+                const hasConflict = selectedCourses.some((course) => {
+                  const meetings = course.meetings && course.meetings.length > 0
+                    ? course.meetings
+                    : buildMeetingsFromSection(course)
+                  return meetings.some(
+                    (meeting) =>
+                      meeting.parsedDays.includes(day) &&
+                      preview.startMinutes < meeting.endMinutes &&
+                      preview.endMinutes > meeting.startMinutes,
+                  )
+                })
 
-                const droppableId = `${preview.sectionKey}__${day}`
+                const droppableId = `${preview.previewId}__${day}`
 
                 return (
                   <SectionPreviewSlot
                     key={droppableId}
                     droppableId={droppableId}
-                    sectionKey={preview.sectionKey}
+                    sectionKey={preview.previewId}
                     left={`calc(var(--time-col) + var(--day-width) * ${dayIndex})`}
                     top={top}
                     height={height}
@@ -6435,82 +6627,92 @@ const renderScheduleView = () => {
                 const bgColor = getCourseColor(course)
                 const textColor = getContrastColor(bgColor)
                 const displayTitle = getSelectedCourseDisplayTitle(course, customization, getDisplayCode)
+                const meetings = course.meetings && course.meetings.length > 0
+                  ? course.meetings
+                  : buildMeetingsFromSection(course)
 
-                // Calculate exact positions based on actual start/end
-                const [startHour, startMinute] = course.timeStart.split(":").map(Number)
-                const [endHour, endMinute] = course.timeEnd.split(":").map(Number)
+                return meetings.flatMap((meeting, meetingIndex) => {
+                  const startMinutes = !Number.isNaN(meeting.startMinutes)
+                    ? meeting.startMinutes
+                    : parseTimeToMinutes(meeting.timeStart)
+                  const endMinutes = !Number.isNaN(meeting.endMinutes)
+                    ? meeting.endMinutes
+                    : parseTimeToMinutes(meeting.timeEnd)
 
-                const startTop = (startHour - FIRST_HOUR) * HOUR_HEIGHT + (startMinute / 60) * HOUR_HEIGHT
+                  if (Number.isNaN(startMinutes) || Number.isNaN(endMinutes)) return []
 
-                const endTop = (endHour - FIRST_HOUR) * HOUR_HEIGHT + (endMinute / 60) * HOUR_HEIGHT
+                  const startTop = ((startMinutes - FIRST_HOUR * 60) / 60) * HOUR_HEIGHT
+                  const endTop = ((endMinutes - FIRST_HOUR * 60) / 60) * HOUR_HEIGHT
+                  const height = endTop - startTop
+                  if (height <= 0) return []
 
-                const height = endTop - startTop
-                const showTime = isCompactScheduleLayout ? height >= 30 : height >= 64
-                const showRoom = isCompactScheduleLayout ? height >= 42 : height >= 88
-                const compactTitle = isCompactScheduleLayout ? height < 58 : height < 72
-                const blockPadding = isCompactScheduleLayout
-                  ? height < 42
-                    ? "1px 4px"
-                    : "2px 5px"
-                  : height < 56
-                    ? "4px 8px"
-                    : "6px 10px 12px"
-                const justifyContent = isCompactScheduleLayout ? "flex-start" : showTime || showRoom ? "space-between" : "center"
+                  const showTime = isCompactScheduleLayout ? height >= 30 : height >= 64
+                  const showRoom = isCompactScheduleLayout ? height >= 42 : height >= 88
+                  const compactTitle = isCompactScheduleLayout ? height < 58 : height < 72
+                  const blockPadding = isCompactScheduleLayout
+                    ? height < 42
+                      ? "1px 4px"
+                      : "2px 5px"
+                    : height < 56
+                      ? "4px 8px"
+                      : "6px 10px 12px"
+                  const justifyContent = isCompactScheduleLayout ? "flex-start" : showTime || showRoom ? "space-between" : "center"
 
-                return course.parsedDays.map((day) => {
-                  const dayIndex = DAYS.indexOf(day)
-                  if (dayIndex === -1) return null
+                  return meeting.parsedDays.map((day) => {
+                    const dayIndex = DAYS.indexOf(day)
+                    if (dayIndex === -1) return null
 
-                  const blockStyle: React.CSSProperties = {
-                    left: `calc(var(--time-col) + var(--day-width) * ${dayIndex})`,
-                    top: `${startTop}px`,
-                    height: `${height}px`,
-                    backgroundColor: bgColor,
-                    width: `calc(var(--day-width) - 4px)`,
-                    zIndex: 10,
-                    margin: isCompactScheduleLayout ? "0 1px" : "0 2px",
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent,
-                    padding: blockPadding,
-                    boxSizing: "border-box",
-                    overflow: "hidden",
-                    gap: isCompactScheduleLayout ? 0 : showTime || showRoom ? 4 : 0,
-                    boxShadow:
-                      theme === "dark"
-                        ? `0 0 0 1px ${hexToRgba(bgColor, 0.45)}, 0 0 14px ${hexToRgba(bgColor, 0.6)}, 0 0 28px ${hexToRgba(bgColor, 0.45)}`
-                        : undefined,
-                  }
+                    const blockStyle: React.CSSProperties = {
+                      left: `calc(var(--time-col) + var(--day-width) * ${dayIndex})`,
+                      top: `${startTop}px`,
+                      height: `${height}px`,
+                      backgroundColor: bgColor,
+                      width: `calc(var(--day-width) - 4px)`,
+                      zIndex: 10,
+                      margin: isCompactScheduleLayout ? "0 1px" : "0 2px",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent,
+                      padding: blockPadding,
+                      boxSizing: "border-box",
+                      overflow: "hidden",
+                      gap: isCompactScheduleLayout ? 0 : showTime || showRoom ? 4 : 0,
+                      boxShadow:
+                        theme === "dark"
+                          ? `0 0 0 1px ${hexToRgba(bgColor, 0.45)}, 0 0 14px ${hexToRgba(bgColor, 0.6)}, 0 0 28px ${hexToRgba(bgColor, 0.45)}`
+                          : undefined,
+                    }
 
-                  return (
-                    <motion.div
-                      key={`${key}-${day}`}
-                      layout
-                      initial={{ opacity: 0, scale: 0.96, y: -6 }}
-                      animate={{ opacity: 1, scale: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.96, y: -8 }}
-                      transition={{ duration: 0.16, ease: "easeInOut" }}
-                    >
-                      <ScheduledBlock
-                        course={course}
-                        day={day}
-                        style={blockStyle}
-                        displayTitle={displayTitle}
-                        showTime={showTime}
-                        showRoom={showRoom}
-                        displayTime={course.displayTime}
-                        displayRoom={course.displayRoom}
-                        compactTitle={compactTitle}
-                        blockPadding={blockPadding}
-                        textColor={textColor}
-                        onContextMenu={(event) => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          openCustomization(course)
-                        }}
-                      />
-                    </motion.div>
-                  )
+                    return (
+                      <motion.div
+                        key={`${key}-${meetingIndex}-${day}`}
+                        layout
+                        initial={{ opacity: 0, scale: 0.96, y: -6 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.96, y: -8 }}
+                        transition={{ duration: 0.16, ease: "easeInOut" }}
+                      >
+                        <ScheduledBlock
+                          course={course}
+                          day={day}
+                          style={blockStyle}
+                          displayTitle={displayTitle}
+                          showTime={showTime}
+                          showRoom={showRoom}
+                          displayTime={meeting.displayTime}
+                          displayRoom={meeting.displayRoom}
+                          compactTitle={compactTitle}
+                          blockPadding={blockPadding}
+                          textColor={textColor}
+                          onContextMenu={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            openCustomization(course)
+                          }}
+                        />
+                      </motion.div>
+                    )
+                  })
                 })
               })}
             </AnimatePresence>
@@ -7688,7 +7890,9 @@ const renderScheduleView = () => {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="z-[11001]">
-                  <SelectItem value="auto">Auto (detected)</SelectItem>
+                  <SelectItem value="auto">
+                    {`Auto (${regularStudentDetected ? "regular" : "irregular"})`}
+                  </SelectItem>
                   <SelectItem value="regular">Always regular</SelectItem>
                   <SelectItem value="irregular">Always irregular</SelectItem>
                 </SelectContent>
@@ -7851,7 +8055,7 @@ const renderScheduleView = () => {
                   {isClient &&
                     createPortal(
                       <AnimatePresence>
-                        {searchPanelVisible && (
+                        {searchPanelVisible && !pairingPrompt.open && (
                           <motion.div
                             className="fixed inset-0 z-[10040] flex items-start justify-center pt-24 px-3"
                             initial={{ opacity: 0 }}
