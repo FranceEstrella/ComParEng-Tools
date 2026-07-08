@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import Script from "next/script"
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { BookOpen, Calendar, GraduationCap, Download, Upload, Database, Loader2, Trash2, ExternalLink, Info, X, ArrowUp, Palette, Sparkles, Trophy, Medal, Award, Pencil, ArrowLeft, Check, Menu } from "lucide-react"
 import PatchNotesButton from "@/components/patch-notes"
@@ -2724,6 +2725,27 @@ export default function Home() {
                   <p className="hidden md:block text-green-100 mt-2">Plan your path to graduation efficiently</p>
                 </div>
               </Link>
+            </div>
+
+            <Script
+              async
+              src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1468609263706552"
+              crossOrigin="anonymous"
+              strategy="afterInteractive"
+            />
+
+            <div className="mb-6 md:mb-8">
+              <ins
+                className="adsbygoogle"
+                style={{ display: "block" }}
+                data-ad-client="ca-pub-1468609263706552"
+                data-ad-slot="REPLACE_WITH_YOUR_AD_SLOT_ID"
+                data-ad-format="auto"
+                data-full-width-responsive="true"
+              />
+              <Script id="adsense-home-init" strategy="afterInteractive">
+                {`(adsbygoogle = window.adsbygoogle || []).push({});`}
+              </Script>
             </div>
 
             {/* Patch Notes Section */}

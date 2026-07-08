@@ -21,6 +21,9 @@ export const metadata: Metadata = {
     template: "%s | ComParEng Tools",
   },
   description: "Course Tracker, Schedule Maker, and Academic Planner for FEU Tech students.",
+  other: {
+    "google-adsense-account": "ca-pub-1468609263706552",
+  },
   icons: {
     icon: [
       { url: "/favicon.ico" },
