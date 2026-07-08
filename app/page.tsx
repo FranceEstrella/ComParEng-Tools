@@ -2739,7 +2739,7 @@ export default function Home() {
                 className="adsbygoogle"
                 style={{ display: "block" }}
                 data-ad-client="ca-pub-1468609263706552"
-                data-ad-slot="REPLACE_WITH_YOUR_AD_SLOT_ID"
+                data-ad-slot="8005227491"
                 data-ad-format="auto"
                 data-full-width-responsive="true"
               />
