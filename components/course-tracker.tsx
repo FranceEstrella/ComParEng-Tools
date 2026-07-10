@@ -35,6 +35,8 @@ import {
   Sparkles,
   Crown,
   Menu,
+  History,
+  Undo,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -44,7 +46,7 @@ import { CircularProgress } from "@/components/ui/circular-progress"
 import { cn } from "@/lib/utils"
 import { Switch } from "@/components/ui/switch"
 import { motion, AnimatePresence } from "framer-motion"
-import { useTheme } from "next-themes"
+import { useTheme } from "@/components/theme-provider"
 import Link from "next/link"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { saveCourseStatuses, loadCourseStatuses, saveTrackerPreferences, loadTrackerPreferences } from "@/lib/course-storage"
@@ -303,6 +305,20 @@ interface Course {
   term: string // e.g., "Fall", "Spring", "Summer"
   lastTaken?: LastTakenInfo | null
   gradeAttempts?: GradeAttempt[]
+}
+
+interface TrackerActionChange {
+  courseId: string
+  fromStatus: CourseStatus
+  toStatus: CourseStatus
+}
+
+interface TrackerActionHistoryEntry {
+  id: string
+  type: "status"
+  description: string
+  changes: TrackerActionChange[]
+  timestamp: Date
 }
 
 // Group courses by year and term
@@ -2366,6 +2382,7 @@ const SaveLoadControls = ({
       saveCourseStatuses(resetCourses)
       return resetCourses
     })
+    setActionHistory([])
     setSaveMessage("All course progress has been reset")
     setTimeout(() => setSaveMessage(null), 3000)
   }
@@ -2421,6 +2438,7 @@ const SaveLoadControls = ({
                   const hydrated = hydrateCourses(parsed as Course[])
                   registerExternalCourses(hydrated)
                   setCourses(hydrated)
+                  setActionHistory([])
                   saveCourseStatuses(hydrated)
                   trackAnalyticsEvent("course_tracker.curriculum_import_success", { courseCount: hydrated.length })
                   onImportSuccessPrompt({
@@ -2811,6 +2829,8 @@ export default function CourseTracker() {
   const [coursesHydrated, setCoursesHydrated] = useState(false)
   const [preferencesHydrated, setPreferencesHydrated] = useState(false)
   const [setupUploadStatus, setSetupUploadStatus] = useState<{ fileName: string; uploadedAt: number } | null>(null)
+  const [actionHistory, setActionHistory] = useState<TrackerActionHistoryEntry[]>([])
+  const [historyPopupOpen, setHistoryPopupOpen] = useState(false)
   const [prereqDialogState, setPrereqDialogState] = useState<PrerequisiteDialogState | null>(null)
   const [dependentRollbackDialogState, setDependentRollbackDialogState] = useState<DependentRollbackDialogState | null>(null)
   const [bulkPrereqConfirmState, setBulkPrereqConfirmState] = useState<BulkPrereqConfirmState | null>(null)
@@ -4189,6 +4209,7 @@ export default function CourseTracker() {
       const hydrated = hydrateCourses(savedCourses as Course[])
       registerExternalCourses(hydrated)
       setCourses(hydrated)
+      setActionHistory([])
       setSaveMessage("Loaded saved course statuses from local storage")
       setTimeout(() => setSaveMessage(null), 3000)
     }
@@ -5802,12 +5823,141 @@ export default function CourseTracker() {
       .sort((a, b) => a.code.localeCompare(b.code))
   }, [])
 
+  const addToActionHistory = useCallback((entry: Omit<TrackerActionHistoryEntry, "id" | "timestamp">) => {
+    const newEntry: TrackerActionHistoryEntry = {
+      ...entry,
+      id: Date.now().toString(),
+      timestamp: new Date(),
+    }
+    setActionHistory((prev) => [newEntry, ...prev.slice(0, 9)])
+    setHistoryPopupOpen(true)
+  }, [])
+
+  const buildStatusHistoryChanges = useCallback((previousCourses: Course[], nextCourses: Course[]) => {
+    const previousById = new Map(previousCourses.map((course) => [course.id, course]))
+    return nextCourses
+      .flatMap((nextCourse) => {
+        const previousCourse = previousById.get(nextCourse.id)
+        if (!previousCourse || previousCourse.status === nextCourse.status) return []
+        return [
+          {
+            courseId: nextCourse.id,
+            fromStatus: previousCourse.status,
+            toStatus: nextCourse.status,
+          },
+        ]
+      })
+      .sort((a, b) => a.courseId.localeCompare(b.courseId))
+  }, [])
+
+  const recordStatusHistory = useCallback(
+    (description: string, previousCourses: Course[], nextCourses: Course[]) => {
+      const changes = buildStatusHistoryChanges(previousCourses, nextCourses)
+      if (changes.length === 0) return
+      addToActionHistory({
+        type: "status",
+        description,
+        changes,
+      })
+    },
+    [addToActionHistory, buildStatusHistoryChanges],
+  )
+
+  const openGroupsForCourses = useCallback((courseList: Course[]) => {
+    if (!Array.isArray(courseList) || courseList.length === 0) return
+
+    const nextYears: Record<number, boolean> = {}
+    const nextTerms: Record<string, boolean> = {}
+
+    courseList.forEach((course) => {
+      if (!course?.year || !course?.term) return
+      nextYears[course.year] = true
+      nextTerms[`${course.year}::${course.term}`] = true
+    })
+
+    if (Object.keys(nextYears).length > 0) {
+      setOpenYears((prev) => ({ ...prev, ...nextYears }))
+    }
+    if (Object.keys(nextTerms).length > 0) {
+      setOpenTerms((prev) => ({ ...prev, ...nextTerms }))
+    }
+  }, [])
+
+  const highlightCourseCard = useCallback((courseId: string) => {
+    if (typeof document === "undefined") return
+    const el = document.getElementById(`course-card-${courseId}`)
+    if (!el) return
+
+    const highlightClasses = [
+      "ring-2",
+      "ring-blue-400",
+      "dark:ring-blue-500",
+      "ring-offset-2",
+      "ring-offset-white",
+      "dark:ring-offset-gray-900",
+    ]
+
+    highlightClasses.forEach((cls) => el.classList.add(cls))
+    window.setTimeout(() => {
+      highlightClasses.forEach((cls) => el.classList.remove(cls))
+    }, 1600)
+  }, [])
+
+
+  const revealCourseCard = useCallback(
+    (courseId: string) => {
+      if (typeof document === "undefined") return
+
+      const targetCourse = courses.find((course) => course.id === courseId)
+      if (!targetCourse) return
+
+      openGroupsForCourses([targetCourse])
+
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const el = document.getElementById(`course-card-${courseId}`)
+          if (!el) return
+          el.scrollIntoView({ behavior: "smooth", block: "center" })
+          highlightCourseCard(courseId)
+        })
+      })
+    },
+    [courses, openGroupsForCourses, highlightCourseCard],
+  )
+
+  const undoLastAction = useCallback(() => {
+    if (actionHistory.length === 0) return
+
+    const lastAction = actionHistory[0]
+    const changesById = new Map(lastAction.changes.map((change) => [change.courseId, change.fromStatus]))
+    const focusCourseId = lastAction.changes[0]?.courseId ?? null
+
+    setCourses((prevCourses) => {
+      const nextCourses = prevCourses.map((course) => {
+        const restoredStatus = changesById.get(course.id)
+        if (!restoredStatus || course.status === restoredStatus) return course
+        return { ...course, status: restoredStatus }
+      })
+      saveCourseStatuses(nextCourses)
+      return nextCourses
+    })
+
+    setActionHistory((prev) => prev.slice(1))
+    setSaveMessage(`Undid: ${lastAction.description}`)
+    window.setTimeout(() => setSaveMessage(null), 3000)
+
+    if (focusCourseId) {
+      revealCourseCard(focusCourseId)
+    }
+  }, [actionHistory, revealCourseCard])
+
   const commitBulkStatusUpdate = useCallback((updatedCourses: Course[], message: string) => {
+    recordStatusHistory(message, courses, updatedCourses)
     setCourses(updatedCourses)
     saveCourseStatuses(updatedCourses)
     setSaveMessage(message)
     setTimeout(() => setSaveMessage(null), 3000)
-  }, [])
+  }, [courses, recordStatusHistory])
 
   const openPendingActivationConfirmation = useCallback(() => {
     if (filterStatus !== "pending" || eligiblePendingVisibleCourses.length === 0) return
@@ -5957,45 +6107,7 @@ export default function CourseTracker() {
     }
   }, [filterStatus, futureVisibleCourseIds, courses, commitBulkStatusUpdate, getCoursesMarkedPassed])
 
-  const openGroupsForCourses = useCallback((courseList: Course[]) => {
-    if (!Array.isArray(courseList) || courseList.length === 0) return
 
-    const nextYears: Record<number, boolean> = {}
-    const nextTerms: Record<string, boolean> = {}
-
-    courseList.forEach((course) => {
-      if (!course?.year || !course?.term) return
-      nextYears[course.year] = true
-      nextTerms[`${course.year}::${course.term}`] = true
-    })
-
-    if (Object.keys(nextYears).length > 0) {
-      setOpenYears((prev) => ({ ...prev, ...nextYears }))
-    }
-    if (Object.keys(nextTerms).length > 0) {
-      setOpenTerms((prev) => ({ ...prev, ...nextTerms }))
-    }
-  }, [])
-
-  const highlightCourseCard = useCallback((courseId: string) => {
-    if (typeof document === "undefined") return
-    const el = document.getElementById(`course-card-${courseId}`)
-    if (!el) return
-
-    const highlightClasses = [
-      "ring-2",
-      "ring-blue-400",
-      "dark:ring-blue-500",
-      "ring-offset-2",
-      "ring-offset-white",
-      "dark:ring-offset-gray-900",
-    ]
-
-    highlightClasses.forEach((cls) => el.classList.add(cls))
-    window.setTimeout(() => {
-      highlightClasses.forEach((cls) => el.classList.remove(cls))
-    }, 1600)
-  }, [])
 
   const revealSearchResults = useCallback(
     (term: string, selectedCourseId?: string) => {
@@ -6031,7 +6143,16 @@ export default function CourseTracker() {
     newStatus: CourseStatus,
     statusOverrides: Record<string, CourseStatus> = {},
   ) => {
+    const targetCourse = findCourseById(courseId)
+    if (!targetCourse) return
+
+    const historyDescription = `Updated ${getDisplayCode(targetCourse.code)} to ${formatStatusLabel(newStatus)}`
+
+    let previousCoursesSnapshot: Course[] = courses
+    let nextCoursesSnapshot: Course[] = courses
+
     setCourses((prevCourses) => {
+      previousCoursesSnapshot = prevCourses
       const updatedCourses: Course[] = prevCourses.map((course): Course => {
         if (course.id === courseId) {
           return { ...course, status: newStatus }
@@ -6052,9 +6173,12 @@ export default function CourseTracker() {
         return { ...course, status: overrideStatus }
       })
 
+      nextCoursesSnapshot = updatedCourses
       saveCourseStatuses(updatedCourses)
       return updatedCourses
     })
+
+    recordStatusHistory(historyDescription, previousCoursesSnapshot, nextCoursesSnapshot)
   }
 
   // Handle status change for a course
@@ -6382,6 +6506,7 @@ export default function CourseTracker() {
         const hydrated = hydrateCourses(parsedCourses as Course[])
         registerExternalCourses(hydrated)
         setCourses(hydrated)
+        setActionHistory([])
         saveCourseStatuses(hydrated)
 
         if (parsedTracker) {
@@ -6821,6 +6946,96 @@ export default function CourseTracker() {
             <ThemeToggle />
           </div>
         </div>
+
+        {mounted && typeof document !== "undefined"
+          ? createPortal(
+              <>
+                <AnimatePresence>
+                  {historyPopupOpen && (
+                    <motion.div
+                      className="fixed bottom-24 right-6 z-[12000] w-[22rem] max-w-[calc(100vw-1.5rem)]"
+                      initial={{ opacity: 0, y: 18, scale: 0.96 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 18, scale: 0.96 }}
+                      transition={{ type: "spring", stiffness: 380, damping: 28 }}
+                    >
+                      <Card className="overflow-hidden border-2 border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-gray-900">
+                        <CardHeader className="space-y-2 pb-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <CardTitle className="flex items-center gap-2 text-sm">
+                              <History className="h-4 w-4" />
+                              Action History
+                            </CardTitle>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 gap-2 bg-transparent"
+                                onClick={undoLastAction}
+                                disabled={actionHistory.length === 0}
+                              >
+                                <Undo className="h-4 w-4" />
+                                Undo Last Action
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setHistoryPopupOpen(false)} aria-label="Close action history">
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                          <CardDescription className="text-xs text-muted-foreground">
+                            Recent course status changes. Undo restores the previous status for the latest action.
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="pt-0">
+                          {actionHistory.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">No actions recorded yet.</p>
+                          ) : (
+                            <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
+                              {actionHistory.map((entry) => (
+                                <div key={entry.id} className="rounded-md border p-3 text-sm">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <p className="font-medium">{entry.description}</p>
+                                      <p className="text-xs text-muted-foreground">{entry.timestamp.toLocaleString()}</p>
+                                    </div>
+                                    <Badge variant="outline" className="shrink-0">
+                                      {entry.type}
+                                    </Badge>
+                                  </div>
+                                  <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                                    {entry.changes.map((change) => {
+                                      const course = findCourseById(change.courseId)
+                                      return (
+                                        <p key={`${entry.id}-${change.courseId}`}>
+                                          {(course && getDisplayCode(course.code)) || change.courseId}: {formatStatusLabel(change.fromStatus)} → {formatStatusLabel(change.toStatus)}
+                                        </p>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setHistoryPopupOpen((prev) => !prev)}
+                  aria-label={historyPopupOpen ? "Hide action history" : "Show action history"}
+                  className="fixed bottom-24 right-6 z-[12001] h-12 w-12 rounded-full border-slate-300 bg-white/90 shadow-lg backdrop-blur dark:border-slate-700 dark:bg-gray-900/90"
+                >
+                  <History className="h-5 w-5" />
+                </Button>
+              </>,
+              document.body,
+            )
+          : null}
 
   {/* Non-CpE Student Notice */}
   <NonCpeNotice onReportIssue={() => setFeedbackDialogOpen(true)} />

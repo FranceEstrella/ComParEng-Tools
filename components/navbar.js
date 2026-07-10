@@ -10,7 +10,7 @@ import { motion, AnimatePresence } from "framer-motion"
 // Lazy-load to avoid server render issues with dialog on some routes
 const PatchNotesButton = dynamic(() => import("./patch-notes"), { ssr: false })
 const FAQsButton = dynamic(() => import("./faqs-button"), { ssr: false })
-import { useTheme } from "next-themes"
+import { useTheme } from "@/components/theme-provider"
 import { trackAnalyticsEvent } from "@/lib/analytics-client"
 
 const navVariants = {
