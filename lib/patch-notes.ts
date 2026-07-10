@@ -15,6 +15,44 @@ export interface PatchNote {
 
 export const patchNotes: PatchNote[] = [
   {
+    version: "1.51",
+    date: "May 9, 2026",
+    title: "May stability, freshness & API hardening (silent)",
+    silent: true,
+    changes: [
+      {
+        type: "improved",
+        description:
+          "Moved course-data fetching and processing to the client, removing the legacy backend course-data routes and CORS layer while updating Academic Planner, Schedule Maker, Course Tracker, onboarding, and the service worker to match.",
+      },
+      {
+        type: "improved",
+        description:
+          "Added a one-minute expiry to fetched course offerings in Academic Planner and Schedule Maker, with clearer guidance to keep the Course Offerings tab open for fresh extension data.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Fixed Calendar view placement for courses with different meeting days and times, including cases where multiple sections could be selected for one course.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Fixed Schedule Maker preferences not being persisted reliably across calendar and course-selection flows.",
+      },
+      {
+        type: "new",
+        description:
+          "Added a course-data debug page for testing extracted offerings and Calendar view behavior during troubleshooting.",
+      },
+      {
+        type: "improved",
+        description:
+          "Added route-specific API rate limiting, bounded request validation, secure analytics administration, honeypot protection, and safer feedback delivery handling for production abuse resistance.",
+      },
+    ],
+  },
+  {
     version: "1.50",
     date: "April 14, 2026",
     title: "Major update: Extension automation and app-wide polish",
