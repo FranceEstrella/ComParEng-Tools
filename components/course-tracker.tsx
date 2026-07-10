@@ -383,6 +383,19 @@ interface RewardStep {
   levelAfter: LevelInfo
 }
 
+interface NextCoursesConfirmState {
+  passOnlyCourses: Course[]
+  passOnlyMessage: string
+  coursesWithNextActive: Course[]
+  withNextActiveMessage: string
+  nextCourses: Array<{ id: string; code: string; name: string }>
+}
+
+interface PendingActivationConfirmState {
+  eligibleCourses: Array<{ id: string; code: string; name: string }>
+  blockedVisibleCount: number
+}
+
 interface BulkPrereqConfirmState {
   title: string
   description: string
@@ -390,6 +403,7 @@ interface BulkPrereqConfirmState {
   updatedCourses: Course[]
   successMessage: string
   passedCourses: Array<{ id: string; code: string; name: string }>
+  nextCoursesConfirmState?: NextCoursesConfirmState
 }
 
 interface LevelStage {
@@ -445,8 +459,10 @@ interface FilterAndSearchControlsProps {
   courses: Course[]
   onSearchSelect: (term: string, selectedCourseId?: string) => void
   getDisplayCode: (code: string) => string
+  pendingEligibleVisibleCount: number
   activeVisibleCount: number
   futureVisibleCount: number
+  onMarkEligiblePendingAsActive: () => void
   onMarkAllActiveAsPassed: () => void
   onMarkAllFutureAsActive: () => void
 }
@@ -1348,7 +1364,8 @@ const buildLevelStages = (xpStart: number, xpEnd: number): LevelStage[] => {
 const calculateDependentCoursesMap = (courses: Course[]): DependentCoursesMap => {
   const dependentMap: DependentCoursesMap = new Map()
   courses.forEach((course) => {
-    course.prerequisites.forEach((prereqId) => {
+    const prerequisiteIds = Array.isArray(course.prerequisites) ? course.prerequisites : []
+    prerequisiteIds.forEach((prereqId) => {
       if (!dependentMap.has(prereqId)) {
         dependentMap.set(prereqId, [])
       }
@@ -1359,6 +1376,50 @@ const calculateDependentCoursesMap = (courses: Course[]): DependentCoursesMap =>
     })
   })
   return dependentMap
+}
+
+const hasPassedPrerequisites = (course: Course, coursesById: Map<string, Course>): boolean => {
+  if (!Array.isArray(course.prerequisites)) return false
+  return course.prerequisites.every(
+    (prerequisiteId) => coursesById.get(prerequisiteId)?.status === "passed",
+  )
+}
+
+const buildNextCoursesConfirmation = (
+  coursesAfterPass: Course[],
+  passedTargetIds: Set<string>,
+  passOnlyMessage: string,
+): NextCoursesConfirmState | null => {
+  const coursesById = new Map(coursesAfterPass.map((course) => [course.id, course]))
+  const nextCourses = coursesAfterPass
+    .filter((course) => {
+      if (course.status !== "pending") return false
+
+      const prerequisiteIds = Array.isArray(course.prerequisites) ? course.prerequisites : []
+      const isRequiredForPassedTarget = prerequisiteIds.some((prerequisiteId) => passedTargetIds.has(prerequisiteId))
+      if (!isRequiredForPassedTarget) return false
+
+      return hasPassedPrerequisites(course, coursesById)
+    })
+    .sort((a, b) => a.code.localeCompare(b.code))
+
+  if (nextCourses.length === 0) return null
+
+  const nextCourseIds = new Set(nextCourses.map((course) => course.id))
+  const coursesWithNextActive = coursesAfterPass.map((course) =>
+    nextCourseIds.has(course.id) && course.status === "pending"
+      ? { ...course, status: "active" as CourseStatus }
+      : course,
+  )
+  const nextCourseLabel = nextCourses.length === 1 ? "next course" : "next courses"
+
+  return {
+    passOnlyCourses: coursesAfterPass,
+    passOnlyMessage,
+    coursesWithNextActive,
+    withNextActiveMessage: `${passOnlyMessage} and marked ${nextCourses.length} ${nextCourseLabel} as active`,
+    nextCourses: nextCourses.map(({ id, code, name }) => ({ id, code, name })),
+  }
 }
 
 /**
@@ -1487,8 +1548,10 @@ const FilterAndSearchControls = ({
   courses,
   onSearchSelect,
   getDisplayCode,
+  pendingEligibleVisibleCount,
   activeVisibleCount,
   futureVisibleCount,
+  onMarkEligiblePendingAsActive,
   onMarkAllActiveAsPassed,
   onMarkAllFutureAsActive,
 }: FilterAndSearchControlsProps) => {
@@ -1675,6 +1738,18 @@ const FilterAndSearchControls = ({
                     Future
                   </Button>
                 </div>
+
+                {filterStatus === "pending" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs self-start xl:self-auto"
+                    onClick={onMarkEligiblePendingAsActive}
+                    disabled={pendingEligibleVisibleCount === 0}
+                  >
+                    Mark all eligible as active ({pendingEligibleVisibleCount})
+                  </Button>
+                )}
 
                 {filterStatus === "active" && (
                   <Button
@@ -2739,6 +2814,8 @@ export default function CourseTracker() {
   const [prereqDialogState, setPrereqDialogState] = useState<PrerequisiteDialogState | null>(null)
   const [dependentRollbackDialogState, setDependentRollbackDialogState] = useState<DependentRollbackDialogState | null>(null)
   const [bulkPrereqConfirmState, setBulkPrereqConfirmState] = useState<BulkPrereqConfirmState | null>(null)
+  const [nextCoursesConfirmState, setNextCoursesConfirmState] = useState<NextCoursesConfirmState | null>(null)
+  const [pendingActivationConfirmState, setPendingActivationConfirmState] = useState<PendingActivationConfirmState | null>(null)
   const [dependencyNoticeDismissed, setDependencyNoticeDismissed] = useState(false)
   const yearLevelOptions = useMemo(() => Array.from({ length: maxYearLevelOption }, (_, idx) => idx + 1), [maxYearLevelOption])
   const extendYearOptions = useCallback(() => {
@@ -3400,6 +3477,8 @@ export default function CourseTracker() {
       Boolean(prereqDialogState) ||
       Boolean(dependentRollbackDialogState) ||
       Boolean(bulkPrereqConfirmState) ||
+      Boolean(nextCoursesConfirmState) ||
+      Boolean(pendingActivationConfirmState) ||
       Boolean(gradeModalCourseId) ||
       Boolean(pendingGradeReplacement) ||
       Boolean(pendingPassDowngrade) ||
@@ -3420,7 +3499,9 @@ export default function CourseTracker() {
     gradeModalCourseId,
     importSuccessPrompt,
     nextStepsDialogOpen,
+    nextCoursesConfirmState,
     noGradesDialogOpen,
+    pendingActivationConfirmState,
     pendingGradeReplacement,
     pendingPassDowngrade,
     pendingUnmappedRewardsWarning,
@@ -5652,6 +5733,16 @@ export default function CourseTracker() {
     [filteredCourses],
   )
 
+  const pendingVisibleCourses = useMemo(
+    () => filteredCourses.filter((course) => course.status === "pending"),
+    [filteredCourses],
+  )
+
+  const eligiblePendingVisibleCourses = useMemo(() => {
+    const coursesById = new Map(courses.map((course) => [course.id, course]))
+    return pendingVisibleCourses.filter((course) => hasPassedPrerequisites(course, coursesById))
+  }, [courses, pendingVisibleCourses])
+
   const futureVisibleCourseIds = useMemo(
     () => filteredCourses.filter((course) => canTakeNext(course)).map((course) => course.id),
     [filteredCourses, canTakeNext],
@@ -5718,6 +5809,52 @@ export default function CourseTracker() {
     setTimeout(() => setSaveMessage(null), 3000)
   }, [])
 
+  const openPendingActivationConfirmation = useCallback(() => {
+    if (filterStatus !== "pending" || eligiblePendingVisibleCourses.length === 0) return
+
+    const eligibleCount = eligiblePendingVisibleCourses.length
+
+    setPendingActivationConfirmState({
+      eligibleCourses: eligiblePendingVisibleCourses
+        .map(({ id, code, name }) => ({ id, code, name }))
+        .sort((a, b) => a.code.localeCompare(b.code)),
+      blockedVisibleCount: Math.max(0, pendingVisibleCourses.length - eligibleCount),
+    })
+  }, [eligiblePendingVisibleCourses, filterStatus, pendingVisibleCourses.length])
+
+  const cancelPendingActivation = useCallback(() => {
+    setPendingActivationConfirmState(null)
+  }, [])
+
+  const confirmPendingActivation = useCallback(() => {
+    if (!pendingActivationConfirmState) return
+
+    const previewedCourseIds = new Set(pendingActivationConfirmState.eligibleCourses.map((course) => course.id))
+    const coursesById = new Map(courses.map((course) => [course.id, course]))
+    const stillEligibleCourseIds = new Set(
+      courses
+        .filter(
+          (course) =>
+            previewedCourseIds.has(course.id) &&
+            course.status === "pending" &&
+            hasPassedPrerequisites(course, coursesById),
+        )
+        .map((course) => course.id),
+    )
+    const updatedCount = stillEligibleCourseIds.size
+
+    if (updatedCount > 0) {
+      const updatedCourses = courses.map((course) =>
+        stillEligibleCourseIds.has(course.id)
+          ? { ...course, status: "active" as CourseStatus }
+          : course,
+      )
+      const courseLabel = updatedCount === 1 ? "course" : "courses"
+      commitBulkStatusUpdate(updatedCourses, `Marked ${updatedCount} eligible pending ${courseLabel} as active`)
+    }
+    setPendingActivationConfirmState(null)
+  }, [commitBulkStatusUpdate, courses, pendingActivationConfirmState])
+
   const markVisibleActiveAsPassed = useCallback(() => {
     if (filterStatus !== "active" || activeVisibleCourseIds.length === 0) return
     const targetIds = new Set(activeVisibleCourseIds)
@@ -5728,6 +5865,7 @@ export default function CourseTracker() {
       prerequisiteUpdateCount > 0
         ? `Marked ${updatedTargetCount} active course(s) as passed and updated ${prerequisiteUpdateCount} prerequisite(s)`
         : `Marked ${updatedTargetCount} active course(s) as passed`
+    const nextCoursesConfirmation = buildNextCoursesConfirmation(result.updatedCourses, targetIds, nextMessage)
 
     if (prerequisiteUpdateCount > 0) {
       const passedCourses = getCoursesMarkedPassed(courses, result.updatedCourses)
@@ -5738,7 +5876,10 @@ export default function CourseTracker() {
         updatedCourses: result.updatedCourses,
         successMessage: nextMessage,
         passedCourses,
+        ...(nextCoursesConfirmation ? { nextCoursesConfirmState: nextCoursesConfirmation } : {}),
       })
+    } else if (nextCoursesConfirmation) {
+      setNextCoursesConfirmState(nextCoursesConfirmation)
     } else {
       commitBulkStatusUpdate(result.updatedCourses, nextMessage)
     }
@@ -5750,6 +5891,21 @@ export default function CourseTracker() {
     commitBulkStatusUpdate,
     getCoursesMarkedPassed,
   ])
+
+  const declineNextCoursesActivation = useCallback(() => {
+    if (!nextCoursesConfirmState) return
+    commitBulkStatusUpdate(nextCoursesConfirmState.passOnlyCourses, nextCoursesConfirmState.passOnlyMessage)
+    setNextCoursesConfirmState(null)
+  }, [commitBulkStatusUpdate, nextCoursesConfirmState])
+
+  const confirmNextCoursesActivation = useCallback(() => {
+    if (!nextCoursesConfirmState) return
+    commitBulkStatusUpdate(
+      nextCoursesConfirmState.coursesWithNextActive,
+      nextCoursesConfirmState.withNextActiveMessage,
+    )
+    setNextCoursesConfirmState(null)
+  }, [commitBulkStatusUpdate, nextCoursesConfirmState])
 
   const markVisibleFutureAsActive = useCallback(() => {
     if (filterStatus !== "future" || futureVisibleCourseIds.length === 0) return
@@ -7139,6 +7295,11 @@ export default function CourseTracker() {
                 className="h-9 text-sm"
                 onClick={() => {
                   if (!bulkPrereqConfirmState) return
+                  if (bulkPrereqConfirmState.nextCoursesConfirmState) {
+                    setNextCoursesConfirmState(bulkPrereqConfirmState.nextCoursesConfirmState)
+                    setBulkPrereqConfirmState(null)
+                    return
+                  }
                   commitBulkStatusUpdate(
                     bulkPrereqConfirmState.updatedCourses,
                     bulkPrereqConfirmState.successMessage,
@@ -7147,6 +7308,142 @@ export default function CourseTracker() {
                 }}
               >
                 {bulkPrereqConfirmState?.applyLabel ?? "Proceed"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(pendingActivationConfirmState)}
+          onOpenChange={(open) => {
+            if (!open) cancelPendingActivation()
+          }}
+        >
+          <DialogContent
+            className="max-w-xl w-[calc(100vw-2rem)]"
+            hideCloseButton
+            onInteractOutside={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>
+                Mark eligible {pendingActivationConfirmState?.eligibleCourses.length === 1 ? "course" : "courses"} as
+                Active?
+              </DialogTitle>
+              <DialogDescription>
+                {pendingActivationConfirmState?.eligibleCourses.length ?? 0} of{" "}
+                {(pendingActivationConfirmState?.eligibleCourses.length ?? 0) +
+                  (pendingActivationConfirmState?.blockedVisibleCount ?? 0)}{" "}
+                visible Pending course
+                {(pendingActivationConfirmState?.eligibleCourses.length ?? 0) +
+                  (pendingActivationConfirmState?.blockedVisibleCount ?? 0) ===
+                1
+                  ? ""
+                  : "s"}{" "}
+                can become Active. Every listed course either has no prerequisites or has all prerequisites marked as
+                Passed. Choose Got it to apply the change.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-2 text-sm">
+              <p className="font-medium text-slate-900 dark:text-slate-100">Courses that will become Active</p>
+              <ul className="max-h-64 space-y-1 overflow-y-auto rounded-md border border-border/70 p-2">
+                {pendingActivationConfirmState?.eligibleCourses.map((course) => (
+                  <li
+                    key={course.id}
+                    className="flex items-start justify-between gap-2 rounded px-2 py-1 text-xs sm:text-sm"
+                  >
+                    <span className="font-semibold">{getDisplayCode(course.code)}</span>
+                    <span className="text-right text-muted-foreground">{course.name}</span>
+                  </li>
+                ))}
+              </ul>
+              {Boolean(pendingActivationConfirmState?.blockedVisibleCount) && (
+                <p className="text-xs text-muted-foreground">
+                  {pendingActivationConfirmState?.blockedVisibleCount} other visible Pending course
+                  {pendingActivationConfirmState?.blockedVisibleCount === 1 ? " is" : "s are"} not shown and will remain
+                  Pending because at least one prerequisite is not marked as Passed.
+                </p>
+              )}
+            </div>
+
+            <DialogFooter className="flex-col gap-2 sm:flex-row sm:gap-0">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-9 w-full text-sm sm:w-auto"
+                onClick={cancelPendingActivation}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="h-9 w-full text-sm sm:w-auto"
+                aria-label={`Got it: mark the listed ${
+                  pendingActivationConfirmState?.eligibleCourses.length === 1 ? "course" : "courses"
+                } as Active`}
+                onClick={confirmPendingActivation}
+              >
+                Got it
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(nextCoursesConfirmState)}
+          onOpenChange={(open) => {
+            if (!open) declineNextCoursesActivation()
+          }}
+        >
+          <DialogContent
+            className="max-w-xl w-[calc(100vw-2rem)]"
+            hideCloseButton
+            onInteractOutside={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>Mark the next courses active?</DialogTitle>
+              <DialogDescription>
+                The selected active courses will be marked as Passed. {nextCoursesConfirmState?.nextCourses.length ?? 0}{" "}
+                required-for course{nextCoursesConfirmState?.nextCourses.length === 1 ? "" : "s"} will then have all
+                prerequisites completed.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-2 text-sm">
+              <p className="font-medium text-slate-900 dark:text-slate-100">Ready to become Active</p>
+              <div className="max-h-64 overflow-y-auto rounded-md border border-border/70 p-2">
+                <div className="space-y-1">
+                  {nextCoursesConfirmState?.nextCourses.map((course) => (
+                    <div
+                      key={course.id}
+                      className="flex items-start justify-between gap-2 rounded px-2 py-1 text-xs sm:text-sm"
+                    >
+                      <span className="font-semibold">{getDisplayCode(course.code)}</span>
+                      <span className="text-right text-muted-foreground">{course.name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Required-for courses with any incomplete prerequisite will remain Pending.
+              </p>
+            </div>
+
+            <DialogFooter className="flex-col gap-2 sm:flex-row sm:gap-0">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-9 w-full text-sm sm:w-auto"
+                onClick={declineNextCoursesActivation}
+              >
+                No thanks
+              </Button>
+              <Button
+                size="sm"
+                className="h-9 w-full text-sm sm:w-auto"
+                onClick={confirmNextCoursesActivation}
+              >
+                Mark the next courses active
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -7298,8 +7595,10 @@ export default function CourseTracker() {
             courses={courses}
             onSearchSelect={revealSearchResults}
             getDisplayCode={getDisplayCode}
+            pendingEligibleVisibleCount={eligiblePendingVisibleCourses.length}
             activeVisibleCount={activeVisibleCourseIds.length}
             futureVisibleCount={futureVisibleCourseIds.length}
+            onMarkEligiblePendingAsActive={openPendingActivationConfirmation}
             onMarkAllActiveAsPassed={markVisibleActiveAsPassed}
             onMarkAllFutureAsActive={markVisibleFutureAsActive}
           />
