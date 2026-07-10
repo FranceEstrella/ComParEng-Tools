@@ -50,7 +50,7 @@ import {
   LockOpen,
 } from "lucide-react"
 import Link from "next/link"
-import { useTheme } from "next-themes"
+import { useTheme } from "@/components/theme-provider"
 import {
   Dialog,
   DialogContent,

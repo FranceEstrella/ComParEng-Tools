@@ -1,6 +1,6 @@
 "use client"
 
-import { useTheme } from "next-themes"
+import { useTheme } from "@/components/theme-provider"
 import Navbar from "./navbar"
 
 export default function Layout({ children }) {
