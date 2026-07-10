@@ -24,6 +24,7 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
   const [fbName, setFbName] = useState("")
   const [fbSubject, setFbSubject] = useState(defaultSubject)
   const [fbMessage, setFbMessage] = useState("")
+  const [fbWebsite, setFbWebsite] = useState("")
   const [feedbackHistory, setFeedbackHistory] = useState<any[]>([])
   const [status, setStatus] = useState<"idle" | "sending" | "success" | "error">("idle")
   const [statusMessage, setStatusMessage] = useState("")
@@ -90,6 +91,7 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
       setStatus("idle")
       setStatusMessage("")
       setFbSubject(defaultSubject || "")
+      setFbWebsite("")
       const path = typeof window !== "undefined" ? window.location.pathname : "unknown"
       const title = typeof document !== "undefined" ? document.title : ""
       const { hint } = getFeedbackContextHint()
@@ -160,7 +162,12 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
       const res = await fetch("/api/send-feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: fbName, subject: fbSubject, message: buildMessageWithContext() }),
+        body: JSON.stringify({
+          name: fbName,
+          subject: fbSubject,
+          message: buildMessageWithContext(),
+          website: fbWebsite,
+        }),
       })
       const json = await res.json()
       if (json?.success) {
@@ -195,6 +202,18 @@ export default function FeedbackDialog({ open, onOpenChange, defaultSubject = ""
 
         {status === "idle" || status === "sending" ? (
           <div className={cn("py-2", isCompactLayout ? "space-y-2" : "space-y-3")}>
+            <div className="absolute -left-[10000px] top-auto h-px w-px overflow-hidden" aria-hidden="true">
+              <label htmlFor="feedback-website">Website</label>
+              <input
+                id="feedback-website"
+                name="website"
+                type="text"
+                tabIndex={-1}
+                autoComplete="off"
+                value={fbWebsite}
+                onChange={(event) => setFbWebsite(event.target.value)}
+              />
+            </div>
             <Input placeholder="Your name (optional)" value={fbName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFbName(e.target.value)} />
             <Input placeholder="Subject" value={fbSubject} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFbSubject(e.target.value)} />
             <textarea

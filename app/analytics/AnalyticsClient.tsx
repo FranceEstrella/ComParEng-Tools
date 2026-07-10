@@ -108,19 +108,19 @@ function StatCard({
   )
 }
 
-export default function AnalyticsClient({ initialKey }: { initialKey?: string }) {
-  const [keyInput, setKeyInput] = useState(initialKey ?? "")
-  const [activeKey, setActiveKey] = useState(initialKey ?? "")
+export default function AnalyticsClient() {
+  const [keyInput, setKeyInput] = useState("")
+  const [activeKey, setActiveKey] = useState("")
   const [snapshot, setSnapshot] = useState<AnalyticsSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [unauthorized, setUnauthorized] = useState(false)
   const intervalRef = useRef<number | null>(null)
 
-  const query = useMemo(() => {
-    const k = activeKey?.trim()
-    return k ? `?key=${encodeURIComponent(k)}` : ""
-  }, [activeKey])
+  const authHeaders = () => {
+    const key = activeKey.trim()
+    return key ? { Authorization: `Bearer ${key}` } : undefined
+  }
 
   const stopPolling = () => {
     if (intervalRef.current !== null) {
@@ -142,8 +142,8 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
     const trimmed = next.trim()
     setActiveKey(trimmed)
     try {
-      if (trimmed) localStorage.setItem(KEY_STORAGE, trimmed)
-      else localStorage.removeItem(KEY_STORAGE)
+      if (trimmed) sessionStorage.setItem(KEY_STORAGE, trimmed)
+      else sessionStorage.removeItem(KEY_STORAGE)
     } catch {
       // ignore storage failures
     }
@@ -152,7 +152,10 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
   const fetchSnapshot = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`/api/analytics${query}`, { cache: "no-store" })
+      const res = await fetch("/api/analytics", {
+        cache: "no-store",
+        headers: authHeaders(),
+      })
       if (!res.ok) {
         const is401 = await isUnauthorizedResponse(res)
         if (is401) {
@@ -178,9 +181,17 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
   }
 
   const reset = async () => {
+    if (!window.confirm("Reset all in-memory analytics? This cannot be undone.")) return
+
     setLoading(true)
     try {
-      const res = await fetch(`/api/analytics${query}`, { method: "DELETE" })
+      const res = await fetch("/api/analytics", {
+        method: "DELETE",
+        headers: {
+          ...authHeaders(),
+          "x-analytics-reset": "confirm",
+        },
+      })
       if (!res.ok) {
         const is401 = await isUnauthorizedResponse(res)
         if (is401) {
@@ -585,15 +596,12 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
   }
 
   useEffect(() => {
-    // Prefer URL-provided key, otherwise fall back to localStorage.
+    // Keep the admin key only for this browser tab; never place it in the URL.
     try {
-      const stored = localStorage.getItem(KEY_STORAGE)
-      if (!initialKey && stored && !activeKey) {
+      const stored = sessionStorage.getItem(KEY_STORAGE)
+      if (stored && !activeKey) {
         setKeyInput(stored)
         setActiveKey(stored)
-      }
-      if (initialKey) {
-        localStorage.setItem(KEY_STORAGE, initialKey)
       }
     } catch {
       // ignore
@@ -605,7 +613,7 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
     fetchSnapshot()
     return () => stopPolling()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query])
+  }, [activeKey])
 
   const entries = useMemo(() => {
     const counts = snapshot?.counts ?? {}
@@ -722,7 +730,7 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
         <div className="space-y-2">
           <h1 className="text-3xl font-bold">Analytics</h1>
           <p className="text-sm text-muted-foreground">
-            Hidden page. If you set `ANALYTICS_KEY`, open with `?key=...`.
+            Hidden page. Enter the server&apos;s `ANALYTICS_KEY` to access administration.
           </p>
         </div>
 
@@ -781,7 +789,7 @@ export default function AnalyticsClient({ initialKey }: { initialKey?: string })
             {error ? <div className="text-sm text-red-500">{error}</div> : null}
             {unauthorized ? (
               <div className="text-xs text-muted-foreground">
-                Set the server env var `ANALYTICS_KEY` and then enter it here (or open the page with `?key=...`).
+                Set the server env var `ANALYTICS_KEY`, then enter it here. It is kept only for this browser tab.
               </div>
             ) : null}
           </CardContent>

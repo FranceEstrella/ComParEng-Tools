@@ -17,4 +17,16 @@ How to test locally:
 2. Restart the dev server (`next dev`).
 3. Open the homepage, open the Patch Notes → Send Feedback modal, and use "Send to Server" to submit a test message.
 
-If Mailgun is not configured the route will log the payload and return a helpful JSON response.
+If Mailgun is not configured, the route returns `503` and does not log the submitted message.
+
+## API protection
+
+The feedback and analytics endpoints enforce request-size validation, route-specific rate limits, and safe error responses.
+
+Production deployments should configure a shared Redis-compatible REST store so limits work across serverless instances:
+
+- `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (or the equivalent `KV_REST_API_URL` and `KV_REST_API_TOKEN`)
+- `RATE_LIMIT_IP_SALT` - a private random value used when hashing client IPs for limiter keys
+- `ANALYTICS_KEY` - required in production to access the analytics page and reset endpoint
+
+Without a distributed store, production API requests fail closed with `503` rather than silently falling back to per-instance limits. `RATE_LIMIT_MEMORY_FALLBACK=true` is available only as an explicit temporary emergency fallback and should not be used for normal production traffic.
