@@ -12,6 +12,7 @@ import {
   Clock,
   AlertCircle,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   Search,
   X,
@@ -2831,6 +2832,17 @@ export default function CourseTracker() {
   const [setupUploadStatus, setSetupUploadStatus] = useState<{ fileName: string; uploadedAt: number } | null>(null)
   const [actionHistory, setActionHistory] = useState<TrackerActionHistoryEntry[]>([])
   const [historyPopupOpen, setHistoryPopupOpen] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768)
+    }
+    handleResize()
+    window.addEventListener("resize", handleResize)
+    return () => window.removeEventListener("resize", handleResize)
+  }, [])
+
   const [prereqDialogState, setPrereqDialogState] = useState<PrerequisiteDialogState | null>(null)
   const [dependentRollbackDialogState, setDependentRollbackDialogState] = useState<DependentRollbackDialogState | null>(null)
   const [bulkPrereqConfirmState, setBulkPrereqConfirmState] = useState<BulkPrereqConfirmState | null>(null)
@@ -6953,7 +6965,7 @@ export default function CourseTracker() {
                 <AnimatePresence>
                   {historyPopupOpen && (
                     <motion.div
-                      className="fixed bottom-24 right-6 z-[12000] w-[22rem] max-w-[calc(100vw-1.5rem)]"
+                      className="fixed bottom-24 right-6 z-[12000] w-[22rem] max-w-[calc(100vw-1.5rem)] hidden md:block"
                       initial={{ opacity: 0, y: 18, scale: 0.96 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: 18, scale: 0.96 }}
@@ -6963,7 +6975,7 @@ export default function CourseTracker() {
                         <CardHeader className="space-y-2 pb-3">
                           <div className="flex items-center justify-between gap-3">
                             <CardTitle className="flex items-center gap-2 text-sm">
-                              <History className="h-4 w-4" />
+                              <History className="h-4 w-4 text-blue-500" />
                               Action History
                             </CardTitle>
                             <div className="flex items-center gap-2">
@@ -7028,10 +7040,112 @@ export default function CourseTracker() {
                   size="icon"
                   onClick={() => setHistoryPopupOpen((prev) => !prev)}
                   aria-label={historyPopupOpen ? "Hide action history" : "Show action history"}
-                  className="fixed bottom-24 right-6 z-[12001] h-12 w-12 rounded-full border-slate-300 bg-white/90 shadow-lg backdrop-blur dark:border-slate-700 dark:bg-gray-900/90"
+                  className="fixed bottom-24 right-6 z-[12001] h-12 w-12 rounded-full border-slate-300 bg-white/90 shadow-lg backdrop-blur dark:border-slate-700 dark:bg-gray-900/90 hidden md:flex"
                 >
                   <History className="h-5 w-5" />
                 </Button>
+
+                {/* Mobile Action History Panel (sitting on top of the bottom nav) */}
+                {actionHistory.length > 0 && (
+                  <motion.div
+                    layout
+                    initial={false}
+                    animate={{
+                      height: historyPopupOpen ? "auto" : "56px",
+                    }}
+                    transition={{
+                      type: "spring",
+                      stiffness: 300,
+                      damping: 30
+                    }}
+                    className="fixed bottom-[calc(68px+env(safe-area-inset-bottom,0px))] left-4 right-4 z-[8900] overflow-hidden rounded-xl border border-slate-200 bg-white/95 shadow-[0_-4px_12px_rgba(0,0,0,0.08)] backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 md:hidden"
+                  >
+                    {historyPopupOpen ? (
+                      <div className="w-full">
+                        <CardHeader className="space-y-1.5 p-4 pb-2">
+                          <CardTitle className="flex items-center justify-between text-sm">
+                            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                              <History className="h-4 w-4 text-blue-500" />
+                              <span>Action History</span>
+                              <Badge variant="secondary" className="h-5 min-w-5 flex items-center justify-center rounded-full p-0 px-1.5 text-[10px]">
+                                {actionHistory.length}
+                              </Badge>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs gap-1 px-2.5 bg-transparent animate-none"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  undoLastAction()
+                                }}
+                                disabled={actionHistory.length === 0}
+                              >
+                                <Undo className="h-3 w-3" />
+                                <span>Undo</span>
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 p-0"
+                                onClick={() => setHistoryPopupOpen(false)}
+                                aria-label="Collapse action history"
+                              >
+                                <ChevronUp className="h-4 w-4 text-slate-500" />
+                              </Button>
+                            </div>
+                          </CardTitle>
+                          <CardDescription className="text-[10px] leading-snug text-muted-foreground">
+                            Recent course status changes. Undo restores the previous status.
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="p-4 pt-0 pb-3">
+                          <div className="max-h-60 space-y-2 overflow-y-auto pr-1">
+                            {actionHistory.map((entry) => (
+                              <div key={entry.id} className="rounded-md border p-2.5 text-xs bg-slate-50/50 dark:bg-slate-850/40">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="font-medium text-slate-700 dark:text-slate-200">{entry.description}</p>
+                                    <p className="text-[10px] text-muted-foreground">{entry.timestamp.toLocaleString()}</p>
+                                  </div>
+                                  <Badge variant="outline" className="shrink-0 text-[10px] py-0 px-1.5 h-5 bg-white dark:bg-slate-900">
+                                    {entry.type}
+                                  </Badge>
+                                </div>
+                                <div className="mt-1.5 space-y-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                                  {entry.changes.map((change) => {
+                                    const course = findCourseById(change.courseId)
+                                    return (
+                                      <p key={`${entry.id}-${change.courseId}`}>
+                                        {(course && getDisplayCode(course.code)) || change.courseId}: {formatStatusLabel(change.fromStatus)} → {formatStatusLabel(change.toStatus)}
+                                      </p>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </CardContent>
+                      </div>
+                    ) : (
+                      <div
+                        className="flex h-14 flex-col items-center justify-center p-3 cursor-pointer hover:bg-slate-50/50 dark:hover:bg-slate-800/20"
+                        onClick={() => setHistoryPopupOpen(true)}
+                      >
+                        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                          <History className="h-4 w-4 text-blue-500" />
+                          <span>Action History</span>
+                          <Badge variant="secondary" className="h-5 min-w-5 flex items-center justify-center rounded-full p-0 px-1.5 text-[10px]">
+                            {actionHistory.length}
+                            {/* VIEW PLAN ACTIONS & UNSCHEDULED */}
+                          </Badge>
+                        </div>
+                        <ChevronDown className="h-3.5 w-3.5 text-slate-500 mt-1" />
+                      </div>
+                    )}
+                  </motion.div>
+                )}
               </>,
               document.body,
             )
