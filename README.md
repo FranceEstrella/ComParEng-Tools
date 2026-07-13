@@ -45,3 +45,13 @@ Analytics events are tracked separately from API protection and are written thro
 - The analytics page stops polling if the server returns `429` or `503`.
 - The analytics GET path returns `401` for missing or invalid keys instead of rate-limiting auth failures.
 - The analytics POST path is not throttled by route-level rate limiting, so ingestion failures now point to validation, auth, or storage issues instead of request volume.
+
+## Academic Planner import preview
+
+When importing a graduation plan, the Academic Planner now opens a review step before the plan is applied.
+
+- You can set the current academic year and term in the preview dialog.
+- Courses from terms behind that current period are classified before import:
+	- Courses behind the current period that are not yet passed are marked as `Unscheduled` and highlighted in yellow.
+	- Courses behind the current period that are already passed are marked as `Will be removed` and highlighted in red.
+- Applying the preview also updates the planner's current academic period record so the imported plan and the selected period stay in sync.

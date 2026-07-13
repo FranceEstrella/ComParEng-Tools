@@ -43,7 +43,7 @@ import { createPortal } from "react-dom"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { initialCourses, curriculumCodes, registerCourseCodeAliases, resolveCanonicalCourseCode } from "@/lib/course-data"
-import { loadCourseStatuses, loadTrackerPreferences, TRACKER_PREFERENCES_KEY } from "@/lib/course-storage"
+import { loadCourseStatuses, loadTrackerPreferences, saveTrackerPreferences, TRACKER_PREFERENCES_KEY } from "@/lib/course-storage"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Select,
@@ -495,11 +495,11 @@ const parseMeetingTimeRange = (value: string): { start: number; end: number } | 
   const normalized = (value || "").trim().toUpperCase()
   if (!normalized || normalized === "TBD" || normalized === "TBA") return null
 
-  const parts = normalized.replace(/[–—]/g, "-").split("-")
-  if (parts.length !== 2) return null
+  const timeTokens = normalized.match(/\d{1,2}(?::\d{2})?\s*[AP]?M?/g)
+  if (!timeTokens || timeTokens.length < 2) return null
 
-  const start = parseTimeTokenToMinutes(parts[0])
-  const end = parseTimeTokenToMinutes(parts[1])
+  const start = parseTimeTokenToMinutes(timeTokens[0])
+  const end = parseTimeTokenToMinutes(timeTokens[1])
   if (start === null || end === null || end <= start) return null
 
   return { start, end }
@@ -555,6 +555,24 @@ interface PendingImportedPlanApply {
   importedPriorities?: ParsedPlanImportResult["coursePriorities"]
   importedLocks?: ParsedPlanImportResult["lockedPlacements"]
   conflictedPassedCourses: ImportPassedConflictCourse[]
+}
+
+interface ImportPreviewCourse extends PlanCourse {
+  shouldRemove: boolean
+  removalReason: "before_current_term" | "passed" | null
+}
+
+interface ImportPreviewSemester extends SemesterPlan {
+  shouldRemoveSemester: boolean
+  courses: ImportPreviewCourse[]
+}
+
+interface PendingImportPreview {
+  format: "json" | "csv" | "txt"
+  plan: SemesterPlan[]
+  importedCreditPrefs?: ParsedPlanImportResult["creditPreferences"]
+  importedPriorities?: ParsedPlanImportResult["coursePriorities"]
+  importedLocks?: ParsedPlanImportResult["lockedPlacements"]
 }
 
 const sanitizePrioritySnapshot = (input: unknown): Record<string, keyof typeof PRIORITY_WEIGHTS> => {
@@ -697,6 +715,9 @@ export default function AcademicPlanner() {
   const [moveSelectResetCounter, setMoveSelectResetCounter] = useState(0)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [pendingImportPreview, setPendingImportPreview] = useState<PendingImportPreview | null>(null)
+  const [importPreviewCurrentYear, setImportPreviewCurrentYear] = useState<number>(new Date().getFullYear())
+  const [importPreviewCurrentTerm, setImportPreviewCurrentTerm] = useState<string>("Term 1")
   const [overloadDialogOpen, setOverloadDialogOpen] = useState(false)
   const [pendingAdd, setPendingAdd] = useState<
     { courseId: string; targetYear: number; targetTerm: string; reason?: "overload" | "petition" } | null
@@ -2484,6 +2505,59 @@ export default function AcademicPlanner() {
     return aIndex - bIndex
   }
 
+  const passedCourseIds = useMemo(() => new Set(courses.filter((course) => course.status === "passed").map((course) => course.id)), [courses])
+
+  const importPreviewSemesters = useMemo<ImportPreviewSemester[] | null>(() => {
+    if (!pendingImportPreview) return null
+
+    const normalizedPreviewTerm = normalizeTermLabel(importPreviewCurrentTerm)
+
+    return pendingImportPreview.plan.map((semester) => {
+      const shouldRemoveSemester = compareSemesters(semester.year, semester.term, importPreviewCurrentYear, normalizedPreviewTerm) < 0
+      const courses = semester.courses.map((course) => {
+        const isPassed = passedCourseIds.has(course.id)
+        const shouldRemove = shouldRemoveSemester || isPassed
+        return {
+          ...course,
+          shouldRemove,
+          removalReason: isPassed ? "passed" : shouldRemoveSemester ? "before_current_term" : null,
+        }
+      })
+
+      return {
+        ...semester,
+        shouldRemoveSemester,
+        courses,
+      }
+    })
+  }, [compareSemesters, importPreviewCurrentTerm, importPreviewCurrentYear, passedCourseIds, pendingImportPreview])
+
+  const importPreviewStats = useMemo(() => {
+    if (!importPreviewSemesters) {
+      return { removedCourses: 0, keptCourses: 0, removedSemesters: 0 }
+    }
+
+    let removedCourses = 0
+    let keptCourses = 0
+    let removedSemesters = 0
+
+    importPreviewSemesters.forEach((semester) => {
+      if (semester.shouldRemoveSemester) {
+        removedSemesters += 1
+      }
+
+      semester.courses.forEach((course) => {
+        if (course.shouldRemove) {
+          removedCourses += 1
+        } else {
+          keptCourses += 1
+        }
+      })
+    })
+
+    return { removedCourses, keptCourses, removedSemesters }
+  }, [importPreviewSemesters])
+
   const getCourseLocationInPlan = (courseId: string): { year: number; term: string } | null => {
     for (const semester of graduationPlan) {
       if (semester.courses.some((course) => course.id === courseId)) {
@@ -3393,44 +3467,42 @@ export default function AcademicPlanner() {
         })
       })
 
-      // Check schedule conflicts (time overlap on shared meeting days) only for the current term where section data is reliable.
-      if (isCurrentSemester(semester.year, semester.term)) {
-        const schedulableCourses = semester.courses
-          .map((course) => {
-            const section = course.recommendedSection
-            if (!section) return null
+      // Check schedule conflicts when both courses have parseable meeting days and times.
+      const schedulableCourses = semester.courses
+        .map((course) => {
+          const section = course.recommendedSection
+          if (!section) return null
 
-            const days = parseMeetingDays(section.meetingDays)
-            const range = parseMeetingTimeRange(section.meetingTime)
-            if (days.size === 0 || !range) return null
+          const days = parseMeetingDays(section.meetingDays)
+          const range = parseMeetingTimeRange(section.meetingTime)
+          if (days.size === 0 || !range) return null
 
-            return { course, days, range }
+          return { course, days, range }
+        })
+        .filter((entry): entry is { course: PlanCourse; days: Set<string>; range: { start: number; end: number } } =>
+          Boolean(entry),
+        )
+
+      const seenSchedulePairs = new Set<string>()
+      for (let i = 0; i < schedulableCourses.length; i++) {
+        for (let j = i + 1; j < schedulableCourses.length; j++) {
+          const left = schedulableCourses[i]
+          const right = schedulableCourses[j]
+
+          if (!hasMeetingOverlap(left.days, left.range, right.days, right.range)) continue
+
+          const pairKey = [left.course.id, right.course.id].sort().join("::")
+          if (seenSchedulePairs.has(pairKey)) continue
+          seenSchedulePairs.add(pairKey)
+
+          newConflicts.push({
+            type: "schedule",
+            severity: "error",
+            message: `Schedule conflict in ${formatAcademicYear(semester.year)} ${semester.term}: ${getDisplayCode(
+              left.course.code,
+            )} overlaps with ${getDisplayCode(right.course.code)}.`,
+            affectedCourses: [left.course.id, right.course.id],
           })
-          .filter((entry): entry is { course: PlanCourse; days: Set<string>; range: { start: number; end: number } } =>
-            Boolean(entry),
-          )
-
-        const seenSchedulePairs = new Set<string>()
-        for (let i = 0; i < schedulableCourses.length; i++) {
-          for (let j = i + 1; j < schedulableCourses.length; j++) {
-            const left = schedulableCourses[i]
-            const right = schedulableCourses[j]
-
-            if (!hasMeetingOverlap(left.days, left.range, right.days, right.range)) continue
-
-            const pairKey = [left.course.id, right.course.id].sort().join("::")
-            if (seenSchedulePairs.has(pairKey)) continue
-            seenSchedulePairs.add(pairKey)
-
-            newConflicts.push({
-              type: "schedule",
-              severity: "error",
-              message: `Schedule conflict in ${formatAcademicYear(semester.year)} ${semester.term}: ${getDisplayCode(
-                left.course.code,
-              )} overlaps with ${getDisplayCode(right.course.code)}.`,
-              affectedCourses: [left.course.id, right.course.id],
-            })
-          }
         }
       }
     })
@@ -4828,31 +4900,54 @@ export default function AcademicPlanner() {
 
     setCoursePriorities(importedPriorities ?? {})
     setLockedPlacements(normalizeLockPairsWithLinkedCourses(importedLocks))
+    setPendingImportPreview(null)
   }
 
-  const handleImportKeepPassedCourses = () => {
-    if (!pendingImportPassedConflict) return
+  const handleImportPreviewApply = () => {
+    if (!pendingImportPreview || !importPreviewSemesters) return
 
-    const { finalPlan, format, importedCreditPrefs, importedPriorities, importedLocks } = pendingImportPassedConflict
-    setPendingImportPassedConflict(null)
-    applyImportedPlanResult(finalPlan, format, importedCreditPrefs, importedPriorities, importedLocks)
-  }
+    const nextCurrentYear = importPreviewCurrentYear
+    const nextCurrentTerm = normalizeTermLabel(importPreviewCurrentTerm)
 
-  const handleImportRemovePassedCourses = () => {
-    if (!pendingImportPassedConflict) return
+    setCurrentYear(nextCurrentYear)
+    setCurrentTerm(nextCurrentTerm)
 
-    const { finalPlan, format, importedCreditPrefs, importedPriorities, importedLocks, conflictedPassedCourses } =
-      pendingImportPassedConflict
-    const removeIds = new Set(conflictedPassedCourses.map((course) => course.id))
-    const filteredPlan = finalPlan
+    if (typeof window !== "undefined") {
+      const nextCurrentYearLevel = Number.isFinite(nextCurrentYear) && startYear >= 2000
+        ? Math.max(1, Math.floor(nextCurrentYear - startYear + 1))
+        : undefined
+      saveTrackerPreferences({
+        startYear,
+        currentYearLevel: nextCurrentYearLevel,
+        currentTerm: nextCurrentTerm,
+      })
+    }
+
+    const finalPlan: SemesterPlan[] = importPreviewSemesters
       .map((semester) => ({
-        ...semester,
-        courses: semester.courses.filter((course) => !removeIds.has(course.id)),
+        year: semester.year,
+        term: semester.term,
+        courses: semester.courses.filter((course) => !course.shouldRemove),
       }))
       .filter((semester) => semester.courses.length > 0)
 
-    setPendingImportPassedConflict(null)
-    applyImportedPlanResult(filteredPlan, format, importedCreditPrefs, importedPriorities, importedLocks)
+    applyImportedPlanResult(
+      finalPlan,
+      pendingImportPreview.format,
+      pendingImportPreview.importedCreditPrefs,
+      pendingImportPreview.importedPriorities,
+      pendingImportPreview.importedLocks,
+    )
+  }
+
+  const handleImportPreviewReset = () => {
+    setPendingImportPreview(null)
+    setImportError(null)
+    setImportPreviewCurrentYear(currentYear)
+    setImportPreviewCurrentTerm(currentTerm)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""
+    }
   }
 
   // Import graduation plan
@@ -4949,41 +5044,16 @@ export default function AcademicPlanner() {
       })
       const finalPlan = balancedImportedPlan === newPlan ? newPlan : balancedImportedPlan
 
-      const passedCourseIds = new Set(courses.filter((course) => course.status === "passed").map((course) => course.id))
-      const conflictedPassedCourses: ImportPassedConflictCourse[] = []
-      const seenConflictKeys = new Set<string>()
-
-      finalPlan.forEach((semester) => {
-        semester.courses.forEach((course) => {
-          if (!passedCourseIds.has(course.id)) return
-          const key = `${semester.year}-${semester.term}-${course.id}`
-          if (seenConflictKeys.has(key)) return
-          seenConflictKeys.add(key)
-
-          conflictedPassedCourses.push({
-            id: course.id,
-            code: course.code,
-            name: course.name,
-            year: semester.year,
-            term: semester.term,
-          })
-        })
+      setPendingImportPreview({
+        format,
+        plan: finalPlan,
+        importedCreditPrefs,
+        importedPriorities,
+        importedLocks,
       })
-
-      if (conflictedPassedCourses.length > 0) {
-        setImportDialogOpen(false)
-        setPendingImportPassedConflict({
-          format,
-          finalPlan,
-          importedCreditPrefs,
-          importedPriorities,
-          importedLocks,
-          conflictedPassedCourses,
-        })
-        return
-      }
-
-      applyImportedPlanResult(finalPlan, format, importedCreditPrefs, importedPriorities, importedLocks)
+      setImportPreviewCurrentYear(currentYear)
+      setImportPreviewCurrentTerm(currentTerm)
+      setImportDialogOpen(false)
     } catch (error: any) {
       trackAnalyticsEvent("academic_planner.import_plan_failed", { message: error?.message || "unknown" })
       setImportError(error.message)
@@ -8085,52 +8155,183 @@ export default function AcademicPlanner() {
                   </Dialog>
 
                   <Dialog
-                    open={!!pendingImportPassedConflict}
+                    open={!!pendingImportPreview}
                     onOpenChange={(open) => {
-                      if (!open) setPendingImportPassedConflict(null)
+                      if (!open) {
+                        handleImportPreviewReset()
+                      }
                     }}
                   >
-                    <DialogContent className="sm:max-w-2xl">
+                    <DialogContent className="sm:max-w-4xl">
                       <DialogHeader>
-                        <DialogTitle>Passed Courses Found In Imported Plan</DialogTitle>
+                        <DialogTitle>Review Imported Plan</DialogTitle>
                         <DialogDescription>
-                          Some imported courses are already marked as passed in Course Tracker. You can remove them from
-                          the imported plan, or keep them as-is.
+                          Courses before the selected current year and term will be removed. Courses tagged as passed are
+                          also highlighted in red so you can verify what will stay out of the plan.
                         </DialogDescription>
                       </DialogHeader>
 
-                      <div className="max-h-72 overflow-auto rounded-md border border-slate-200 dark:border-slate-800">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Course</TableHead>
-                              <TableHead>Name</TableHead>
-                              <TableHead>Imported Term</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {(pendingImportPassedConflict?.conflictedPassedCourses ?? []).map((course, index) => (
-                              <TableRow key={`${course.id}-${course.year}-${course.term}-${index}`}>
-                                <TableCell className="font-medium">{getDisplayCode(course.code)}</TableCell>
-                                <TableCell>{course.name}</TableCell>
-                                <TableCell>{`${course.term} ${course.year}`}</TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </div>
+                      {pendingImportPreview && importPreviewSemesters && (
+                        <div className="space-y-4">
+                          <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-900/40 sm:grid-cols-2">
+                            <div>
+                              <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                                Current year
+                              </label>
+                              <Input
+                                type="number"
+                                min={1900}
+                                max={2100}
+                                value={importPreviewCurrentYear}
+                                onChange={(event) => setImportPreviewCurrentYear(Number(event.target.value) || 0)}
+                              />
+                            </div>
+                            <div>
+                              <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                                Current term
+                              </label>
+                              <Select value={importPreviewCurrentTerm} onValueChange={setImportPreviewCurrentTerm}>
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select term" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {TERM_ORDER.map((term) => (
+                                    <SelectItem key={term} value={term}>
+                                      {term}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2 text-xs">
+                            <Badge variant="destructive">Remove {importPreviewStats.removedCourses} courses</Badge>
+                            <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
+                              Keep {importPreviewStats.keptCourses} courses
+                            </Badge>
+                            <Badge className="bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                              {importPreviewStats.removedSemesters} semester{importPreviewStats.removedSemesters === 1 ? "" : "s"} fully removed
+                            </Badge>
+                          </div>
+
+                          <div className="max-h-[50vh] overflow-auto rounded-md border border-slate-200 dark:border-slate-800">
+                            <div className="space-y-2 p-2">
+                              {importPreviewSemesters.map((semester, index) => {
+                                const semesterLabel = `${formatAcademicYear(semester.year)} ${semester.term}`
+                                return (
+                                  <Collapsible
+                                    key={`${semester.year}-${semester.term}-${index}`}
+                                    defaultOpen={semester.shouldRemoveSemester || index === 0}
+                                    className={cn(
+                                      "overflow-hidden rounded-lg border",
+                                      semester.shouldRemoveSemester
+                                        ? "border-red-200 bg-red-50/80 dark:border-red-900/50 dark:bg-red-950/20"
+                                        : "border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950/40",
+                                    )}
+                                  >
+                                    <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
+                                      <div className="flex items-center gap-2">
+                                        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                          {semesterLabel}
+                                        </h3>
+                                        <Badge
+                                          className={cn(
+                                            semester.shouldRemoveSemester
+                                              ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300"
+                                              : "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
+                                          )}
+                                        >
+                                          {semester.shouldRemoveSemester ? "Remove semester" : "Keep semester"}
+                                        </Badge>
+                                        <Badge variant="outline">{semester.courses.length} courses</Badge>
+                                      </div>
+                                      <span className="text-xs text-muted-foreground">
+                                        {semester.shouldRemoveSemester ? "Behind selected term" : "Unchanged unless passed"}
+                                      </span>
+                                    </CollapsibleTrigger>
+                                    <CollapsibleContent>
+                                      <div className="border-t border-inherit px-4 pb-4 pt-2">
+                                        <Table>
+                                          <TableHeader>
+                                            <TableRow>
+                                              <TableHead>Course</TableHead>
+                                              <TableHead>Name</TableHead>
+                                              <TableHead>Status</TableHead>
+                                            </TableRow>
+                                          </TableHeader>
+                                          <TableBody>
+                                            {semester.courses.map((course) => (
+                                              <TableRow
+                                                key={`${semester.year}-${semester.term}-${course.id}`}
+                                                className={cn(
+                                                  course.removalReason === "passed" &&
+                                                    "bg-red-50 text-red-900 dark:bg-red-950/30 dark:text-red-200",
+                                                  course.removalReason === "before_current_term" &&
+                                                    "bg-yellow-50 text-yellow-900 dark:bg-yellow-950/30 dark:text-yellow-100",
+                                                )}
+                                              >
+                                                <TableCell className="font-medium">
+                                                  {getDisplayCode(course.code)}
+                                                </TableCell>
+                                                <TableCell>{course.name}</TableCell>
+                                                <TableCell>
+                                                  {course.shouldRemove ? (
+                                                    <span
+                                                      className={cn(
+                                                        "font-medium",
+                                                        course.removalReason === "passed"
+                                                          ? "text-red-700 dark:text-red-300"
+                                                          : "text-yellow-700 dark:text-yellow-200",
+                                                      )}
+                                                    >
+                                                      {course.removalReason === "passed" ? "Will be removed" : "Unscheduled"}
+                                                    </span>
+                                                  ) : (
+                                                    <span className="text-emerald-700 dark:text-emerald-300">
+                                                      Will stay in plan
+                                                    </span>
+                                                  )}
+                                                </TableCell>
+                                              </TableRow>
+                                            ))}
+                                          </TableBody>
+                                        </Table>
+                                      </div>
+                                    </CollapsibleContent>
+                                  </Collapsible>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       <DialogFooter>
-                        <Button variant="outline" onClick={handleImportKeepPassedCourses}>
-                          Keep In Plan
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            handleImportPreviewReset()
+                            setImportDialogOpen(true)
+                          }}
+                        >
+                          Back to Upload
                         </Button>
-                        <Button onClick={handleImportRemovePassedCourses}>Remove Passed Courses</Button>
+                        <Button onClick={handleImportPreviewApply}>Apply Preview</Button>
                       </DialogFooter>
                     </DialogContent>
                   </Dialog>
 
                   {/* Import Plan */}
-                  <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
+                  <Dialog
+                    open={importDialogOpen}
+                    onOpenChange={(open) => {
+                      setImportDialogOpen(open)
+                      if (!open) {
+                        setImportError(null)
+                      }
+                    }}
+                  >
                     <DialogTrigger asChild>
                       <Button variant="outline" className="flex items-center gap-2 bg-transparent">
                         <Upload className="h-4 w-4" />
@@ -8179,6 +8380,7 @@ export default function AcademicPlanner() {
                           onClick={() => {
                             setImportDialogOpen(false)
                             setImportError(null)
+                            setPendingImportPreview(null)
                             if (fileInputRef.current) {
                               fileInputRef.current.value = ""
                             }
