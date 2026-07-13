@@ -137,92 +137,7 @@ const QuickNavigation = ({
       )}
     </div>
   )
-}
-// Course interface
-interface Course {
-  id: string
-  code: string
-  name: string
-  credits: number
-  status: CourseStatus
-  prerequisites: string[] // Array of course IDs
-  description: string | null
-  year: number
-  term: string
-}
 
-// Available course section interface
-interface CourseSection {
-  courseCode: string
-  section: string
-  classSize: string
-  remainingSlots: string
-  meetingDays: string
-  meetingTime: string
-  room: string
-  hasSlots: boolean
-}
-
-interface SavedPlanSemester {
-  year: number
-  term: string
-  courseIds: string[]
-}
-
-interface SavedPlanSnapshot {
-  version: 1
-  startYear: number
-  semesters: SavedPlanSemester[]
-  savedAt: number
-}
-
-// Semester plan interface
-interface SemesterPlan {
-  year: number
-  term: string
-  courses: PlanCourse[]
-}
-
-// Course in plan with section info
-interface PlanCourse extends Course {
-  availableSections: CourseSection[]
-  needsPetition: boolean
-  recommendedSection?: CourseSection
-  autoClearedSectionConflict?: boolean
-}
-
-interface DependentAdjustment {
-  courseId: string
-  code: string
-  name: string
-  fromYear: number
-  fromTerm: string
-  toYear: number
-  toTerm: string
-}
-
-interface CreditGuardrailReason {
-  type: "min" | "max"
-  semesterLabel: string
-  credits: number
-  threshold: number
-}
-
-interface CreditGuardrailDialogInfo {
-  courseCode: string
-  courseName: string
-  targetYear: number
-  targetTerm: string
-  reasons: CreditGuardrailReason[]
-}
-
-type RegenerateStrategy = "balanced" | "crucial" | "easy"
-
-interface RegeneratePreviewRow {
-  label: string
-  credits: number
-  minTarget: number
-  maxTarget: number
 }
 
 interface LinkedPairMove {
@@ -575,6 +490,31 @@ interface PendingImportPreview {
   importedLocks?: ParsedPlanImportResult["lockedPlacements"]
 }
 
+interface ScheduleMakerTransferCourse {
+  courseCode: string
+  section: string
+  meetingDays: string
+  meetingTime: string
+  room: string
+  name: string
+  credits: number
+}
+
+interface ScheduleMakerTransferPayload {
+  version: 1
+  termYearKey: string
+  versionName: string
+  scheduleTitle: string
+  courses: ScheduleMakerTransferCourse[]
+}
+
+interface ScheduleMakerTransferState {
+  termYearKey: string
+  termLabel: string
+  courseCount: number
+  payload: ScheduleMakerTransferPayload
+}
+
 const sanitizePrioritySnapshot = (input: unknown): Record<string, keyof typeof PRIORITY_WEIGHTS> => {
   if (!input || typeof input !== "object") return {}
   const allowedLevels = Object.keys(PRIORITY_WEIGHTS) as Array<keyof typeof PRIORITY_WEIGHTS>
@@ -782,6 +722,8 @@ export default function AcademicPlanner() {
   const [highlightedCourseId, setHighlightedCourseId] = useState<string | null>(null)
   const [creditPreview, setCreditPreview] = useState<CreditRebalancePreview | null>(null)
   const [creditPreviewDialogOpen, setCreditPreviewDialogOpen] = useState(false)
+  const [scheduleMakerTransferDialogOpen, setScheduleMakerTransferDialogOpen] = useState(false)
+  const [pendingScheduleMakerTransfer, setPendingScheduleMakerTransfer] = useState<ScheduleMakerTransferState | null>(null)
   const [mounted, setMounted] = useState(false)
   const [showJumpButton, setShowJumpButton] = useState(false)
   const [isBottomNavVisible, setIsBottomNavVisible] = useState(false)
@@ -1630,6 +1572,79 @@ export default function AcademicPlanner() {
     setRegenerateCreditError(null)
     setRegenerateDialogOpen(true)
   }, [plannerStrategy, strictGuardrailsEnabled, minCreditsPerTerm, maxCreditsPerTerm])
+
+  const transferCurrentTermToScheduleMaker = useCallback(() => {
+    if (typeof window === "undefined") return
+
+    const currentSemester = graduationPlan.find(
+      (semester) => semester.year === currentYear && termsMatch(semester.term, currentTerm),
+    )
+    if (!currentSemester) {
+      window.alert("No current-term courses are available to transfer.")
+      return
+    }
+
+    const transferableCourses = currentSemester.courses
+      .filter((course) => Boolean(course.recommendedSection))
+      .map((course) => {
+        const section = course.recommendedSection as CourseSection
+        return {
+          courseCode: course.code,
+          section: section.section,
+          meetingDays: section.meetingDays || "",
+          meetingTime: section.meetingTime || "",
+          room: section.room || "",
+          name: course.name,
+          credits: course.credits,
+        }
+      })
+
+    if (transferableCourses.length === 0) {
+      window.alert("The current term does not have any sections that can be sent to Schedule Maker yet.")
+      return
+    }
+
+    const termYearKey = `${currentSemester.year}-${currentSemester.year + 1}::${currentSemester.term}`
+    const payload: ScheduleMakerTransferPayload = {
+      version: 1,
+      termYearKey,
+      versionName: "Academic Planner Import",
+      scheduleTitle: "Academic Planner Import",
+      courses: transferableCourses,
+    }
+    setPendingScheduleMakerTransfer({
+      termYearKey,
+      termLabel: `${formatAcademicYear(currentSemester.year)} ${currentSemester.term}`,
+      courseCount: transferableCourses.length,
+      payload,
+    })
+    setScheduleMakerTransferDialogOpen(true)
+  }, [currentTerm, currentYear, graduationPlan, router])
+
+  const confirmScheduleMakerTransfer = useCallback(() => {
+    if (typeof window === "undefined" || !pendingScheduleMakerTransfer) return
+
+    try {
+      window.localStorage.setItem(
+        "scheduleMaker.plannerTransfer.v1",
+        JSON.stringify(pendingScheduleMakerTransfer.payload),
+      )
+      window.localStorage.setItem("scheduleMaker.lastActiveTermYearKey.v1", pendingScheduleMakerTransfer.termYearKey)
+    } catch (error) {
+      console.error("Failed to stage planner transfer for Schedule Maker:", error)
+      window.alert("We could not prepare the transfer to Schedule Maker.")
+      return
+    }
+
+    setScheduleMakerTransferDialogOpen(false)
+    setPendingScheduleMakerTransfer(null)
+    router.push("/schedule-maker")
+  }, [pendingScheduleMakerTransfer, router])
+
+  const cancelScheduleMakerTransfer = useCallback(() => {
+    setScheduleMakerTransferDialogOpen(false)
+    setPendingScheduleMakerTransfer(null)
+  }, [])
 
   const handleRegenerateImportClick = () => {
     trackAnalyticsEvent("academic_planner.regenerate_dialog_import_click")
@@ -7555,6 +7570,42 @@ export default function AcademicPlanner() {
           </DialogContent>
         </Dialog>
         <Dialog
+          open={scheduleMakerTransferDialogOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              cancelScheduleMakerTransfer()
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Send to Schedule Maker?</DialogTitle>
+              <DialogDescription>
+                This will create a new Schedule Maker version for {pendingScheduleMakerTransfer?.termLabel ?? "the current term"}
+                and open it directly.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <p>
+                {pendingScheduleMakerTransfer
+                  ? `${pendingScheduleMakerTransfer.courseCount} course${pendingScheduleMakerTransfer.courseCount === 1 ? "" : "s"} will be transferred with their current sections.`
+                  : "The selected courses will be transferred with their current sections."}
+              </p>
+              <p>
+                Existing Schedule Maker versions for that term-year will remain untouched.
+              </p>
+            </div>
+            <DialogFooter className="flex-col gap-2 sm:flex-row">
+              <Button variant="outline" className="w-full sm:w-auto" onClick={cancelScheduleMakerTransfer}>
+                Cancel
+              </Button>
+              <Button className="w-full sm:w-auto" onClick={confirmScheduleMakerTransfer}>
+                Transfer and Open
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <Dialog
           open={Boolean(pendingPrereqShift)}
           onOpenChange={(open) => {
             if (!open) {
@@ -8809,6 +8860,8 @@ export default function AcademicPlanner() {
                     const semesterKey = `${semester.year}-${semester.term}`
                     const isOpen = openSemesters[semesterKey]
                     const semesterIsCurrent = isCurrentSemester(semester.year, semester.term)
+                    const currentTermTransferableCount = semester.courses.filter((course) => Boolean(course.recommendedSection)).length
+                    const canTransferToScheduleMaker = semesterIsCurrent && semester.courses.length > 0 && currentTermTransferableCount === semester.courses.length
                     const coursesNeedingPetition = semester.courses.filter((course) => course.needsPetition)
                     const semesterCoursesSelected = semester.courses.filter((course) => selectedCourses.has(course.id))
                     const allSemesterCoursesSelected = semesterCoursesSelected.length === semester.courses.length
@@ -8828,77 +8881,106 @@ export default function AcademicPlanner() {
                         onOpenChange={(open) => toggleSemester(semester.year, semester.term, open)}
                         className="border rounded-lg overflow-hidden"
                       >
-                        <CollapsibleTrigger className="w-full p-4 flex justify-between items-center bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700">
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-lg font-semibold">
-                              {formatAcademicYear(semester.year)} - {semester.term}
-                            </h3>
-                            <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
-                              {semester.courses.length} courses
-                            </Badge>
-                            <Badge
-                              className={`${
-                                (semesterCredits > effectiveMaxCreditsPerTerm || (semesterCredits < minCreditsPerTerm && !hasInternship))
-                                  ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-                                  : "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                              }`}
-                            >
-                              {semesterCredits} credits
-                            </Badge>
-                            {hasInternship && (
-                              <Badge className="bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
-                                Internship Term
+                        <div className="w-full p-4 flex items-center justify-between gap-4 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700">
+                          <CollapsibleTrigger asChild>
+                            <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                              <h3 className="text-lg font-semibold">
+                                {formatAcademicYear(semester.year)} - {semester.term}
+                              </h3>
+                              <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
+                                {semester.courses.length} courses
                               </Badge>
-                            )}
-                            {coursesNeedingPetition.length > 0 && (
-                              <Badge className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">
-                                {coursesNeedingPetition.length} need petition
+                              <Badge
+                                className={
+                                  semesterCredits > effectiveMaxCreditsPerTerm ||
+                                  (semesterCredits < minCreditsPerTerm && !hasInternship)
+                                    ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300"
+                                    : "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200"
+                                }
+                              >
+                                {semesterCredits} credits
                               </Badge>
-                            )}
-                            {semesterCoursesSelected.length > 0 && (
-                              <Badge className="bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
-                                {semesterCoursesSelected.length} selected
-                              </Badge>
-                            )}
-                            {hasConflicts && (
-                              <span
-                                role="button"
-                                tabIndex={0}
-                                onClick={(event) => {
-                                  event.preventDefault()
-                                  event.stopPropagation()
-                                  openConflictDialog(
-                                    `${formatAcademicYear(semester.year)} ${semester.term}`,
-                                    relevantConflictsForSemester,
-                                  )
-                                }}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter" || event.key === " " || event.key === "Space") {
+                              {hasInternship && (
+                                <Badge className="bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
+                                  Internship Term
+                                </Badge>
+                              )}
+                              {coursesNeedingPetition.length > 0 && (
+                                <Badge className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">
+                                  {coursesNeedingPetition.length} need petition
+                                </Badge>
+                              )}
+                              {semesterCoursesSelected.length > 0 && (
+                                <Badge className="bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
+                                  {semesterCoursesSelected.length} selected
+                                </Badge>
+                              )}
+                              {hasConflicts && (
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={(event) => {
                                     event.preventDefault()
                                     event.stopPropagation()
                                     openConflictDialog(
                                       `${formatAcademicYear(semester.year)} ${semester.term}`,
                                       relevantConflictsForSemester,
                                     )
-                                  }
+                                  }}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter" || event.key === " " || event.key === "Space") {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      openConflictDialog(
+                                        `${formatAcademicYear(semester.year)} ${semester.term}`,
+                                        relevantConflictsForSemester,
+                                      )
+                                    }
+                                  }}
+                                  aria-label={`View conflicts for ${formatAcademicYear(semester.year)} ${semester.term}`}
+                                  className="inline-flex"
+                                >
+                                  <Badge variant="destructive" className="cursor-pointer select-none">
+                                    <AlertTriangle className="h-3 w-3 mr-1" />
+                                    {`Conflicts (${relevantConflictsForSemester.length})`}
+                                  </Badge>
+                                </span>
+                              )}
+                            </button>
+                          </CollapsibleTrigger>
+                          <div className="text-gray-500 inline-flex items-center gap-2 flex-shrink-0">
+                            {semesterIsCurrent && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={!canTransferToScheduleMaker}
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  transferCurrentTermToScheduleMaker()
                                 }}
-                                aria-label={`View conflicts for ${formatAcademicYear(semester.year)} ${semester.term}`}
-                                className="inline-flex"
+                                className="h-8 gap-1"
+                                title={
+                                  canTransferToScheduleMaker
+                                    ? "Send current term courses to Schedule Maker"
+                                    : "All current-term courses need an available section before transfer"
+                                }
                               >
-                                <Badge variant="destructive" className="cursor-pointer select-none">
-                                  <AlertTriangle className="h-3 w-3 mr-1" />
-                                  {`Conflicts (${relevantConflictsForSemester.length})`}
-                                </Badge>
-                              </span>
+                                <Upload className="h-3.5 w-3.5" />
+                                Send to Schedule Maker
+                              </Button>
                             )}
+                            <CollapsibleTrigger asChild>
+                              <button type="button" className="inline-flex items-center gap-2">
+                                {expandingSemesterKey === semesterKey && (
+                                  <RefreshCw className="h-4 w-4 animate-spin" />
+                                )}
+                                <span>{isOpen ? "Hide" : "Show"} Courses</span>
+                              </button>
+                            </CollapsibleTrigger>
                           </div>
-                          <div className="text-gray-500 inline-flex items-center gap-2">
-                            {expandingSemesterKey === semesterKey && (
-                              <RefreshCw className="h-4 w-4 animate-spin" />
-                            )}
-                            {isOpen ? "Hide" : "Show"} Courses
-                          </div>
-                        </CollapsibleTrigger>
+                        </div>
                         <CollapsibleContent>
                           <div className="p-4 bg-gray-50 dark:bg-gray-900">
                             <div className="flex items-center gap-2 mb-4">

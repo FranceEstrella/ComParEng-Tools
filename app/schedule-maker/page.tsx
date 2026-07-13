@@ -412,6 +412,27 @@ interface SelectedCourse extends CourseSection {
   displayRoom: string
 }
 
+interface ScheduleConflictPair {
+  leftCode: string
+  leftName: string
+  leftSection: string
+  leftMeetingDays: string
+  leftMeetingTime: string
+  rightCode: string
+  rightName: string
+  rightSection: string
+  rightMeetingDays: string
+  rightMeetingTime: string
+}
+
+interface ScheduleConflictCourseSummary {
+  courseCode: string
+  name: string
+  section: string
+  meetingDays: string
+  meetingTime: string
+}
+
 interface CourseMeeting {
   meetingDays: string
   meetingTime: string
@@ -624,10 +645,29 @@ interface SelectedCourseExportPayload {
 }
 
 const SELECTED_COURSE_EXPORT_VERSION = 1
+const PLANNER_TRANSFER_STORAGE_KEY = "scheduleMaker.plannerTransfer.v1"
 const STALE_IMPORT_NOTICE_STORAGE_KEY = "scheduleMaker.staleImportNotice"
 const DEFAULT_CUSTOM_COLOR = "#3b82f6"
 const DEFAULT_SCHEDULE_TITLE = "Weekly Schedule"
 const HEX_COLOR_PATTERN = /^[0-9A-Fa-f]{6}$/
+
+interface PlannerTransferCourse {
+  courseCode: string
+  section: string
+  meetingDays: string
+  meetingTime: string
+  room: string
+  name: string
+  credits: number
+}
+
+interface PlannerTransferPayload {
+  version: 1
+  termYearKey: string
+  versionName: string
+  scheduleTitle: string
+  courses: PlannerTransferCourse[]
+}
 
 const SCHEDULE_ONBOARDING_SLIDES: Array<{ id: number; title: string; description: string; toneClass: string }> = [
   {
@@ -1241,6 +1281,13 @@ export default function ScheduleMaker() {
     | {
         courseCode: string
         section: string
+      }
+  >(null)
+  const [transferConflictDialog, setTransferConflictDialog] = useState<
+    | null
+    | {
+        termLabel: string
+        courses: ScheduleConflictCourseSummary[]
       }
   >(null)
   const [preferencesDialogOpen, setPreferencesDialogOpen] = useState(false)
@@ -2375,7 +2422,80 @@ export default function ScheduleMaker() {
     if (!isClient) return
     try {
       const raw = localStorage.getItem("scheduleMakerVersionsV1")
+      const transferRaw = localStorage.getItem(PLANNER_TRANSFER_STORAGE_KEY)
+      const parsedTransfer = (() => {
+        if (!transferRaw) return null
+        try {
+          const parsed = JSON.parse(transferRaw)
+          if (!parsed || typeof parsed !== "object") return null
+          if ((parsed as any).version !== 1) return null
+          if (typeof (parsed as any).termYearKey !== "string") return null
+          if (typeof (parsed as any).versionName !== "string") return null
+          if (typeof (parsed as any).scheduleTitle !== "string") return null
+          if (!Array.isArray((parsed as any).courses)) return null
+          return parsed as PlannerTransferPayload
+        } catch {
+          return null
+        }
+      })()
+
+      const buildImportedVersion = (transfer: PlannerTransferPayload, versionIndex: number): ScheduleVersion => {
+        const normalizedCourses = transfer.courses.map((course) =>
+          normalizeSelectedCourse({
+            courseCode: course.courseCode,
+            section: course.section,
+            meetingDays: course.meetingDays,
+            meetingTime: course.meetingTime,
+            room: course.room,
+            name: course.name,
+            credits: course.credits,
+          }),
+        )
+
+        return {
+          id: `v${versionIndex + 1}`,
+          name: transfer.versionName.trim() || `Version ${String.fromCharCode(65 + versionIndex)}`,
+          selectedCourses: normalizedCourses,
+          selectedCourseCodes: deriveSelectedCourseCodes(normalizedCourses),
+          customizations: {},
+          courseDefaults: {},
+          scheduleTitle: transfer.scheduleTitle.trim() || DEFAULT_SCHEDULE_TITLE,
+          isLocked: false,
+        }
+      }
+
       if (!raw) {
+        if (parsedTransfer && parsedTransfer.courses.length > 0) {
+          const importedVersion = buildImportedVersion(parsedTransfer, 0)
+          const transferConflictPairs = collectScheduleConflictPairs(importedVersion.selectedCourses)
+          const transferConflictCourses = collectScheduleConflictCourses(transferConflictPairs)
+          const migratedStore: Record<string, TermYearVersionState> = {
+            [parsedTransfer.termYearKey]: {
+              activeVersionId: importedVersion.id,
+              versions: [importedVersion],
+            },
+          }
+          setVersionStore(migratedStore)
+          setSelectedCourses(importedVersion.selectedCourses)
+          setSelectedCourseCodes(importedVersion.selectedCourseCodes || [])
+          setCustomizations(importedVersion.customizations || {})
+          setCourseDefaults(importedVersion.courseDefaults || {})
+          const nextTitle = importedVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE
+          setScheduleTitle(nextTitle)
+          setScheduleTitleDraft(nextTitle)
+          if (transferConflictPairs.length > 0) {
+            setTransferConflictDialog({
+              termLabel: formatTermYearLabel(parsedTransfer.termYearKey),
+              courses: transferConflictCourses,
+            })
+          }
+          persistVersionStore(migratedStore)
+          legacyScheduleSeedRef.current = null
+          localStorage.removeItem(PLANNER_TRANSFER_STORAGE_KEY)
+          versionStoreBootstrappedRef.current = true
+          return
+        }
+
         const legacySeed = legacyScheduleSeedRef.current
         if (legacySeed) {
           const migratedVersion: ScheduleVersion = {
@@ -2449,6 +2569,46 @@ export default function ScheduleMaker() {
           }
           return acc
         }, {})
+
+        if (parsedTransfer && parsedTransfer.courses.length > 0) {
+          const existingEntry = normalizedStore[parsedTransfer.termYearKey]
+          const importedVersion = buildImportedVersion(parsedTransfer, existingEntry?.versions.length ?? 0)
+          const transferConflictPairs = collectScheduleConflictPairs(importedVersion.selectedCourses)
+          const transferConflictCourses = collectScheduleConflictCourses(transferConflictPairs)
+          const nextEntry: TermYearVersionState = existingEntry
+            ? {
+                activeVersionId: importedVersion.id,
+                versions: [...existingEntry.versions, importedVersion],
+              }
+            : {
+                activeVersionId: importedVersion.id,
+                versions: [importedVersion],
+              }
+
+          const nextStore = {
+            ...normalizedStore,
+            [parsedTransfer.termYearKey]: nextEntry,
+          }
+
+          setVersionStore(nextStore)
+          setSelectedCourses(importedVersion.selectedCourses)
+          setSelectedCourseCodes(importedVersion.selectedCourseCodes || [])
+          setCustomizations(importedVersion.customizations || {})
+          setCourseDefaults(importedVersion.courseDefaults || {})
+          const nextTitle = importedVersion.scheduleTitle || DEFAULT_SCHEDULE_TITLE
+          setScheduleTitle(nextTitle)
+          setScheduleTitleDraft(nextTitle)
+          if (transferConflictPairs.length > 0) {
+            setTransferConflictDialog({
+              termLabel: formatTermYearLabel(parsedTransfer.termYearKey),
+              courses: transferConflictCourses,
+            })
+          }
+          persistVersionStore(nextStore)
+          localStorage.removeItem(PLANNER_TRANSFER_STORAGE_KEY)
+          versionStoreBootstrappedRef.current = true
+          return
+        }
 
         setVersionStore(normalizedStore)
         const entry = normalizedStore[activeTermYearKey]
@@ -3134,6 +3294,119 @@ export default function ScheduleMaker() {
         return selectedMatches
       })
     })
+  }
+
+  const collectScheduleConflictPairs = (courses: SelectedCourse[]): ScheduleConflictPair[] => {
+    const conflictPairs: ScheduleConflictPair[] = []
+    const seenPairs = new Set<string>()
+
+    for (let leftIndex = 0; leftIndex < courses.length; leftIndex += 1) {
+      const leftCourse = courses[leftIndex]
+      const leftMeetings = leftCourse.meetings && leftCourse.meetings.length > 0
+        ? leftCourse.meetings
+        : buildMeetingsFromSection(leftCourse)
+
+      for (let rightIndex = leftIndex + 1; rightIndex < courses.length; rightIndex += 1) {
+        const rightCourse = courses[rightIndex]
+        if (getSelectedCourseCanonicalCode(leftCourse) === getSelectedCourseCanonicalCode(rightCourse)) continue
+
+        const rightMeetings = rightCourse.meetings && rightCourse.meetings.length > 0
+          ? rightCourse.meetings
+          : buildMeetingsFromSection(rightCourse)
+
+        let leftMeetingMatch: CourseMeeting | null = null
+        let rightMeetingMatch: CourseMeeting | null = null
+
+        for (const leftMeeting of leftMeetings) {
+          if (leftMeeting.parsedDays.length === 0) continue
+
+          for (const rightMeeting of rightMeetings) {
+            if (rightMeeting.parsedDays.length === 0) continue
+
+            const leftDaysSet = new Set(leftMeeting.parsedDays)
+            const rightDaysSet = new Set(rightMeeting.parsedDays)
+            const daysOverlap = [...leftDaysSet].some((day) => rightDaysSet.has(day))
+            if (!daysOverlap) continue
+
+            const hasNumericRange =
+              !Number.isNaN(leftMeeting.startMinutes) &&
+              !Number.isNaN(leftMeeting.endMinutes) &&
+              !Number.isNaN(rightMeeting.startMinutes) &&
+              !Number.isNaN(rightMeeting.endMinutes)
+
+            const overlaps = hasNumericRange
+              ? (
+                  (leftMeeting.startMinutes < rightMeeting.endMinutes && rightMeeting.startMinutes < leftMeeting.endMinutes)
+                )
+              : (
+                  (leftMeeting.timeStart < rightMeeting.timeEnd && rightMeeting.timeStart < leftMeeting.timeEnd)
+                )
+
+            if (!overlaps) continue
+
+            leftMeetingMatch = leftMeeting
+            rightMeetingMatch = rightMeeting
+            break
+          }
+
+          if (leftMeetingMatch && rightMeetingMatch) break
+        }
+
+        if (!leftMeetingMatch || !rightMeetingMatch) continue
+
+        const pairKey = [leftCourse.courseCode, leftCourse.section, rightCourse.courseCode, rightCourse.section]
+          .sort()
+          .join("::")
+        if (seenPairs.has(pairKey)) continue
+        seenPairs.add(pairKey)
+
+        conflictPairs.push({
+          leftCode: leftCourse.courseCode,
+          leftName: leftCourse.name,
+          leftSection: leftCourse.section,
+          leftMeetingDays: leftMeetingMatch.meetingDays,
+          leftMeetingTime: leftMeetingMatch.meetingTime,
+          rightCode: rightCourse.courseCode,
+          rightName: rightCourse.name,
+          rightSection: rightCourse.section,
+          rightMeetingDays: rightMeetingMatch.meetingDays,
+          rightMeetingTime: rightMeetingMatch.meetingTime,
+        })
+      }
+    }
+
+    return conflictPairs
+  }
+
+  const collectScheduleConflictCourses = (pairs: ScheduleConflictPair[]): ScheduleConflictCourseSummary[] => {
+    const summaryByKey = new Map<string, ScheduleConflictCourseSummary>()
+
+    pairs.forEach((pair) => {
+      const leftKey = `${pair.leftCode}::${pair.leftSection}`
+      const rightKey = `${pair.rightCode}::${pair.rightSection}`
+
+      if (!summaryByKey.has(leftKey)) {
+        summaryByKey.set(leftKey, {
+          courseCode: pair.leftCode,
+          name: pair.leftName,
+          section: pair.leftSection,
+          meetingDays: pair.leftMeetingDays,
+          meetingTime: pair.leftMeetingTime,
+        })
+      }
+
+      if (!summaryByKey.has(rightKey)) {
+        summaryByKey.set(rightKey, {
+          courseCode: pair.rightCode,
+          name: pair.rightName,
+          section: pair.rightSection,
+          meetingDays: pair.rightMeetingDays,
+          meetingTime: pair.rightMeetingTime,
+        })
+      }
+    })
+
+    return Array.from(summaryByKey.values())
   }
 
   // Check if a course with the same code is already selected
@@ -7644,6 +7917,39 @@ const renderScheduleView = () => {
             </Button>
             <Button onClick={() => handleAddSelectedReadyToAddCourses(true)} className="w-full sm:w-auto">
               Add anyway
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(transferConflictDialog)}
+        onOpenChange={(open) => {
+          if (!open) setTransferConflictDialog(null)
+        }}
+      >
+        <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Schedule conflicts detected</DialogTitle>
+            <DialogDescription>
+              The imported schedule for {transferConflictDialog?.termLabel ?? "this term"} has overlapping courses.
+            </DialogDescription>
+          </DialogHeader>
+            <div className="space-y-2 max-h-72 overflow-y-auto rounded-md border border-amber-300/60 bg-amber-50/70 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+              {(transferConflictDialog?.courses || []).map((course) => (
+                <div key={`${course.courseCode}-${course.section}`} className="rounded-md border border-amber-300/60 bg-white/80 p-3 dark:border-amber-500/30 dark:bg-slate-950/40">
+                  <p className="text-[13px] font-semibold">
+                    {getDisplayCode(course.courseCode)} {course.section}
+                  </p>
+                  <p className="text-[12px] text-amber-800/90 dark:text-amber-100/90">{course.name}</p>
+                  <p className="text-[12px] text-amber-800/90 dark:text-amber-100/90">
+                    {cleanTimeString(course.meetingTime)} • {formatMeetingDays(course.meetingDays)}
+                  </p>
+                </div>
+              ))}
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setTransferConflictDialog(null)} className="w-full sm:w-auto">
+              Got it
             </Button>
           </DialogFooter>
         </DialogContent>
