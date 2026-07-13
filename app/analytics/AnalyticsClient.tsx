@@ -115,6 +115,7 @@ export default function AnalyticsClient() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [unauthorized, setUnauthorized] = useState(false)
+  const [authReady, setAuthReady] = useState(false)
   const intervalRef = useRef<number | null>(null)
 
   const accessStatus = unauthorized
@@ -630,14 +631,16 @@ export default function AnalyticsClient() {
     } catch {
       // ignore
     }
+    setAuthReady(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
+    if (!authReady) return
     fetchSnapshot()
     return () => stopPolling()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeKey])
+  }, [activeKey, authReady])
 
   const entries = useMemo(() => {
     const counts = snapshot?.counts ?? {}
