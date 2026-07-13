@@ -13,11 +13,6 @@ import { ANALYTICS_MAX_BODY_BYTES, validateAnalyticsPayload } from "@/lib/server
 
 export const runtime = "nodejs"
 
-const FAILED_AUTH_LIMITS: RateLimitPolicy[] = [
-  { name: "analytics-auth-failure-ip-15m", limit: 5, windowMs: 15 * 60 * 1000, scope: "ip" },
-  { name: "analytics-auth-failure-global-15m", limit: 100, windowMs: 15 * 60 * 1000, scope: "global" },
-]
-
 const ADMIN_DELETE_LIMITS: RateLimitPolicy[] = [
   { name: "analytics-admin-delete-ip-hour", limit: 10, windowMs: 60 * 60 * 1000, scope: "ip" },
 ]
@@ -36,13 +31,9 @@ async function authorizeAdminRequest(request: Request) {
     )
   }
 
-  const rateLimit = await applyRateLimits(request, FAILED_AUTH_LIMITS)
-  if (rateLimit.status === "limited") return rateLimitResponse(rateLimit)
-  if (rateLimit.status === "unavailable") return rateLimitUnavailableResponse()
-
   return NextResponse.json(
     { code: "unauthorized", error: "Unauthorized" },
-    { status: 401, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
+    { status: 401, headers: noStoreHeaders() },
   )
 }
 
