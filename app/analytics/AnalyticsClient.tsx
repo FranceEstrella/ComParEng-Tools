@@ -127,6 +127,17 @@ export default function AnalyticsClient() {
           ? "saved"
           : "not set"
 
+  const accessDescription =
+    accessStatus === "connected"
+      ? "The key was accepted and analytics loaded successfully."
+      : accessStatus === "checking"
+        ? "The page is verifying the key right now."
+        : accessStatus === "locked"
+          ? "The server rejected the key or no key was provided."
+          : accessStatus === "saved"
+            ? "A key is stored locally, but it has not been verified yet."
+            : "No access key is stored in this tab."
+
   const authHeaders = () => {
     const key = activeKey.trim()
     return key ? { Authorization: `Bearer ${key}` } : undefined
@@ -173,6 +184,9 @@ export default function AnalyticsClient() {
           setSnapshot(null)
           stopPolling()
           throw new Error("Unauthorized. Enter the analytics key to view this page.")
+        }
+        if (res.status === 429 || res.status === 503) {
+          stopPolling()
         }
         const text = await res.text().catch(() => "")
         throw new Error(text || `HTTP ${res.status}`)
@@ -786,7 +800,10 @@ export default function AnalyticsClient() {
                     {unauthorized ? "Unlock" : "Apply key"}
                   </Button>
                   {activeKey.trim() ? (
-                    <Badge variant="secondary" className="flex items-center gap-1">
+                    <Badge
+                      variant={accessStatus === "connected" ? "default" : "secondary"}
+                      className="flex items-center gap-1"
+                    >
                       <Lock className="h-3 w-3" />
                       {accessStatus}
                     </Badge>
@@ -796,9 +813,7 @@ export default function AnalyticsClient() {
                 </div>
               </div>
             </div>
-            <div className="text-xs text-muted-foreground">
-              Status: {accessStatus === "connected" ? "key accepted and analytics loaded" : accessStatus === "checking" ? "checking key against the server" : accessStatus === "locked" ? "key rejected or missing on the server" : accessStatus === "saved" ? "key saved locally, not verified yet" : "no access key entered"}
-            </div>
+            <div className="text-xs text-muted-foreground">Status: {accessDescription}</div>
             {error ? <div className="text-sm text-red-500">{error}</div> : null}
             {unauthorized ? (
               <div className="text-xs text-muted-foreground">
