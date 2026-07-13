@@ -456,6 +456,66 @@ const getNextTerm = (year: number, term: string): { year: number; term: string }
   return { year: year + 1, term: "Term 1" }
 }
 
+const parseMeetingDays = (value: string): Set<string> => {
+  const normalized = (value || "").toUpperCase().replace(/\s+/g, "")
+  if (!normalized) return new Set()
+
+  const compact = normalized.replace(/TH/g, "H")
+  const tokens = compact.match(/[MTWHFSU]/g) || []
+  return new Set(tokens)
+}
+
+const parseTimeTokenToMinutes = (value: string): number | null => {
+  const token = (value || "").trim().toUpperCase()
+  if (!token) return null
+
+  const match = token.match(/^(\d{1,2})(?::(\d{2}))?\s*([AP]M)?$/)
+  if (!match) return null
+
+  let hour = Number(match[1])
+  const minute = Number(match[2] ?? "0")
+  const meridiem = match[3]
+  if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute < 0 || minute > 59) return null
+
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return null
+    if (meridiem === "AM") {
+      if (hour === 12) hour = 0
+    } else if (hour !== 12) {
+      hour += 12
+    }
+  } else {
+    if (hour < 0 || hour > 23) return null
+  }
+
+  return hour * 60 + minute
+}
+
+const parseMeetingTimeRange = (value: string): { start: number; end: number } | null => {
+  const normalized = (value || "").trim().toUpperCase()
+  if (!normalized || normalized === "TBD" || normalized === "TBA") return null
+
+  const parts = normalized.replace(/[–—]/g, "-").split("-")
+  if (parts.length !== 2) return null
+
+  const start = parseTimeTokenToMinutes(parts[0])
+  const end = parseTimeTokenToMinutes(parts[1])
+  if (start === null || end === null || end <= start) return null
+
+  return { start, end }
+}
+
+const hasMeetingOverlap = (
+  daysA: Set<string>,
+  timeA: { start: number; end: number },
+  daysB: Set<string>,
+  timeB: { start: number; end: number },
+): boolean => {
+  const sameDay = Array.from(daysA).some((day) => daysB.has(day))
+  if (!sameDay) return false
+  return timeA.start < timeB.end && timeB.start < timeA.end
+}
+
 // Import data interface
 interface ImportedPlanData {
   year: number
@@ -478,6 +538,23 @@ interface ParsedPlanImportResult {
   }
   coursePriorities?: Record<string, keyof typeof PRIORITY_WEIGHTS>
   lockedPlacements?: Record<string, { year: number; term: string }>
+}
+
+interface ImportPassedConflictCourse {
+  id: string
+  code: string
+  name: string
+  year: number
+  term: string
+}
+
+interface PendingImportedPlanApply {
+  format: "json" | "csv" | "txt"
+  finalPlan: SemesterPlan[]
+  importedCreditPrefs?: ParsedPlanImportResult["creditPreferences"]
+  importedPriorities?: ParsedPlanImportResult["coursePriorities"]
+  importedLocks?: ParsedPlanImportResult["lockedPlacements"]
+  conflictedPassedCourses: ImportPassedConflictCourse[]
 }
 
 const sanitizePrioritySnapshot = (input: unknown): Record<string, keyof typeof PRIORITY_WEIGHTS> => {
@@ -629,6 +706,7 @@ export default function AcademicPlanner() {
   const [conflictDetail, setConflictDetail] = useState<{ title: string; conflicts: ConflictInfo[] } | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
   const [importSuccessInfo, setImportSuccessInfo] = useState<{ semesters: number; courses: number } | null>(null)
+  const [pendingImportPassedConflict, setPendingImportPassedConflict] = useState<PendingImportedPlanApply | null>(null)
   const [regenerateDialogOpen, setRegenerateDialogOpen] = useState(false)
   const [plannerStrategy, setPlannerStrategy] = useState<RegenerateStrategy>("balanced")
   const [pendingRegenerateStrategy, setPendingRegenerateStrategy] = useState<RegenerateStrategy>("balanced")
@@ -689,6 +767,14 @@ export default function AcademicPlanner() {
   const bottomNavigationRef = useRef<HTMLDivElement | null>(null)
   const semesterToggleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const planGenerationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const cancelPendingPlanGeneration = useCallback(() => {
+    if (!planGenerationTimeoutRef.current) return
+    clearTimeout(planGenerationTimeoutRef.current)
+    planGenerationTimeoutRef.current = null
+    setPlanGenerationLoading(false)
+  }, [])
+
   const resetMoveSelects = useCallback(() => {
     setMoveSelectResetCounter((prev) => prev + 1)
   }, [])
@@ -1184,9 +1270,7 @@ export default function AcademicPlanner() {
   // Generate graduation plan when courses or available sections change
   useEffect(() => {
     if (!loading && !planDirty && !planLocked) {
-      if (planGenerationTimeoutRef.current) {
-        clearTimeout(planGenerationTimeoutRef.current)
-      }
+      cancelPendingPlanGeneration()
       setPlanGenerationLoading(true)
       planGenerationTimeoutRef.current = setTimeout(() => {
         try {
@@ -1196,21 +1280,28 @@ export default function AcademicPlanner() {
           planGenerationTimeoutRef.current = null
         }
       }, 0)
+    } else {
+      cancelPendingPlanGeneration()
     }
 
     return () => {
-      if (planGenerationTimeoutRef.current) {
-        clearTimeout(planGenerationTimeoutRef.current)
-      }
+      cancelPendingPlanGeneration()
     }
-  }, [courses, availableSections, loading, currentYear, currentTerm, planDirty, planLocked])
+  }, [
+    courses,
+    availableSections,
+    loading,
+    currentYear,
+    currentTerm,
+    planDirty,
+    planLocked,
+    cancelPendingPlanGeneration,
+  ])
 
   // Regenerate when priorities/locks change
   useEffect(() => {
     if (!loading && !planDirty && !planLocked) {
-      if (planGenerationTimeoutRef.current) {
-        clearTimeout(planGenerationTimeoutRef.current)
-      }
+      cancelPendingPlanGeneration()
       setPlanGenerationLoading(true)
       planGenerationTimeoutRef.current = setTimeout(() => {
         try {
@@ -1220,25 +1311,23 @@ export default function AcademicPlanner() {
           planGenerationTimeoutRef.current = null
         }
       }, 0)
+    } else {
+      cancelPendingPlanGeneration()
     }
 
     return () => {
-      if (planGenerationTimeoutRef.current) {
-        clearTimeout(planGenerationTimeoutRef.current)
-      }
+      cancelPendingPlanGeneration()
     }
-  }, [coursePriorities, lockedPlacements, loading, planDirty, planLocked])
+  }, [coursePriorities, lockedPlacements, loading, planDirty, planLocked, cancelPendingPlanGeneration])
 
   useEffect(() => {
     return () => {
       if (semesterToggleTimeoutRef.current) {
         clearTimeout(semesterToggleTimeoutRef.current)
       }
-      if (planGenerationTimeoutRef.current) {
-        clearTimeout(planGenerationTimeoutRef.current)
-      }
+      cancelPendingPlanGeneration()
     }
-  }, [])
+  }, [cancelPendingPlanGeneration])
 
   // Detect conflicts whenever graduation plan changes
   useEffect(() => {
@@ -3304,31 +3393,45 @@ export default function AcademicPlanner() {
         })
       })
 
-      // Check schedule conflicts (same time slots) only for the current term where section data is reliable
+      // Check schedule conflicts (time overlap on shared meeting days) only for the current term where section data is reliable.
       if (isCurrentSemester(semester.year, semester.term)) {
-        const scheduleMap = new Map<string, PlanCourse[]>()
-        semester.courses.forEach((course) => {
-          if (course.recommendedSection) {
-            const timeKey = `${course.recommendedSection.meetingDays}-${course.recommendedSection.meetingTime}`
-            if (!scheduleMap.has(timeKey)) {
-              scheduleMap.set(timeKey, [])
-            }
-            scheduleMap.get(timeKey)!.push(course)
-          }
-        })
+        const schedulableCourses = semester.courses
+          .map((course) => {
+            const section = course.recommendedSection
+            if (!section) return null
 
-        scheduleMap.forEach((coursesAtTime, timeKey) => {
-          if (coursesAtTime.length > 1 && timeKey !== "-TBD") {
+            const days = parseMeetingDays(section.meetingDays)
+            const range = parseMeetingTimeRange(section.meetingTime)
+            if (days.size === 0 || !range) return null
+
+            return { course, days, range }
+          })
+          .filter((entry): entry is { course: PlanCourse; days: Set<string>; range: { start: number; end: number } } =>
+            Boolean(entry),
+          )
+
+        const seenSchedulePairs = new Set<string>()
+        for (let i = 0; i < schedulableCourses.length; i++) {
+          for (let j = i + 1; j < schedulableCourses.length; j++) {
+            const left = schedulableCourses[i]
+            const right = schedulableCourses[j]
+
+            if (!hasMeetingOverlap(left.days, left.range, right.days, right.range)) continue
+
+            const pairKey = [left.course.id, right.course.id].sort().join("::")
+            if (seenSchedulePairs.has(pairKey)) continue
+            seenSchedulePairs.add(pairKey)
+
             newConflicts.push({
               type: "schedule",
               severity: "error",
-              message: `Schedule conflict in ${formatAcademicYear(semester.year)} ${semester.term}: ${coursesAtTime
-                .map((c) => c.code)
-                .join(", ")} have overlapping time slots`,
-              affectedCourses: coursesAtTime.map((c) => c.id),
+              message: `Schedule conflict in ${formatAcademicYear(semester.year)} ${semester.term}: ${getDisplayCode(
+                left.course.code,
+              )} overlaps with ${getDisplayCode(right.course.code)}.`,
+              affectedCourses: [left.course.id, right.course.id],
             })
           }
-        })
+        }
       }
     })
 
@@ -4663,6 +4766,95 @@ export default function AcademicPlanner() {
     }
   }
 
+  const applyImportedPlanResult = (
+    planToApply: SemesterPlan[],
+    format: "json" | "csv" | "txt",
+    importedCreditPrefs?: ParsedPlanImportResult["creditPreferences"],
+    importedPriorities?: ParsedPlanImportResult["coursePriorities"],
+    importedLocks?: ParsedPlanImportResult["lockedPlacements"],
+  ) => {
+    setGraduationPlan(applyPetitionFlagsToPlan(planToApply))
+
+    syncOpenSemesters(planToApply)
+
+    // Clear move history since we're starting fresh
+    setMoveHistory([])
+    setPlanDirty(true)
+    setPlanLocked(false)
+
+    // Close import dialog
+    setImportDialogOpen(false)
+    const totalCourses = planToApply.reduce((sum, s) => sum + s.courses.length, 0)
+    setImportSuccessInfo({ semesters: planToApply.length, courses: totalCourses })
+
+    trackAnalyticsEvent("academic_planner.import_plan_success", {
+      format,
+      semesters: planToApply.length,
+      courses: totalCourses,
+    })
+
+    if (importedCreditPrefs) {
+      const hasImportedMin = typeof importedCreditPrefs.minCreditsPerTerm === "number"
+      const hasImportedMax = typeof importedCreditPrefs.maxCreditsPerTerm === "number"
+      if (hasImportedMin || hasImportedMax) {
+        const nextMin = hasImportedMin
+          ? normalizeCreditInput(importedCreditPrefs.minCreditsPerTerm as number)
+          : minCreditsPerTerm
+        const nextMax = hasImportedMax
+          ? normalizeCreditInput(importedCreditPrefs.maxCreditsPerTerm as number)
+          : maxCreditsPerTerm
+
+        setMinCreditsPerTerm(nextMin)
+        setMaxCreditsPerTerm(nextMax)
+        setDraftMinCreditsPerTerm(nextMin)
+        setDraftMaxCreditsPerTerm(nextMax)
+        setCreditLimitsDirty(false)
+        setCreditSaveMessage(null)
+        setCreditLimitError(null)
+        clearCreditSaveMessageTimeout()
+
+        if (typeof window !== "undefined") {
+          try {
+            window.localStorage.setItem(
+              CREDIT_LIMITS_STORAGE_KEY,
+              JSON.stringify({ min: nextMin, max: nextMax }),
+            )
+          } catch (err) {
+            console.error("Error saving imported credit limits:", err)
+          }
+        }
+      }
+    }
+
+    setCoursePriorities(importedPriorities ?? {})
+    setLockedPlacements(normalizeLockPairsWithLinkedCourses(importedLocks))
+  }
+
+  const handleImportKeepPassedCourses = () => {
+    if (!pendingImportPassedConflict) return
+
+    const { finalPlan, format, importedCreditPrefs, importedPriorities, importedLocks } = pendingImportPassedConflict
+    setPendingImportPassedConflict(null)
+    applyImportedPlanResult(finalPlan, format, importedCreditPrefs, importedPriorities, importedLocks)
+  }
+
+  const handleImportRemovePassedCourses = () => {
+    if (!pendingImportPassedConflict) return
+
+    const { finalPlan, format, importedCreditPrefs, importedPriorities, importedLocks, conflictedPassedCourses } =
+      pendingImportPassedConflict
+    const removeIds = new Set(conflictedPassedCourses.map((course) => course.id))
+    const filteredPlan = finalPlan
+      .map((semester) => ({
+        ...semester,
+        courses: semester.courses.filter((course) => !removeIds.has(course.id)),
+      }))
+      .filter((semester) => semester.courses.length > 0)
+
+    setPendingImportPassedConflict(null)
+    applyImportedPlanResult(filteredPlan, format, importedCreditPrefs, importedPriorities, importedLocks)
+  }
+
   // Import graduation plan
   const importPlan = async (file: File) => {
     try {
@@ -4757,62 +4949,41 @@ export default function AcademicPlanner() {
       })
       const finalPlan = balancedImportedPlan === newPlan ? newPlan : balancedImportedPlan
 
-      // Update graduation plan
-      setGraduationPlan(applyPetitionFlagsToPlan(finalPlan))
+      const passedCourseIds = new Set(courses.filter((course) => course.status === "passed").map((course) => course.id))
+      const conflictedPassedCourses: ImportPassedConflictCourse[] = []
+      const seenConflictKeys = new Set<string>()
 
-      syncOpenSemesters(finalPlan)
+      finalPlan.forEach((semester) => {
+        semester.courses.forEach((course) => {
+          if (!passedCourseIds.has(course.id)) return
+          const key = `${semester.year}-${semester.term}-${course.id}`
+          if (seenConflictKeys.has(key)) return
+          seenConflictKeys.add(key)
 
-      // Clear move history since we're starting fresh
-      setMoveHistory([])
-      setPlanDirty(true)
-      setPlanLocked(false)
-
-      // Close import dialog
-      setImportDialogOpen(false)
-      const totalCourses = finalPlan.reduce((sum, s) => sum + s.courses.length, 0)
-      setImportSuccessInfo({ semesters: finalPlan.length, courses: totalCourses })
-
-      trackAnalyticsEvent("academic_planner.import_plan_success", {
-        format,
-        semesters: finalPlan.length,
-        courses: totalCourses,
+          conflictedPassedCourses.push({
+            id: course.id,
+            code: course.code,
+            name: course.name,
+            year: semester.year,
+            term: semester.term,
+          })
+        })
       })
 
-      if (importedCreditPrefs) {
-        const hasImportedMin = typeof importedCreditPrefs.minCreditsPerTerm === "number"
-        const hasImportedMax = typeof importedCreditPrefs.maxCreditsPerTerm === "number"
-        if (hasImportedMin || hasImportedMax) {
-          const nextMin = hasImportedMin
-            ? normalizeCreditInput(importedCreditPrefs.minCreditsPerTerm as number)
-            : minCreditsPerTerm
-          const nextMax = hasImportedMax
-            ? normalizeCreditInput(importedCreditPrefs.maxCreditsPerTerm as number)
-            : maxCreditsPerTerm
-
-          setMinCreditsPerTerm(nextMin)
-          setMaxCreditsPerTerm(nextMax)
-          setDraftMinCreditsPerTerm(nextMin)
-          setDraftMaxCreditsPerTerm(nextMax)
-          setCreditLimitsDirty(false)
-          setCreditSaveMessage(null)
-          setCreditLimitError(null)
-          clearCreditSaveMessageTimeout()
-
-          if (typeof window !== "undefined") {
-            try {
-              window.localStorage.setItem(
-                CREDIT_LIMITS_STORAGE_KEY,
-                JSON.stringify({ min: nextMin, max: nextMax }),
-              )
-            } catch (err) {
-              console.error("Error saving imported credit limits:", err)
-            }
-          }
-        }
+      if (conflictedPassedCourses.length > 0) {
+        setImportDialogOpen(false)
+        setPendingImportPassedConflict({
+          format,
+          finalPlan,
+          importedCreditPrefs,
+          importedPriorities,
+          importedLocks,
+          conflictedPassedCourses,
+        })
+        return
       }
 
-      setCoursePriorities(importedPriorities ?? {})
-      setLockedPlacements(normalizeLockPairsWithLinkedCourses(importedLocks))
+      applyImportedPlanResult(finalPlan, format, importedCreditPrefs, importedPriorities, importedLocks)
     } catch (error: any) {
       trackAnalyticsEvent("academic_planner.import_plan_failed", { message: error?.message || "unknown" })
       setImportError(error.message)
@@ -7909,6 +8080,51 @@ export default function AcademicPlanner() {
                         <Button variant="outline" onClick={() => setExportDialogOpen(false)}>
                           Close
                         </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+
+                  <Dialog
+                    open={!!pendingImportPassedConflict}
+                    onOpenChange={(open) => {
+                      if (!open) setPendingImportPassedConflict(null)
+                    }}
+                  >
+                    <DialogContent className="sm:max-w-2xl">
+                      <DialogHeader>
+                        <DialogTitle>Passed Courses Found In Imported Plan</DialogTitle>
+                        <DialogDescription>
+                          Some imported courses are already marked as passed in Course Tracker. You can remove them from
+                          the imported plan, or keep them as-is.
+                        </DialogDescription>
+                      </DialogHeader>
+
+                      <div className="max-h-72 overflow-auto rounded-md border border-slate-200 dark:border-slate-800">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Course</TableHead>
+                              <TableHead>Name</TableHead>
+                              <TableHead>Imported Term</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {(pendingImportPassedConflict?.conflictedPassedCourses ?? []).map((course, index) => (
+                              <TableRow key={`${course.id}-${course.year}-${course.term}-${index}`}>
+                                <TableCell className="font-medium">{getDisplayCode(course.code)}</TableCell>
+                                <TableCell>{course.name}</TableCell>
+                                <TableCell>{`${course.term} ${course.year}`}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+
+                      <DialogFooter>
+                        <Button variant="outline" onClick={handleImportKeepPassedCourses}>
+                          Keep In Plan
+                        </Button>
+                        <Button onClick={handleImportRemovePassedCourses}>Remove Passed Courses</Button>
                       </DialogFooter>
                     </DialogContent>
                   </Dialog>
