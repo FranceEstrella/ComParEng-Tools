@@ -63,3 +63,49 @@ export async function readJsonObject(request: Request, maxBytes: number): Promis
   return parsed as Record<string, unknown>
 }
 
+export async function readJsonValue(request: Request, maxBytes: number): Promise<unknown> {
+  const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase()
+  if (contentType !== "application/json") {
+    throw new ApiRequestError(415, "unsupported_media_type", "Content-Type must be application/json.")
+  }
+
+  const declaredLength = Number(request.headers.get("content-length"))
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new ApiRequestError(413, "payload_too_large", "Request body is too large.")
+  }
+
+  if (!request.body) {
+    throw new ApiRequestError(400, "invalid_json", "A JSON value is required.")
+  }
+
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+
+    totalBytes += value.byteLength
+    if (totalBytes > maxBytes) {
+      await reader.cancel().catch(() => undefined)
+      throw new ApiRequestError(413, "payload_too_large", "Request body is too large.")
+    }
+    chunks.push(value)
+  }
+
+  const body = new Uint8Array(totalBytes)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+
+  try {
+    return JSON.parse(new TextDecoder().decode(body)) as unknown
+  } catch {
+    throw new ApiRequestError(400, "invalid_json", "Request body must contain valid JSON.")
+  }
+}
+

@@ -8,7 +8,7 @@ import {
   rateLimitUnavailableResponse,
   type RateLimitPolicy,
 } from "@/lib/server/rate-limit"
-import { ApiRequestError, readJsonObject } from "@/lib/server/request"
+import { ApiRequestError, readJsonObject, readJsonValue } from "@/lib/server/request"
 import { ANALYTICS_MAX_BODY_BYTES, validateAnalyticsPayload } from "@/lib/server/validation"
 
 export const runtime = "nodejs"
@@ -75,16 +75,31 @@ export async function POST(request: Request) {
   }
 
   try {
-    const payload = await readJsonObject(request, ANALYTICS_MAX_BODY_BYTES)
-    const validation = validateAnalyticsPayload(payload)
-    if (!validation.ok) {
-      return NextResponse.json(
-        { code: "invalid_event", error: validation.message },
-        { status: 400, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
-      )
-    }
+    const payload = await readJsonValue(request, ANALYTICS_MAX_BODY_BYTES)
+    const events = Array.isArray(payload)
+      ? payload
+      : payload && typeof payload === "object" && Array.isArray((payload as { events?: unknown }).events)
+        ? ((payload as { events: unknown[] }).events)
+        : [payload]
 
-    await recordAnalyticsEvent(validation.value)
+    for (const event of events) {
+      if (!event || typeof event !== "object" || Array.isArray(event)) {
+        return NextResponse.json(
+          { code: "invalid_event", error: "Event payload must be an object." },
+          { status: 400, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
+        )
+      }
+
+      const validation = validateAnalyticsPayload(event as Record<string, unknown>)
+      if (!validation.ok) {
+        return NextResponse.json(
+          { code: "invalid_event", error: validation.message },
+          { status: 400, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
+        )
+      }
+
+      await recordAnalyticsEvent(validation.value)
+    }
     return NextResponse.json(
       { accepted: true },
       { status: 202, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
