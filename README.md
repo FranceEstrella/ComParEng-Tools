@@ -26,6 +26,7 @@ The feedback and analytics endpoints enforce request-size validation, route-spec
 Production deployments should configure a shared Redis-compatible REST store so limits work across serverless instances:
 
 - `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (or the equivalent `KV_REST_API_URL` and `KV_REST_API_TOKEN`)
+- Alternatively, an Upstash `rediss://` connection string in `UPSTASH_REDIS_URL`, `KV_URL`, or `REDIS_URL`
 - `RATE_LIMIT_IP_SALT` - a private random value used when hashing client IPs for limiter keys
 - `ANALYTICS_KEY` - required in production to access the analytics page and reset endpoint
 

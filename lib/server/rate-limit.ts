@@ -25,6 +25,7 @@ type RedisConfig = { url: string; token: string }
 
 const globalState = globalThis as typeof globalThis & {
   __comparengRateLimits?: Map<string, RateLimitCounter>
+  __comparengRateLimitConfigWarningShown?: boolean
 }
 
 function getMemoryStore() {
@@ -34,10 +35,54 @@ function getMemoryStore() {
   return globalState.__comparengRateLimits
 }
 
+function normalizeRedisRestUrl(value: string) {
+  return value.replace(/\/$/, "")
+}
+
+function parseRedisConnectionUrl(value: string): RedisConfig | null {
+  try {
+    const parsed = new URL(value)
+    const token = parsed.password?.trim()
+    if (!parsed.hostname || !token) return null
+
+    return {
+      url: `https://${parsed.hostname}`,
+      token,
+    }
+  } catch {
+    return null
+  }
+}
+
+function warnAboutRedisConfig(message: string) {
+  if (globalState.__comparengRateLimitConfigWarningShown) return
+  globalState.__comparengRateLimitConfigWarningShown = true
+  console.error(`[rate-limit] ${message}`)
+}
+
 function getRedisConfig(): RedisConfig | null {
-  const url = process.env.UPSTASH_REDIS_REST_URL?.trim() || process.env.KV_REST_API_URL?.trim()
+  const restUrl = process.env.UPSTASH_REDIS_REST_URL?.trim() || process.env.KV_REST_API_URL?.trim()
   const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim() || process.env.KV_REST_API_TOKEN?.trim()
-  return url && token ? { url: url.replace(/\/$/, ""), token } : null
+  if (restUrl && token) {
+    return { url: normalizeRedisRestUrl(restUrl), token }
+  }
+
+  const connectionUrl =
+    process.env.UPSTASH_REDIS_URL?.trim() || process.env.KV_URL?.trim() || process.env.REDIS_URL?.trim()
+  if (connectionUrl) {
+    const config = parseRedisConnectionUrl(connectionUrl)
+    if (!config) {
+      warnAboutRedisConfig(
+        "Invalid Upstash Redis connection string. Use UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN, or a rediss:// URL with credentials in UPSTASH_REDIS_URL, KV_URL, or REDIS_URL.",
+      )
+    }
+    return config
+  }
+
+  warnAboutRedisConfig(
+    "No distributed Redis store is configured. Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN, KV_REST_API_URL + KV_REST_API_TOKEN, or UPSTASH_REDIS_URL/KV_URL/REDIS_URL.",
+  )
+  return null
 }
 
 function useMemoryStore() {
