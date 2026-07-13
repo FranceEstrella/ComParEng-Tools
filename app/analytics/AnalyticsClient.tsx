@@ -117,6 +117,16 @@ export default function AnalyticsClient() {
   const [unauthorized, setUnauthorized] = useState(false)
   const intervalRef = useRef<number | null>(null)
 
+  const accessStatus = unauthorized
+    ? "locked"
+    : loading && activeKey.trim()
+      ? "checking"
+      : snapshot
+        ? "connected"
+        : activeKey.trim()
+          ? "saved"
+          : "not set"
+
   const authHeaders = () => {
     const key = activeKey.trim()
     return key ? { Authorization: `Bearer ${key}` } : undefined
@@ -761,7 +771,7 @@ export default function AnalyticsClient() {
                 <Input
                   value={keyInput}
                   onChange={(e) => setKeyInput(e.target.value)}
-                  placeholder={unauthorized ? "Required" : "(optional)"}
+                  placeholder={unauthorized ? "Paste ANALYTICS_KEY" : "Paste ANALYTICS_KEY (optional here until needed)"}
                   className="sm:max-w-sm"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") applyKey(keyInput)
@@ -773,18 +783,21 @@ export default function AnalyticsClient() {
                     onClick={() => applyKey(keyInput)}
                     disabled={loading || keyInput.trim() === activeKey.trim()}
                   >
-                    Apply
+                    {unauthorized ? "Unlock" : "Apply key"}
                   </Button>
                   {activeKey.trim() ? (
                     <Badge variant="secondary" className="flex items-center gap-1">
                       <Lock className="h-3 w-3" />
-                      unlocked
+                      {accessStatus}
                     </Badge>
                   ) : (
-                    <Badge variant="outline">no key</Badge>
+                    <Badge variant="outline">{accessStatus}</Badge>
                   )}
                 </div>
               </div>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Status: {accessStatus === "connected" ? "key accepted and analytics loaded" : accessStatus === "checking" ? "checking key against the server" : accessStatus === "locked" ? "key rejected or missing on the server" : accessStatus === "saved" ? "key saved locally, not verified yet" : "no access key entered"}
             </div>
             {error ? <div className="text-sm text-red-500">{error}</div> : null}
             {unauthorized ? (

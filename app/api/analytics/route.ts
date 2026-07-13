@@ -13,11 +13,6 @@ import { ANALYTICS_MAX_BODY_BYTES, validateAnalyticsPayload } from "@/lib/server
 
 export const runtime = "nodejs"
 
-const INGEST_LIMITS: RateLimitPolicy[] = [
-  { name: "analytics-ingest-ip-minute", limit: 120, windowMs: 60 * 1000, scope: "ip" },
-  { name: "analytics-ingest-global-minute", limit: 5_000, windowMs: 60 * 1000, scope: "global" },
-]
-
 const FAILED_AUTH_LIMITS: RateLimitPolicy[] = [
   { name: "analytics-auth-failure-ip-15m", limit: 5, windowMs: 15 * 60 * 1000, scope: "ip" },
   { name: "analytics-auth-failure-global-15m", limit: 100, windowMs: 15 * 60 * 1000, scope: "global" },
@@ -62,18 +57,6 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const rateLimit = await applyRateLimits(request, INGEST_LIMITS)
-  if (rateLimit.status === "limited") return rateLimitResponse(rateLimit)
-
-  // Analytics is best-effort. If protection is unavailable, acknowledge and drop
-  // the event instead of accepting unbounded writes or affecting the user flow.
-  if (rateLimit.status === "unavailable") {
-    return NextResponse.json(
-      { accepted: false },
-      { status: 202, headers: noStoreHeaders({ "Retry-After": "30" }) },
-    )
-  }
-
   try {
     const payload = await readJsonValue(request, ANALYTICS_MAX_BODY_BYTES)
     const events = Array.isArray(payload)
@@ -86,7 +69,7 @@ export async function POST(request: Request) {
       if (!event || typeof event !== "object" || Array.isArray(event)) {
         return NextResponse.json(
           { code: "invalid_event", error: "Event payload must be an object." },
-          { status: 400, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
+          { status: 400, headers: noStoreHeaders() },
         )
       }
 
@@ -94,7 +77,7 @@ export async function POST(request: Request) {
       if (!validation.ok) {
         return NextResponse.json(
           { code: "invalid_event", error: validation.message },
-          { status: 400, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
+          { status: 400, headers: noStoreHeaders() },
         )
       }
 
@@ -102,19 +85,19 @@ export async function POST(request: Request) {
     }
     return NextResponse.json(
       { accepted: true },
-      { status: 202, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
+      { status: 202, headers: noStoreHeaders() },
     )
   } catch (error) {
     if (error instanceof ApiRequestError) {
       return NextResponse.json(
         { code: error.code, error: error.message },
-        { status: error.status, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
+        { status: error.status, headers: noStoreHeaders() },
       )
     }
     console.error("[analytics] Unexpected ingestion error.", error)
     return NextResponse.json(
       { code: "unexpected_error", error: "An unexpected error occurred." },
-      { status: 500, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
+      { status: 500, headers: noStoreHeaders() },
     )
   }
 }
