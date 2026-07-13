@@ -23,10 +23,6 @@ const FAILED_AUTH_LIMITS: RateLimitPolicy[] = [
   { name: "analytics-auth-failure-global-15m", limit: 100, windowMs: 15 * 60 * 1000, scope: "global" },
 ]
 
-const ADMIN_READ_LIMITS: RateLimitPolicy[] = [
-  { name: "analytics-admin-read-ip-minute", limit: 60, windowMs: 60 * 1000, scope: "ip" },
-]
-
 const ADMIN_DELETE_LIMITS: RateLimitPolicy[] = [
   { name: "analytics-admin-delete-ip-hour", limit: 10, windowMs: 60 * 60 * 1000, scope: "ip" },
 ]
@@ -59,13 +55,9 @@ export async function GET(request: Request) {
   const unauthorized = await authorizeAdminRequest(request)
   if (unauthorized) return unauthorized
 
-  const rateLimit = await applyRateLimits(request, ADMIN_READ_LIMITS)
-  if (rateLimit.status === "limited") return rateLimitResponse(rateLimit)
-  if (rateLimit.status === "unavailable") return rateLimitUnavailableResponse()
-
   return NextResponse.json(await getAnalyticsSnapshot(), {
     status: 200,
-    headers: noStoreHeaders(rateLimitHeaders(rateLimit)),
+    headers: noStoreHeaders(),
   })
 }
 
