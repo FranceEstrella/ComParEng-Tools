@@ -63,7 +63,7 @@ export async function GET(request: Request) {
   if (rateLimit.status === "limited") return rateLimitResponse(rateLimit)
   if (rateLimit.status === "unavailable") return rateLimitUnavailableResponse()
 
-  return NextResponse.json(getAnalyticsSnapshot(), {
+  return NextResponse.json(await getAnalyticsSnapshot(), {
     status: 200,
     headers: noStoreHeaders(rateLimitHeaders(rateLimit)),
   })
@@ -92,7 +92,7 @@ export async function POST(request: Request) {
       )
     }
 
-    recordAnalyticsEvent(validation.value)
+    await recordAnalyticsEvent(validation.value)
     return NextResponse.json(
       { accepted: true },
       { status: 202, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },
@@ -127,7 +127,7 @@ export async function DELETE(request: Request) {
   if (rateLimit.status === "limited") return rateLimitResponse(rateLimit)
   if (rateLimit.status === "unavailable") return rateLimitUnavailableResponse()
 
-  resetAnalytics()
+  await resetAnalytics()
   return NextResponse.json(
     { ok: true },
     { status: 200, headers: noStoreHeaders(rateLimitHeaders(rateLimit)) },

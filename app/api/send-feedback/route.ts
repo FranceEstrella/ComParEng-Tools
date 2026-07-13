@@ -46,7 +46,7 @@ export async function POST(request: Request) {
 
     // Silently accept honeypot submissions so automated senders receive no useful signal.
     if (website) {
-      recordAnalyticsEvent({ name: "feedback.spam_blocked", at: Date.now(), path: "/api/send-feedback" })
+      await recordAnalyticsEvent({ name: "feedback.spam_blocked", at: Date.now(), path: "/api/send-feedback" })
       return NextResponse.json({ success: true }, { status: 200, headers: responseHeaders })
     }
 
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
 
     if (!mailgunKey || !mailgunDomain) {
       console.error("[send-feedback] Mailgun is not configured.")
-      recordAnalyticsEvent({
+      await recordAnalyticsEvent({
         name: "feedback.send_failed",
         at: Date.now(),
         path: "/api/send-feedback",
@@ -88,7 +88,7 @@ export async function POST(request: Request) {
       })
     } catch (error) {
       console.error("[send-feedback] Mailgun request failed.", error)
-      recordAnalyticsEvent({
+      await recordAnalyticsEvent({
         name: "feedback.send_failed",
         at: Date.now(),
         path: "/api/send-feedback",
@@ -103,7 +103,7 @@ export async function POST(request: Request) {
         status: sendResponse.status,
         requestId: providerRequestId,
       })
-      recordAnalyticsEvent({
+      await recordAnalyticsEvent({
         name: "feedback.send_failed",
         at: Date.now(),
         path: "/api/send-feedback",
@@ -112,7 +112,7 @@ export async function POST(request: Request) {
       return errorResponse(502, "feedback_delivery_failed", "Feedback could not be delivered.", responseHeaders)
     }
 
-    recordAnalyticsEvent({ name: "feedback.send_success", at: Date.now(), path: "/api/send-feedback" })
+    await recordAnalyticsEvent({ name: "feedback.send_success", at: Date.now(), path: "/api/send-feedback" })
     return NextResponse.json({ success: true }, { status: 200, headers: responseHeaders })
   } catch (error) {
     if (error instanceof ApiRequestError) {
@@ -120,7 +120,7 @@ export async function POST(request: Request) {
     }
 
     console.error("[send-feedback] Unexpected error.", error)
-    recordAnalyticsEvent({
+    await recordAnalyticsEvent({
       name: "feedback.send_failed",
       at: Date.now(),
       path: "/api/send-feedback",
