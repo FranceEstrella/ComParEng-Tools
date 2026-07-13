@@ -139,6 +139,8 @@ export default function AnalyticsClient() {
             ? "A key is stored locally, but it has not been verified yet."
             : "No access key is stored in this tab."
 
+  const dashboardUnlocked = Boolean(snapshot)
+
   const authHeaders = () => {
     const key = activeKey.trim()
     return key ? { Authorization: `Bearer ${key}` } : undefined
@@ -637,6 +639,11 @@ export default function AnalyticsClient() {
 
   useEffect(() => {
     if (!authReady) return
+    if (!activeKey.trim()) {
+      setLoading(false)
+      stopPolling()
+      return
+    }
     fetchSnapshot()
     return () => stopPolling()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -692,45 +699,35 @@ export default function AnalyticsClient() {
 
     const numericMeta = (name: string, key: string) => {
       const values: number[] = []
-      recent.forEach((evt) => {
-        if (evt.name !== name) return
+      for (const evt of recent) {
+        if (evt.name !== name) continue
         const raw = evt.meta?.[key]
         if (typeof raw === "number" && Number.isFinite(raw)) values.push(raw)
-      })
+      }
       return { n: values.length, avg: sumAvg(values) }
     }
 
     const countByMeta = (name: string, key: string) => {
       const map = new Map<string, number>()
-      recent.forEach((evt) => {
-        if (evt.name !== name) return
+      for (const evt of recent) {
+        if (evt.name !== name) continue
         const raw = evt.meta?.[key]
-        if (typeof raw !== "string") return
+        if (typeof raw !== "string") continue
         map.set(raw, (map.get(raw) ?? 0) + 1)
-      })
+      }
       return Array.from(map.entries()).sort((a, b) => b[1] - a[1])
     }
 
-    const courseTrackerStartYear = numericMeta("course_tracker.start_year_set", "year")
-    const scheduleMakerVersions = numericMeta("schedule_maker.versions_count", "count")
-    const plannerAppliedProfiles = countByMeta("academic_planner.apply_profile_success", "strategy")
-    const plannerSelectedProfiles = countByMeta("academic_planner.profile_select", "strategy")
-    const themeToggles = countByMeta("theme.toggle", "to")
-
     const onboardingOpened = counts["onboarding.open"] ?? 0
     const onboardingCompleted = counts["onboarding.complete"] ?? 0
-    const onboardingNotCompletedEstimate = Math.max(0, onboardingOpened - onboardingCompleted)
 
     return {
-      courseTrackerStartYear,
-      scheduleMakerVersions,
-      plannerAppliedProfiles,
-      plannerSelectedProfiles,
-      themeToggles,
+      courseTrackerStartYear: numericMeta("course_tracker.start_year_set", "year"),
+      scheduleMakerVersions: numericMeta("schedule_maker.versions_count", "count"),
+      themeToggles: countByMeta("theme.toggle", "to"),
       onboarding: {
-        opened: onboardingOpened,
         completed: onboardingCompleted,
-        notCompletedEstimate: onboardingNotCompletedEstimate,
+        notCompletedEstimate: Math.max(0, onboardingOpened - onboardingCompleted),
       },
       rawCounts: {
         courseTrackerCurriculumImportSuccess: counts["course_tracker.curriculum_import_success"] ?? 0,
@@ -740,8 +737,6 @@ export default function AnalyticsClient() {
         scheduleMakerDownloadImageSuccess: counts["schedule_maker.download_image_success"] ?? 0,
         scheduleMakerDownloadIcsSuccess: counts["schedule_maker.download_ics_success"] ?? 0,
         scheduleMakerOpenSolarOsesClicks: counts["schedule_maker.open_solar_oses_click"] ?? 0,
-        scheduleMakerExportSelectedSuccess: counts["schedule_maker.export_selected_courses_success"] ?? 0,
-        scheduleMakerImportSelectedResult: counts["schedule_maker.import_selected_courses_result"] ?? 0,
         plannerExportPlanSuccess: counts["academic_planner.export_plan_success"] ?? 0,
         plannerImportPlanSuccess: counts["academic_planner.import_plan_success"] ?? 0,
         plannerApplyProfileClicks: counts["academic_planner.apply_profile_click"] ?? 0,
@@ -765,14 +760,14 @@ export default function AnalyticsClient() {
           <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle className="text-lg">Access</CardTitle>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchSnapshot} disabled={loading}>
+              <Button variant="outline" size="sm" onClick={fetchSnapshot} disabled={loading || !activeKey.trim()}>
                 <RefreshCw className="h-4 w-4" />
                 Refresh
               </Button>
               <Button variant="outline" size="sm" onClick={exportHtml} disabled={!snapshot || loading}>
                 Export HTML
               </Button>
-              <Button variant="destructive" size="sm" onClick={reset} disabled={loading}>
+              <Button variant="destructive" size="sm" onClick={reset} disabled={loading || !activeKey.trim()}>
                 <Trash2 className="h-4 w-4" />
                 Reset
               </Button>
@@ -788,7 +783,7 @@ export default function AnalyticsClient() {
                 <Input
                   value={keyInput}
                   onChange={(e) => setKeyInput(e.target.value)}
-                  placeholder={unauthorized ? "Paste ANALYTICS_KEY" : "Paste ANALYTICS_KEY (optional here until needed)"}
+                  placeholder={unauthorized ? "Paste ANALYTICS_KEY" : "Paste ANALYTICS_KEY"}
                   className="sm:max-w-sm"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") applyKey(keyInput)
@@ -803,10 +798,7 @@ export default function AnalyticsClient() {
                     {unauthorized ? "Unlock" : "Apply key"}
                   </Button>
                   {activeKey.trim() ? (
-                    <Badge
-                      variant={accessStatus === "connected" ? "default" : "secondary"}
-                      className="flex items-center gap-1"
-                    >
+                    <Badge variant={accessStatus === "connected" ? "default" : "secondary"} className="flex items-center gap-1">
                       <Lock className="h-3 w-3" />
                       {accessStatus}
                     </Badge>
@@ -826,243 +818,79 @@ export default function AnalyticsClient() {
           </CardContent>
         </Card>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-          <StatCard
-            title="Total events"
-            value={formatCompact(totals.total)}
-            sub="All-time (in-memory)"
-            icon={<Sigma className="h-5 w-5" />}
-          />
-          <StatCard
-            title="Unique event types"
-            value={formatCompact(totals.unique)}
-            sub="Distinct names"
-            icon={<ListOrdered className="h-5 w-5" />}
-          />
-          <StatCard
-            title="Last event"
-            value={totals.lastAt ? new Date(totals.lastAt).toLocaleTimeString() : "—"}
-            sub={totals.lastAt ? new Date(totals.lastAt).toLocaleDateString() : "No events"}
-            icon={<Clock className="h-5 w-5" />}
-          />
-          <StatCard
-            title="Activity (24h)"
-            value={formatCompact(activityLast24h.reduce((a, b) => a + b, 0))}
-            sub="From recent buffer"
-            icon={<Activity className="h-5 w-5" />}
-          />
-        </div>
+        {dashboardUnlocked ? (
+          <>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+              <StatCard title="Total events" value={formatCompact(totals.total)} sub="All-time" icon={<Sigma className="h-5 w-5" />} />
+              <StatCard title="Unique event types" value={formatCompact(totals.unique)} sub="Distinct names" icon={<ListOrdered className="h-5 w-5" />} />
+              <StatCard title="Last event" value={totals.lastAt ? new Date(totals.lastAt).toLocaleTimeString() : "—"} sub={totals.lastAt ? new Date(totals.lastAt).toLocaleDateString() : "No events"} icon={<Clock className="h-5 w-5" />} />
+              <StatCard title="Activity (24h)" value={formatCompact(activityLast24h.reduce((a, b) => a + b, 0))} sub="From recent buffer" icon={<Activity className="h-5 w-5" />} />
+            </div>
 
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <BarChart3 className="h-5 w-5" />
-                Activity (last 24 hours)
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {snapshot?.recent?.length ? (
-                <div className="space-y-2">
-                  <MiniBars values={activityLast24h} />
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>24h ago</span>
-                    <span>now</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-sm text-muted-foreground">No events yet.</div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <BarChart3 className="h-5 w-5" />
-                Top events
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {topEvents.length === 0 ? (
-                <div className="text-sm text-muted-foreground">No events yet.</div>
-              ) : (
-                <div className="space-y-2">
-                  {(() => {
-                    const max = Math.max(1, ...topEvents.map(([, c]) => c))
-                    return topEvents.map(([name, count]) => (
-                      <div key={name} className="space-y-1">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-sm font-medium truncate">{name}</div>
-                          <Badge variant="secondary">{count}</Badge>
-                        </div>
-                        <div className="h-2 rounded bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                          <div
-                            className="h-full bg-slate-400 dark:bg-slate-600"
-                            style={{ width: `${Math.max(2, Math.round((count / max) * 100))}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))
-                  })()}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <Card className="md:col-span-2">
-            <CardHeader>
-              <CardTitle className="text-lg">Insights</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                  <div className="text-xs text-muted-foreground">Course Tracker</div>
-                  <div className="mt-2 text-sm">Curriculum imports: <span className="font-semibold">{insights.rawCounts.courseTrackerCurriculumImportSuccess}</span> ok / <span className="font-semibold">{insights.rawCounts.courseTrackerCurriculumImportFailed}</span> failed</div>
-                  <div className="mt-1 text-sm">Download progress: <span className="font-semibold">{insights.rawCounts.courseTrackerDownloadProgressClicks}</span> clicks / <span className="font-semibold">{insights.rawCounts.courseTrackerDownloadProgressSuccess}</span> success</div>
-                  <div className="mt-1 text-sm">Avg starting year: <span className="font-semibold">{insights.courseTrackerStartYear.avg === null ? "N/A" : insights.courseTrackerStartYear.avg.toFixed(1)}</span> <span className="text-xs text-muted-foreground">(n={insights.courseTrackerStartYear.n})</span></div>
-                </div>
-
-                <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                  <div className="text-xs text-muted-foreground">Schedule Maker</div>
-                  <div className="mt-2 text-sm">Download schedule image: <span className="font-semibold">{insights.rawCounts.scheduleMakerDownloadImageSuccess}</span> success</div>
-                  <div className="mt-1 text-sm">Export to calendar (ICS): <span className="font-semibold">{insights.rawCounts.scheduleMakerDownloadIcsSuccess}</span> success</div>
-                  <div className="mt-1 text-sm">Add to SOLAR-OSES: <span className="font-semibold">{insights.rawCounts.scheduleMakerOpenSolarOsesClicks}</span> clicks</div>
-                  <div className="mt-1 text-sm">Avg versions per term: <span className="font-semibold">{insights.scheduleMakerVersions.avg === null ? "N/A" : insights.scheduleMakerVersions.avg.toFixed(2)}</span> <span className="text-xs text-muted-foreground">(n={insights.scheduleMakerVersions.n})</span></div>
-                  <div className="mt-1 text-sm">Selected courses: <span className="font-semibold">{insights.rawCounts.scheduleMakerExportSelectedSuccess}</span> exports / <span className="font-semibold">{insights.rawCounts.scheduleMakerImportSelectedResult}</span> imports</div>
-                </div>
-
-                <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                  <div className="text-xs text-muted-foreground">Academic Planner</div>
-                  <div className="mt-2 text-sm">Plans: <span className="font-semibold">{insights.rawCounts.plannerExportPlanSuccess}</span> exports / <span className="font-semibold">{insights.rawCounts.plannerImportPlanSuccess}</span> imports</div>
-                  <div className="mt-1 text-sm">Apply profile clicks: <span className="font-semibold">{insights.rawCounts.plannerApplyProfileClicks}</span></div>
-                  <div className="mt-2 text-xs text-muted-foreground">Profile usage (applied)</div>
-                  {insights.plannerAppliedProfiles.length ? (
-                    <div className="mt-1 space-y-1">
-                      {insights.plannerAppliedProfiles.map(([strategy, count]) => (
-                        <div key={strategy} className="flex items-center justify-between text-sm">
-                          <span className="truncate">{strategy}</span>
-                          <span className="font-semibold">{count}</span>
-                        </div>
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+              <Card>
+                <CardHeader><CardTitle className="text-lg flex items-center gap-2"><BarChart3 className="h-5 w-5" />Activity (last 24 hours)</CardTitle></CardHeader>
+                <CardContent>
+                  {snapshot?.recent?.length ? (
+                    <div className="space-y-2">
+                      <MiniBars values={activityLast24h} />
+                      <div className="flex items-center justify-between text-xs text-muted-foreground"><span>24h ago</span><span>now</span></div>
+                    </div>
+                  ) : <div className="text-sm text-muted-foreground">No events yet.</div>}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Route className="h-5 w-5" />Top paths</CardTitle></CardHeader>
+                <CardContent>
+                  {pathBreakdown.length ? (
+                    <div className="space-y-2">
+                      {pathBreakdown.map(([path, count]) => (
+                        <div key={path} className="flex items-center justify-between gap-3"><span className="truncate text-sm">{path}</span><Badge variant="secondary">{count}</Badge></div>
                       ))}
                     </div>
-                  ) : (
-                    <div className="mt-1 text-sm text-muted-foreground">No apply events yet.</div>
-                  )}
-                  <div className="mt-2 text-xs text-muted-foreground">Profile taps (selected)</div>
-                  {insights.plannerSelectedProfiles.length ? (
-                    <div className="mt-1 space-y-1">
-                      {insights.plannerSelectedProfiles.map(([strategy, count]) => (
-                        <div key={strategy} className="flex items-center justify-between text-sm">
-                          <span className="truncate">{strategy}</span>
-                          <span className="font-semibold">{count}</span>
-                        </div>
+                  ) : <div className="text-sm text-muted-foreground">No events yet.</div>}
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+              <Card>
+                <CardHeader><CardTitle className="text-lg">Top events</CardTitle></CardHeader>
+                <CardContent>
+                  {topEvents.length ? (
+                    <div className="space-y-2">
+                      {topEvents.map(([name, count]) => (
+                        <div key={name} className="flex items-center justify-between gap-3"><span className="truncate text-sm">{name}</span><Badge variant="secondary">{count}</Badge></div>
                       ))}
                     </div>
-                  ) : (
-                    <div className="mt-1 text-sm text-muted-foreground">No selection events yet.</div>
-                  )}
-                </div>
+                  ) : <div className="text-sm text-muted-foreground">No events yet.</div>}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader><CardTitle className="text-lg">Insights</CardTitle></CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  <div>Curriculum imports: <span className="font-semibold">{insights.rawCounts.courseTrackerCurriculumImportSuccess}</span> success / <span className="font-semibold">{insights.rawCounts.courseTrackerCurriculumImportFailed}</span> failed</div>
+                  <div>Schedule image exports: <span className="font-semibold">{insights.rawCounts.scheduleMakerDownloadImageSuccess}</span></div>
+                  <div>Planner exports/imports: <span className="font-semibold">{insights.rawCounts.plannerExportPlanSuccess}</span> / <span className="font-semibold">{insights.rawCounts.plannerImportPlanSuccess}</span></div>
+                  <div>Feedback: <span className="font-semibold">{insights.rawCounts.feedbackSuccess}</span> sent / <span className="font-semibold">{insights.rawCounts.feedbackFailed}</span> failed</div>
+                </CardContent>
+              </Card>
+            </div>
+          </>
+        ) : (
+          <Card className="overflow-hidden border-slate-200/80 bg-gradient-to-br from-slate-50 via-white to-sky-50 shadow-sm shadow-slate-200/40 dark:border-slate-800 dark:from-slate-950 dark:via-slate-950 dark:to-sky-950/20 dark:shadow-none">
+            <CardContent className="flex flex-col items-start gap-3 py-10">
+              <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm dark:border-slate-800 dark:bg-slate-950/80">
+                <Lock className="h-3.5 w-3.5" />
+                Locked dashboard
               </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                  <div className="text-xs text-muted-foreground">General</div>
-                  <div className="mt-2 text-sm">Feedback: <span className="font-semibold">{insights.rawCounts.feedbackSuccess}</span> sent / <span className="font-semibold">{insights.rawCounts.feedbackFailed}</span> failed</div>
-                  <div className="mt-1 text-sm">Onboarding: <span className="font-semibold">{insights.onboarding.completed}</span> completed / <span className="font-semibold">{insights.onboarding.notCompletedEstimate}</span> not completed (estimate)</div>
-                </div>
-
-                <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                  <div className="text-xs text-muted-foreground">Theme preference (from toggles)</div>
-                  {insights.themeToggles.length ? (
-                    <div className="mt-2 space-y-1">
-                      {insights.themeToggles.map(([mode, count]) => (
-                        <div key={mode} className="flex items-center justify-between text-sm">
-                          <span className="truncate">{mode}</span>
-                          <span className="font-semibold">{count}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-2 text-sm text-muted-foreground">No theme toggle events yet.</div>
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-4 text-xs text-muted-foreground">
-                Averages and breakdowns are computed from the “Recent” buffer (up to 200 events).
+              <div>
+                <h2 className="text-xl font-semibold">Enter the key to unlock analytics</h2>
+                <p className="mt-2 max-w-2xl text-sm text-muted-foreground">The dashboard stays hidden until the access key is accepted.</p>
               </div>
             </CardContent>
           </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Counts</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {entries.length === 0 ? (
-                <div className="text-sm text-muted-foreground">No events yet.</div>
-              ) : (
-                <div className="space-y-2">
-                  {entries.map(([name, count]) => (
-                    <div key={name} className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium truncate">{name}</div>
-                      <Badge variant="secondary">{count}</Badge>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Recent</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {!snapshot?.recent?.length ? (
-                <div className="text-sm text-muted-foreground">No recent events.</div>
-              ) : (
-                <div className="space-y-2 max-h-[28rem] overflow-auto pr-2">
-                  {snapshot.recent.slice(0, 50).map((evt, idx) => (
-                    <div key={`${evt.at}-${idx}`} className="rounded-md border border-slate-200 dark:border-slate-800 p-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium truncate">{evt.name}</div>
-                        <div className="text-xs text-muted-foreground">{new Date(evt.at).toLocaleString()}</div>
-                      </div>
-                      {evt.path ? <div className="text-xs text-muted-foreground">{evt.path}</div> : null}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Route className="h-5 w-5" />
-                Top paths (recent)
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {pathBreakdown.length === 0 ? (
-                <div className="text-sm text-muted-foreground">No events yet.</div>
-              ) : (
-                <div className="space-y-2">
-                  {pathBreakdown.map(([p, count]) => (
-                    <div key={p} className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium truncate">{p}</div>
-                      <Badge variant="secondary">{count}</Badge>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+        )}
       </div>
     </div>
   )

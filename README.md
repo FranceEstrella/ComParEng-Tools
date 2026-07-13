@@ -31,3 +31,17 @@ Production deployments should configure a shared Redis-compatible REST store so 
 - `ANALYTICS_KEY` - required in production to access the analytics page and reset endpoint
 
 Without a distributed store, production API requests fail closed with `503` rather than silently falling back to per-instance limits. `RATE_LIMIT_MEMORY_FALLBACK=true` is available only as an explicit temporary emergency fallback and should not be used for normal production traffic.
+
+## Analytics behavior
+
+Analytics events are tracked separately from API protection and are written through the same Upstash Redis configuration when it is available.
+
+- Client-side analytics events are batched before they are sent to `/api/analytics`.
+- The analytics ingest route accepts either a single event or a batch of events.
+- If Redis is configured, analytics snapshots and writes are shared through Redis; otherwise they fall back to per-instance in-memory storage.
+- The analytics admin page keeps the access key only in this browser tab’s `sessionStorage`.
+- On refresh, the page restores the saved key before it fetches analytics so a valid key does not flash an unauthorized state.
+- The access indicator now shows `not set`, `saved`, `checking`, `connected`, or `locked` so it is clear whether the key is only stored locally or has actually been accepted by the server.
+- The analytics page stops polling if the server returns `429` or `503`.
+- The analytics GET path returns `401` for missing or invalid keys instead of rate-limiting auth failures.
+- The analytics POST path is not throttled by route-level rate limiting, so ingestion failures now point to validation, auth, or storage issues instead of request volume.
