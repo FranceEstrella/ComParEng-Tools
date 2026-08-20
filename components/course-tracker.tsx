@@ -5820,6 +5820,43 @@ export default function CourseTracker() {
     return { updatedCourses, updatedTargetCount, prerequisiteUpdateCount }
   }, [])
 
+  const applyBulkFutureActivation = useCallback(
+    (prevCourses: Course[], targetIds: Set<string>) => {
+      const byId = new Map(prevCourses.map((course) => [course.id, course]))
+      const resolveCourse = (id: string) => byId.get(id)
+      const prereqOverrides: Record<string, CourseStatus> = {}
+
+      // Future -> Active should still ensure prerequisites become Passed.
+      targetIds.forEach((courseId) => {
+        const targetCourse = byId.get(courseId)
+        if (!targetCourse) return
+        const cascadeTree = buildCascadeNodes(targetCourse, "passed", resolveCourse, new Set([targetCourse.id]))
+        Object.assign(prereqOverrides, flattenCascadeOverrides(cascadeTree))
+      })
+
+      let updatedTargetCount = 0
+      let prerequisiteUpdateCount = 0
+
+      const updatedCourses = prevCourses.map((course) => {
+        if (targetIds.has(course.id) && course.status === "pending") {
+          updatedTargetCount += 1
+          return { ...course, status: "active" as CourseStatus }
+        }
+
+        const overrideStatus = prereqOverrides[course.id]
+        if (overrideStatus && course.status !== overrideStatus) {
+          prerequisiteUpdateCount += 1
+          return { ...course, status: overrideStatus }
+        }
+
+        return course
+      })
+
+      return { updatedCourses, updatedTargetCount, prerequisiteUpdateCount }
+    },
+    [],
+  )
+
   const getCoursesMarkedPassed = useCallback((
     previousCourses: Course[],
     nextCourses: Course[],
@@ -6069,55 +6106,37 @@ export default function CourseTracker() {
     setNextCoursesConfirmState(null)
   }, [commitBulkStatusUpdate, nextCoursesConfirmState])
 
+  const markFutureCoursesAsActive = useCallback(
+    (targetCourses: Course[], scopeLabel: string) => {
+      if (filterStatus !== "future" || targetCourses.length === 0) return
+
+      const targetIds = new Set(targetCourses.map((course) => course.id))
+      const result = applyBulkFutureActivation(courses, targetIds)
+      const nextMessage =
+        result.prerequisiteUpdateCount > 0
+          ? `Marked ${targetCourses.length} ${scopeLabel} course(s) as active and updated ${result.prerequisiteUpdateCount} prerequisite(s) to passed`
+          : `Marked ${targetCourses.length} ${scopeLabel} course(s) as active`
+
+      if (result.prerequisiteUpdateCount > 0) {
+        const passedCourses = getCoursesMarkedPassed(courses, result.updatedCourses)
+        setBulkPrereqConfirmState({
+          title: "Confirm prerequisite updates",
+          description: `This action will automatically mark ${result.prerequisiteUpdateCount} prerequisite course(s) as Passed before marking selected ${scopeLabel} courses as Active.`,
+          applyLabel: "Proceed with updates",
+          updatedCourses: result.updatedCourses,
+          successMessage: nextMessage,
+          passedCourses,
+        })
+      } else {
+        commitBulkStatusUpdate(result.updatedCourses, nextMessage)
+      }
+    },
+    [applyBulkFutureActivation, commitBulkStatusUpdate, courses, filterStatus, getCoursesMarkedPassed],
+  )
+
   const markVisibleFutureAsActive = useCallback(() => {
-    if (filterStatus !== "future" || futureVisibleCourseIds.length === 0) return
-    const targetIds = new Set(futureVisibleCourseIds)
-    const byId = new Map(courses.map((course) => [course.id, course]))
-    const resolveCourse = (id: string) => byId.get(id)
-    const prereqOverrides: Record<string, CourseStatus> = {}
-
-    // Future -> Active should still ensure prerequisites become Passed.
-    targetIds.forEach((courseId) => {
-      const targetCourse = byId.get(courseId)
-      if (!targetCourse) return
-      const cascadeTree = buildCascadeNodes(targetCourse, "passed", resolveCourse, new Set([targetCourse.id]))
-      Object.assign(prereqOverrides, flattenCascadeOverrides(cascadeTree))
-    })
-
-    const prerequisiteUpdates = Object.keys(prereqOverrides).length
-
-    const updatedCourses = courses.map((course) => {
-      if (targetIds.has(course.id) && course.status === "pending") {
-        return { ...course, status: "active" as CourseStatus }
-      }
-
-      const overrideStatus = prereqOverrides[course.id]
-      if (overrideStatus && course.status !== overrideStatus) {
-        return { ...course, status: overrideStatus }
-      }
-
-      return course
-    })
-
-    const nextMessage =
-      prerequisiteUpdates > 0
-        ? `Marked ${futureVisibleCourseIds.length} future course(s) as active and updated ${prerequisiteUpdates} prerequisite(s) to passed`
-        : `Marked ${futureVisibleCourseIds.length} future course(s) as active`
-
-    if (prerequisiteUpdates > 0) {
-      const passedCourses = getCoursesMarkedPassed(courses, updatedCourses)
-      setBulkPrereqConfirmState({
-        title: "Confirm prerequisite updates",
-        description: `This action will automatically mark ${prerequisiteUpdates} prerequisite course(s) as Passed before marking selected future courses as Active.`,
-        applyLabel: "Proceed with updates",
-        updatedCourses,
-        successMessage: nextMessage,
-        passedCourses,
-      })
-    } else {
-      commitBulkStatusUpdate(updatedCourses, nextMessage)
-    }
-  }, [filterStatus, futureVisibleCourseIds, courses, commitBulkStatusUpdate, getCoursesMarkedPassed])
+    markFutureCoursesAsActive(courses.filter((course) => canTakeNext(course)), "future")
+  }, [courses, markFutureCoursesAsActive])
 
 
 
@@ -7943,6 +7962,7 @@ export default function CourseTracker() {
                     const yearNum = Number.parseInt(year, 10)
                     const yearProgress = progressByYear[yearNum]
                     const allPassed = areAllCoursesPassed(yearNum)
+                    const yearVisibleCourses = Object.values(terms).flat()
 
                     const makeTermKey = (term: string) => `${yearNum}::${term}`
 
@@ -7953,30 +7973,53 @@ export default function CourseTracker() {
                         onOpenChange={() => toggleYear(yearNum)}
                         className="border dark:border-gray-700 rounded-lg overflow-hidden shadow-md bg-white dark:bg-gray-800"
                       >
-                        <CollapsibleTrigger className="flex justify-between items-center w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
-                          <div className="flex items-center gap-2">
-                            <h2 className="text-lg font-semibold">Year {year}</h2>
-                            <div className="text-sm text-gray-500 dark:text-gray-400">
-                              ({yearProgress.passed}/{yearProgress.total} courses - {yearProgress.percentage}%)
-                            </div>
-                          </div>
+                        <div className="flex items-center justify-between gap-3 w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                          <CollapsibleTrigger asChild>
+                            <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                              <h2 className="text-lg font-semibold">Year {year}</h2>
+                              <div className="text-sm text-gray-500 dark:text-gray-400">
+                                ({yearProgress.passed}/{yearProgress.total} courses - {yearProgress.percentage}%)
+                              </div>
+                            </button>
+                          </CollapsibleTrigger>
                           <div className="flex items-center gap-2">
                             <Button
-                              asChild={true}
+                              type="button"
                               variant="outline"
                               size="sm"
                               className="text-xs h-7 px-2 text-green-600 border-green-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 dark:border-green-800 dark:hover:bg-red-900/30 dark:hover:border-red-800 dark:hover:text-red-400 transition-colors bg-transparent"
                               onClick={(e) => markYearAsPassed(yearNum, e)}
                             >
-                              <span>
-                                {allPassed
-                                  ? "Unmark All"
-                                  : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.status !== "passed").length})`}
-                              </span>
+                              {allPassed
+                                ? "Unmark All"
+                                : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.status !== "passed").length})`}
                             </Button>
-                            {Boolean(openYears[yearNum]) ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+                            {filterStatus === "future" && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="text-xs h-7 px-2 text-blue-600 border-blue-200 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 dark:border-blue-800 dark:hover:bg-blue-950/40 dark:hover:border-blue-700 dark:hover:text-blue-300 transition-colors bg-transparent"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  markFutureCoursesAsActive(yearVisibleCourses, `Year ${yearNum}`)
+                                }}
+                              >
+                                Mark All Future as Active ({yearVisibleCourses.length})
+                              </Button>
+                            )}
+                            <CollapsibleTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-muted-foreground"
+                                aria-label={`Toggle Year ${year}`}
+                              >
+                                {Boolean(openYears[yearNum]) ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+                              </Button>
+                            </CollapsibleTrigger>
                           </div>
-                        </CollapsibleTrigger>
+                        </div>
                         <CollapsibleContent className="overflow-hidden data-[state=open]:animate-collapsible-down data-[state=closed]:animate-collapsible-up">
                           <div className="p-4 space-y-4">
                           <div className="mb-4">
@@ -8038,6 +8081,20 @@ export default function CourseTracker() {
                                       ? "Unmark All"
                                       : `Mark All as Passed (${courses.filter((c) => c.year === yearNum && c.term === term && c.status !== "passed").length})`}
                                   </Button>
+                                  {filterStatus === "future" && (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="text-xs h-7 px-2 text-blue-600 border-blue-200 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 dark:border-blue-800 dark:hover:bg-blue-950/40 dark:hover:border-blue-700 dark:hover:text-blue-300 transition-colors bg-transparent"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        markFutureCoursesAsActive(termCourses, `${term} in Year ${yearNum}`)
+                                      }}
+                                    >
+                                      Mark All Future as Active ({termCourses.length})
+                                    </Button>
+                                  )}
                                   <CollapsibleTrigger asChild>
                                     <Button
                                       variant="ghost"
