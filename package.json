@@ -36,6 +36,7 @@
     "@radix-ui/react-tooltip": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "@vercel/analytics": "^2.0.1",
     "canvas": "latest",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",

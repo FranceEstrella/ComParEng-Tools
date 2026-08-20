@@ -3,6 +3,7 @@ import type { Metadata } from "next"
 import type { Viewport } from "next"
 import { Inter } from "next/font/google"
 import { headers } from "next/headers"
+import { Analytics } from "@vercel/analytics/next"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import NavbarWrapper from "@/components/navbar-wrapper"
@@ -94,6 +95,7 @@ export default async function RootLayout({
           <NavigationOverlay />
           <ReportIssueButton />
         </ThemeProvider>
+        <Analytics />
       </body>
     </html>
   )
