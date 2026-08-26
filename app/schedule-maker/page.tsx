@@ -4876,37 +4876,40 @@ export default function ScheduleMaker() {
     const dtStamp = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z"
 
     const events = selectedCourses.flatMap((course, courseIndex) => {
-      if (course.parsedDays.length === 0) {
-        return []
-      }
-
-      const dayInfo = course.parsedDays.map(daysToWeekday)
-
+      const meetings = course.meetings && course.meetings.length > 0
+        ? course.meetings
+        : buildMeetingsFromSection(course)
       const customizationKey = `${course.courseCode}-${course.section}`
       const summary = getSelectedCourseDisplayTitle(course, customizations[customizationKey], getDisplayCode)
-      const description = `Section: ${course.section}\nRoom: ${course.displayRoom}`
 
-      return dayInfo.map((day, dayIndex) => {
-        const eventDate = getNextDateForWeekday(baseStartDate, day.weekday)
-        const uid = `${course.courseCode}-${course.section}-${day.code}-${courseIndex}-${dayIndex}@compareng-tools`
+      return meetings.flatMap((meeting, meetingIndex) => {
+        if (meeting.parsedDays.length === 0) return []
 
-        return [
-          "BEGIN:VEVENT",
-          `UID:${uid}`,
-          `DTSTAMP:${dtStamp}`,
-          `SUMMARY:${escapeText(summary)}`,
-          `DESCRIPTION:${escapeText(description)}`,
-          `LOCATION:${escapeText(course.displayRoom || "TBA")}`,
-          `DTSTART;TZID=${timezone}:${formatDateTime(eventDate, course.timeStart)}`,
-          `DTEND;TZID=${timezone}:${formatDateTime(eventDate, course.timeEnd)}`,
-          `RRULE:FREQ=WEEKLY;BYDAY=${day.code};COUNT=15`,
-          "BEGIN:VALARM",
-          "TRIGGER:-PT1H",
-          "ACTION:DISPLAY",
-          "DESCRIPTION:Reminder",
-          "END:VALARM",
-          "END:VEVENT",
-        ].join("\r\n")
+        const dayInfo = meeting.parsedDays.map(daysToWeekday)
+        const description = `Section: ${course.section}\nRoom: ${meeting.displayRoom}`
+
+        return dayInfo.map((day, dayIndex) => {
+          const eventDate = getNextDateForWeekday(baseStartDate, day.weekday)
+          const uid = `${course.courseCode}-${course.section}-${meetingIndex}-${day.code}-${courseIndex}-${dayIndex}@compareng-tools`
+
+          return [
+            "BEGIN:VEVENT",
+            `UID:${uid}`,
+            `DTSTAMP:${dtStamp}`,
+            `SUMMARY:${escapeText(summary)}`,
+            `DESCRIPTION:${escapeText(description)}`,
+            `LOCATION:${escapeText(meeting.displayRoom || "TBA")}`,
+            `DTSTART;TZID=${timezone}:${formatDateTime(eventDate, meeting.timeStart)}`,
+            `DTEND;TZID=${timezone}:${formatDateTime(eventDate, meeting.timeEnd)}`,
+            `RRULE:FREQ=WEEKLY;BYDAY=${day.code};COUNT=15`,
+            "BEGIN:VALARM",
+            "TRIGGER:-PT1H",
+            "ACTION:DISPLAY",
+            "DESCRIPTION:Reminder",
+            "END:VALARM",
+            "END:VEVENT",
+          ].join("\r\n")
+        })
       })
     })
 
@@ -8439,8 +8442,8 @@ const renderScheduleView = () => {
                                       </SelectTrigger>
                                       <SelectContent className="text-[13px]">
                                         <SelectItem value="all">Section</SelectItem>
-                                        {sectionOptions.map((section) => (
-                                          <SelectItem key={section} value={section}>
+                                        {sectionOptions.map((section, index) => (
+                                          <SelectItem key={`section-filter-${section}-${index}`} value={section}>
                                             {section}
                                           </SelectItem>
                                         ))}
