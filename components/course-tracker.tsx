@@ -6944,7 +6944,7 @@ export default function CourseTracker() {
               type="button"
               variant="outline"
               className={cn(
-                "h-9 gap-2 px-2 sm:px-3",
+                "h-9 gap-2 px-2 sm:px-4",
                 hasUnmapped &&
                   "border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-500/80 dark:text-red-300 dark:hover:bg-red-900/25 animate-[pulse_2.6s_ease-in-out_infinite]",
               )}
