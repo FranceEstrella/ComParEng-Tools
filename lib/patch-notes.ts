@@ -15,6 +15,39 @@ export interface PatchNote {
 
 export const patchNotes: PatchNote[] = [
   {
+    version: "1.52",
+    date: "September 4, 2026",
+    title: "Onboarding and Course Tracker fixes (silent)",
+    silent: true,
+    changes: [
+      {
+        type: "new",
+        description:
+          "Added guided onboarding profile setup for display name, program, year level, and avatar color, with a live profile card preview and support for custom programs and expanded year ranges.",
+      },
+      {
+        type: "improved",
+        description:
+          "Improved onboarding grade and course-offering setup with clearer SOLAR guidance, delayed transient import errors, and direct links to the full import summary in Course Tracker.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Fixed onboarding-imported grades being overwritten before Course Tracker finished hydrating saved courses, and synchronized onboarding profile changes with the Profile Overview.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Fixed reward overlay interactions dismissing dialogs behind them and deferred onboarding import summaries until reward animations are dismissed.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Fixed Course Tracker floating progress visibility, duplicate page scrolling, bottom whitespace, and mobile header controls overflowing into the theme toggle.",
+      },
+    ],
+  },
+  {
     version: "1.51",
     date: "May 9, 2026",
     title: "May stability, freshness & API hardening (silent)",
