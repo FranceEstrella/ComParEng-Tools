@@ -2157,7 +2157,7 @@ const OverallProgress = ({
       className={cn(
         "rounded-lg border border-gray-100 bg-white p-4 shadow-md transition-all duration-300 ease-in-out dark:border-gray-700 dark:bg-gray-800",
         isFloating &&
-          "border-blue-100/80 bg-white/95 shadow-xl backdrop-blur supports-[backdrop-filter]:bg-white/90 dark:border-slate-600 dark:bg-gray-900/95 dark:supports-[backdrop-filter]:bg-gray-900/90",
+          "border-blue-100/70 bg-white/[0.68] shadow-xl backdrop-blur-md supports-[backdrop-filter]:bg-white/[0.58] dark:border-slate-600/80 dark:bg-gray-900/[0.68] dark:supports-[backdrop-filter]:bg-gray-900/[0.58]",
       )}
     >
       <div className="flex justify-between items-center mb-4">
@@ -2777,6 +2777,7 @@ export default function CourseTracker() {
     unmatched: number
     runId: string
   } | null>(null)
+  const [gradeImportSummaryPendingAfterReward, setGradeImportSummaryPendingAfterReward] = useState(false)
   const [gradeImportBaseStartYear, setGradeImportBaseStartYear] = useState<number | null>(null)
   const [gradeImportExtractedAttempts, setGradeImportExtractedAttempts] = useState<ImportedGradeAttempt[]>([])
   const [unmatchedGradeGroups, setUnmatchedGradeGroups] = useState<UnmatchedGradeGroup[]>([])
@@ -3687,7 +3688,7 @@ export default function CourseTracker() {
   )
 
   const handleImportedGradePayload = useCallback(
-    (payload: ImportedGradePayload) => {
+    (payload: ImportedGradePayload, options?: { deferSummaryUntilRewardDismissed?: boolean }) => {
       const attempts = Array.isArray(payload?.attempts) ? payload.attempts : []
       if (!attempts.length) {
         setAutoImportRewardDeferred(false)
@@ -3763,7 +3764,11 @@ export default function CourseTracker() {
         unmatched: unmatchedGroups.length,
         runId: payload.runId,
       })
-      setGradeImportSummaryOpen(true)
+      if (options?.deferSummaryUntilRewardDismissed) {
+        setGradeImportSummaryPendingAfterReward(true)
+      } else {
+        setGradeImportSummaryOpen(true)
+      }
 
       if (unmatchedGroups.length > 0) {
         setSaveMessage(`Imported ${matchedCount} attempt(s). ${unmatchedGroups.length} course code(s) need manual mapping.`)
@@ -3958,6 +3963,7 @@ export default function CourseTracker() {
   useEffect(() => {
     if (typeof window === "undefined") return
     if (onboardingGradeHandoffCheckedRef.current) return
+    if (!coursesHydrated) return
 
     let handoff: { requestedAt: number } | null = null
     try {
@@ -4010,7 +4016,7 @@ export default function CourseTracker() {
         setGradeImportError(null)
         setTrackerSetupDialogOpen(false)
         setNextStepsDialogOpen(false)
-        setGradeImportSummaryOpen(true)
+        setGradeImportSummaryPendingAfterReward(true)
         window.localStorage.setItem("courseTracker.setupSeen", "true")
         window.localStorage.setItem("courseTracker.nextStepsSeen", "true")
         setHasSeenSetupDialog(true)
@@ -4027,7 +4033,7 @@ export default function CourseTracker() {
           setGradeImportFetchedSuccess(false)
           setTrackerSetupDialogOpen(false)
           setNextStepsDialogOpen(false)
-          handleImportedGradePayload(localPayload)
+          handleImportedGradePayload(localPayload, { deferSummaryUntilRewardDismissed: true })
           window.localStorage.setItem("courseTracker.setupSeen", "true")
           window.localStorage.setItem("courseTracker.nextStepsSeen", "true")
           setHasSeenSetupDialog(true)
@@ -4041,7 +4047,7 @@ export default function CourseTracker() {
     }
 
     void tryHydrateFromOnboardingImport()
-  }, [gradeImportSummary, handleImportedGradePayload])
+  }, [coursesHydrated, gradeImportSummary, handleImportedGradePayload])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -4053,7 +4059,7 @@ export default function CourseTracker() {
       setGradeImportError(null)
       setTrackerSetupDialogOpen(false)
       setNextStepsDialogOpen(false)
-      setGradeImportSummaryOpen(true)
+      setGradeImportSummaryPendingAfterReward(true)
       window.localStorage.setItem("courseTracker.setupSeen", "true")
       window.localStorage.setItem("courseTracker.nextStepsSeen", "true")
       setHasSeenSetupDialog(true)
@@ -4539,10 +4545,11 @@ export default function CourseTracker() {
   }, [])
 
   useEffect(() => {
+    const progressStickyTriggerOffset = 96
     const handleScroll = () => {
       if (!progressCardRef.current) return
       const { bottom } = progressCardRef.current.getBoundingClientRect()
-      setIsProgressSticky(bottom <= 0)
+      setIsProgressSticky(bottom <= progressStickyTriggerOffset)
     }
 
     handleScroll()
@@ -4815,6 +4822,18 @@ export default function CourseTracker() {
     setLevelStageIndex(0)
     setRewardStage("new")
   }, [rewardQueue, rewardStepIndex])
+
+  useEffect(() => {
+    if (!gradeImportSummaryPendingAfterReward || gradeImportSummaryOpen) return
+    if (rewardOverlay?.open) return
+
+    const timer = window.setTimeout(() => {
+      setGradeImportSummaryPendingAfterReward(false)
+      setGradeImportSummaryOpen(true)
+    }, 50)
+
+    return () => window.clearTimeout(timer)
+  }, [gradeImportSummaryOpen, gradeImportSummaryPendingAfterReward, rewardOverlay?.open])
 
   const handleRewardOverlayBackdropClick = useCallback(() => {
     dismissRewardOverlay()
@@ -6659,6 +6678,7 @@ export default function CourseTracker() {
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.25, ease: "easeOut" }}
+                  onPointerDownCapture={(event) => event.stopPropagation()}
                   onClick={handleRewardOverlayBackdropClick}
                 >
                   <motion.div
@@ -6899,7 +6919,7 @@ export default function CourseTracker() {
             </AnimatePresence>,
             document.body,
           )}
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+        <div className="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
               <div className="hidden md:block mb-6 mt-4">
                 <QuickNavigation />
               </div>
@@ -6924,15 +6944,17 @@ export default function CourseTracker() {
               type="button"
               variant="outline"
               className={cn(
-                "h-9 gap-2",
+                "h-9 gap-2 px-2 sm:px-3",
                 hasUnmapped &&
                   "border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-500/80 dark:text-red-300 dark:hover:bg-red-900/25 animate-[pulse_2.6s_ease-in-out_infinite]",
               )}
+              aria-label={importButtonLabel}
+              title={importButtonLabel}
               onClick={gradeImportSummary && !gradeImportRunning ? openPreviousGradeImportSummary : startAutoGradeImport}
               disabled={gradeImportRunning}
             >
               <RefreshCw className={cn("h-4 w-4", gradeImportRunning && "animate-spin")} />
-              {importButtonLabel}
+              <span className="hidden sm:inline">{importButtonLabel}</span>
             </Button>
               )
             })()}
@@ -7904,32 +7926,37 @@ export default function CourseTracker() {
           />
         </div>
 
-        <AnimatePresence>
-          {isProgressSticky && (
-            <motion.div
-              key="floating-overall-progress"
-              className="pointer-events-none fixed inset-x-0 top-0 z-[220]"
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.2, ease: "easeOut" }}
-            >
-              <div className="mx-auto w-full max-w-[95rem] px-4 pt-2 md:px-6 lg:px-8">
-                <div className="pointer-events-auto">
-                  <OverallProgress
-                    overallProgress={overallProgress}
-                    showDetailedProgress={showDetailedProgress}
-                    setShowDetailedProgress={setShowDetailedProgress}
-                    progressByYear={progressByYear}
-                    progressByTerm={progressByTerm}
-                    courses={courses}
-                    isFloating={true}
-                  />
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {mounted && typeof document !== "undefined"
+          ? createPortal(
+              <AnimatePresence>
+                {isProgressSticky && (
+                  <motion.div
+                    key="floating-overall-progress"
+                    className="pointer-events-none fixed inset-x-0 top-[48px] z-[19999]"
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.2, ease: "easeOut" }}
+                  >
+                    <div className="mx-auto w-full max-w-[95rem] px-4 pt-2 md:px-6 lg:px-8">
+                      <div className="pointer-events-auto">
+                        <OverallProgress
+                          overallProgress={overallProgress}
+                          showDetailedProgress={showDetailedProgress}
+                          setShowDetailedProgress={setShowDetailedProgress}
+                          progressByYear={progressByYear}
+                          progressByTerm={progressByTerm}
+                          courses={courses}
+                          isFloating={true}
+                        />
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>,
+              document.body,
+            )
+          : null}
 
         <motion.div layout transition={{ layout: { duration: 0.25, ease: "easeInOut" } }}>
           {/* Filter and Search Controls */}
@@ -8760,7 +8787,7 @@ export default function CourseTracker() {
                   onClick={startAutoGradeImport}
                 >
                   <RefreshCw className={cn("h-4 w-4", gradeImportRunning && "animate-spin")} />
-                  Auto Import Grades
+                  {gradeImportRunning ? "Importing Grades..." : gradeImportSummary ? "Rerun Auto Import Grades" : "Auto Import Grades"}
                 </Button>
               </div>
               <Button className="w-full sm:w-auto sm:self-end" onClick={handleSetupSubmit}>

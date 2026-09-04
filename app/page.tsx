@@ -561,7 +561,11 @@ export default function Home() {
     syncProfileFromStorage()
     setProfileHydrated(true)
     window.addEventListener("storage", handleProfileStorage)
-    return () => window.removeEventListener("storage", handleProfileStorage)
+    window.addEventListener("compareng:profile-updated", syncProfileFromStorage)
+    return () => {
+      window.removeEventListener("storage", handleProfileStorage)
+      window.removeEventListener("compareng:profile-updated", syncProfileFromStorage)
+    }
   }, [handleProfileStorage, syncProfileFromStorage])
 
   useEffect(() => {
@@ -876,6 +880,7 @@ export default function Home() {
     setProfileCard(next)
     profileBaselineRef.current = next
     setProfileDirty(false)
+    window.dispatchEvent(new CustomEvent("compareng:profile-updated"))
   }, [profileDraft])
 
   // Expose save handler to other UI (e.g., navbar/bottom-nav back/save buttons)

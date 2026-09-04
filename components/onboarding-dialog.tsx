@@ -10,6 +10,8 @@ import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { parseCurriculumHtml } from "@/lib/curriculum-import"
 import { registerExternalCourses } from "@/lib/course-data"
@@ -65,6 +67,7 @@ type SlideId =
   | "academic-planner"
   | "reward-system"
   | "profile-summary"
+  | "profile-setup"
   | "extension"
   | "ready-setup"
   | "live-data"
@@ -100,10 +103,28 @@ type OnboardingImportedGradePayload = {
 }
 
 const CREDIT_LIMITS_STORAGE_KEY = "planner.creditLimits"
+const PROFILE_STORAGE_KEY = "courseTracker.profile.v1"
 const ONBOARDING_GRADE_IMPORT_HANDOFF_KEY = "compareng.onboarding.gradeImportHandoff.v1"
 const COMPLETION_CHECK_ANIMATION_MS = 1100
 const WELCOME_ICON_SIZE_PX =180
 const WELCOME_ICON_WRAPPER_SIZE_PX = 180
+const PROFILE_PROGRAM_OPTIONS = [
+  "Computer Engineering",
+  "Electrical Engineering",
+  "Electronics Engineering",
+  "Mechanical Engineering",
+  "Civil Engineering",
+  "Computer Science",
+  "Information Technology",
+  "Multimedia & Arts",
+]
+const PROFILE_COLOR_OPTIONS = [
+  { id: "midnight", label: "Midnight Pulse", value: "linear-gradient(135deg, #0f172a 0%, #312e81 50%, #7c3aed 100%)" },
+  { id: "ember", label: "Ember Fade", value: "linear-gradient(135deg, #2d1b69 0%, #7c2d12 45%, #f97316 100%)" },
+  { id: "aurora", label: "Aurora Mint", value: "linear-gradient(135deg, #0f172a 0%, #0ea5e9 45%, #22c55e 100%)" },
+  { id: "rose", label: "Rose Velvet", value: "linear-gradient(135deg, #2d1b69 0%, #be185d 45%, #ec4899 100%)" },
+  { id: "slate", label: "Slate Frost", value: "linear-gradient(135deg, #0f172a 0%, #1f2937 45%, #9ca3af 100%)" },
+]
 
 const slideAccentClasses: Partial<Record<SlideId, string>> = {
   "course-tracker": "text-blue-600 dark:text-blue-300",
@@ -111,6 +132,7 @@ const slideAccentClasses: Partial<Record<SlideId, string>> = {
   "academic-planner": "text-emerald-600 dark:text-emerald-300",
   "reward-system": "text-amber-400",
   "profile-summary": "text-violet-600 dark:text-violet-300",
+  "profile-setup": "text-violet-600 dark:text-violet-300",
   "ready-setup": "text-cyan-600 dark:text-cyan-300",
 }
 
@@ -166,6 +188,13 @@ const slides: Slide[] = [
     title: "See your academic summary",
     description: "Open Profile to view completion, rank progress, graduation estimate, and earned rewards in one place.",
     icon: <Sparkles className="h-10 w-10 text-violet-600 animate-pulse" />,
+  },
+  {
+    id: "profile-setup",
+    label: "Profile setup",
+    title: "Make your profile yours",
+    description: "Set the identity shown across your profile, rewards, and academic workspace.",
+    icon: <Palette className="h-10 w-10 text-violet-600 animate-pulse" />,
   },
   {
     id: "extension",
@@ -259,6 +288,15 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const [onboardingGradeImportMessage, setOnboardingGradeImportMessage] = useState<string | null>(null)
   const [onboardingOfferingsStatus, setOnboardingOfferingsStatus] = useState<"idle" | "running" | "success" | "completed" | "error">("idle")
   const [onboardingOfferingsMessage, setOnboardingOfferingsMessage] = useState<string | null>(null)
+  const [offeringsGuidanceOpen, setOfferingsGuidanceOpen] = useState(false)
+  const [profileSetup, setProfileSetup] = useState({
+    name: "",
+    program: "",
+    year: 1,
+    cardColor: PROFILE_COLOR_OPTIONS[0].value,
+  })
+  const [profileProgramCustom, setProfileProgramCustom] = useState(false)
+  const [profileYearOptionMax, setProfileYearOptionMax] = useState(4)
   const [onboardingGradeImportStartedAt, setOnboardingGradeImportStartedAt] = useState(0)
   const [onboardingOfferingsStartedAt, setOnboardingOfferingsStartedAt] = useState(0)
   const [showGradeCompletionCheck, setShowGradeCompletionCheck] = useState(false)
@@ -398,8 +436,42 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
     syncCreditLimitsFromStorage()
   }, [syncCreditLimitsFromStorage])
 
+  const syncProfileSetupFromStorage = useCallback(() => {
+    try {
+      const stored = window.localStorage.getItem(PROFILE_STORAGE_KEY)
+      if (!stored) return
+      const parsed = JSON.parse(stored)
+      setProfileSetup((prev) => ({
+        ...prev,
+        name: typeof parsed?.name === "string" ? parsed.name : prev.name,
+        program: typeof parsed?.program === "string" ? parsed.program : prev.program,
+        year: Number.isFinite(parsed?.year) ? Math.max(1, Math.floor(parsed.year)) : prev.year,
+        cardColor: typeof parsed?.cardColor === "string" ? parsed.cardColor : prev.cardColor,
+      }))
+      setProfileProgramCustom(!PROFILE_PROGRAM_OPTIONS.includes(parsed?.program))
+      if (Number.isFinite(parsed?.year) && parsed.year > 4) {
+        setProfileYearOptionMax(Math.ceil(parsed.year / 5) * 5)
+      }
+    } catch {
+      // Ignore invalid saved profile data.
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    syncProfileSetupFromStorage()
+    const handleProfileUpdate = () => syncProfileSetupFromStorage()
+    window.addEventListener("storage", handleProfileUpdate)
+    window.addEventListener("compareng:profile-updated", handleProfileUpdate)
+    return () => {
+      window.removeEventListener("storage", handleProfileUpdate)
+      window.removeEventListener("compareng:profile-updated", handleProfileUpdate)
+    }
+  }, [syncProfileSetupFromStorage])
+
   useEffect(() => {
     if (open) {
+      syncProfileSetupFromStorage()
       clearSkipImportTimers()
       setCurrentIndex(0)
       setThemePreview("light")
@@ -418,6 +490,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       setOnboardingOfferingsStartedAt(0)
       setShowGradeCompletionCheck(false)
       setShowOfferingsCompletionCheck(false)
+      setProfileYearOptionMax((prev) => Math.max(4, prev))
       clearCompletionCheckTimers()
       readySetupAutoAdvanceTriggeredRef.current = false
       if (readySetupAutoAdvanceTimeoutRef.current) {
@@ -433,7 +506,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
         curriculumFileInputRef.current.value = ""
       }
     }
-  }, [clearCompletionCheckTimers, clearSkipImportTimers, open, syncCreditLimitsFromStorage])
+  }, [clearCompletionCheckTimers, clearSkipImportTimers, open, syncCreditLimitsFromStorage, syncProfileSetupFromStorage])
 
   useEffect(() => {
     return () => {
@@ -454,7 +527,16 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
   const isScheduleMakerSlide = activeSlide.id === "schedule-maker"
   const isRewardThemeSlide = activeSlide.id === "reward-system"
 
-  const nextDisabled = activeSlide.id === "cpe-check" && (cpeAnswer === null || needsCustomUpload)
+  useEffect(() => {
+    if (activeSlide.id !== "cpe-check") return
+    if (profileSetup.program.trim().toLowerCase() === "computer engineering") {
+      setCpeAnswer("yes")
+    }
+  }, [activeSlide.id, profileSetup.program])
+
+  const nextDisabled =
+    (activeSlide.id === "cpe-check" && (cpeAnswer === null || needsCustomUpload)) ||
+    (activeSlide.id === "profile-setup" && (!profileSetup.name.trim() || !profileSetup.program.trim()))
   const isLastSlide = currentIndex === slides.length - 1
 
   const finishOnboarding = (options?: OnboardingCompletionOptions) => {
@@ -482,6 +564,16 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
     if (activeSlide.id === "theme") {
       setGlobalTheme(themePreview)
     }
+    if (activeSlide.id === "profile-setup") {
+      const name = profileSetup.name.trim()
+      const program = profileSetup.program.trim()
+      if (!name || !program) return
+      window.localStorage.setItem(
+        PROFILE_STORAGE_KEY,
+        JSON.stringify({ ...profileSetup, name, program, expectedGraduation: null }),
+      )
+      window.dispatchEvent(new CustomEvent("compareng:profile-updated"))
+    }
     if (isLastSlide) {
       finishOnboarding({ source: "finish" })
       return
@@ -496,7 +588,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       promptExtensionConfirmation("skip")
       return
     }
-    const generalSkipSlides: SlideId[] = ["welcome", "course-tracker", "schedule-maker", "academic-planner", "reward-system", "profile-summary", "ready-setup", "live-data", "theme"]
+    const generalSkipSlides: SlideId[] = ["welcome", "course-tracker", "schedule-maker", "academic-planner", "reward-system", "profile-summary", "profile-setup", "ready-setup", "live-data", "theme"]
     if (generalSkipSlides.includes(activeSlide.id)) {
       setGeneralSkipPromptOpen(true)
       return
@@ -598,6 +690,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       if (stoppedAt) {
         summaryParts.push(`Latest term scanned: ${stoppedAt}.`)
       }
+      summaryParts.push("Open Course Tracker to view the full import summary.")
 
       markGradeExtractionCompleted(summaryParts.join(" "))
 
@@ -695,13 +788,13 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
     return null
   }, [])
 
-  const handleOpenCourseOfferings = () => {
+  const handleLaunchCourseOfferings = () => {
     if (typeof window === "undefined") return
     const startedAt = Date.now()
     setOnboardingOfferingsStartedAt(startedAt)
 
     const waitForCourseOfferingsExtractionCompletion = async (startedAtMs: number) => {
-      for (let attempt = 0; attempt < 45; attempt += 1) {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
         const payload = readLatestOnboardingCourseOfferingsPayload()
         const extractedAt = Number(payload?.extractedAt || 0)
         const rows = Array.isArray(payload?.rows) ? payload?.rows : []
@@ -728,6 +821,10 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
     }
     setOnboardingOfferingsStatus("error")
     setOnboardingOfferingsMessage("We couldn't open Course Offerings. Allow pop-ups for this site, then try again.")
+  }
+
+  const handleOpenCourseOfferings = () => {
+    setOfferingsGuidanceOpen(true)
   }
 
   const handleOnboardingAutoGradeImport = async () => {
@@ -774,11 +871,12 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
           for (let attempt = 0; attempt < 45; attempt += 1) {
             const localPayload = readLatestOnboardingImportedGradePayload()
             if (localPayload && finalizeOnboardingGradeImportFromPayload(localPayload, startedAtMs)) {
-              return
+              return true
             }
 
             await new Promise((resolve) => window.setTimeout(resolve, 2000))
           }
+          return false
         }
 
     if (gradesPortalTab && typeof gradesPortalTab.focus === "function") {
@@ -853,6 +951,10 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       }
 
       if (!response?.success) {
+        setOnboardingGradeImportMessage("The extension is still fetching your grades. We will keep waiting for up to a minute.")
+        const completed = await waitForGradeExtractionCompletion(startedAt)
+        if (completed) return
+
         setOnboardingGradeImportStatus("error")
         setOnboardingGradeImportMessage(formatGradeImportError(response?.message || "Failed to start grade extraction in extension."))
         try {
@@ -867,6 +969,10 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       setOnboardingGradeImportMessage("Grade auto-import started. Keep the Student Grades tab open while the extension extracts your records.")
       void waitForGradeExtractionCompletion(startedAt)
     } catch {
+      setOnboardingGradeImportMessage("The extension is still fetching your grades. We will keep waiting for up to a minute.")
+      const completed = await waitForGradeExtractionCompletion(startedAt)
+      if (completed) return
+
       setOnboardingGradeImportStatus("error")
       setOnboardingGradeImportMessage(formatGradeImportError("Failed to start grade extraction in extension."))
       try {
@@ -1027,7 +1133,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
       const accepted = Number(payload?.attempts?.length || 0)
       if (extractedAt >= onboardingGradeImportStartedAt && accepted > 0) {
         markGradeExtractionCompleted(
-          `Done extracting grades. Imported ${accepted} grade attempt${accepted === 1 ? "" : "s"}.`,
+          `Done extracting grades. Imported ${accepted} grade attempt${accepted === 1 ? "" : "s"}. Open Course Tracker to view the full import summary.`,
         )
       }
     }
@@ -1430,6 +1536,129 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
             <OnboardingRewardProfilePreview mode="profile" />
           </div>
         )
+      case "profile-setup":
+        return (
+          <div className="space-y-3">
+            <Card className="border-violet-200/70 bg-violet-50/50 dark:border-violet-400/20 dark:bg-violet-500/10">
+              <CardContent className="space-y-3 p-4">
+                <div
+                  className="rounded-2xl border border-white/20 p-4 text-white shadow-lg ring-1 ring-black/10"
+                  style={{ background: profileSetup.cardColor }}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-white/15 text-base font-semibold uppercase tracking-wide ring-2 ring-white/50 shadow-inner">
+                      {(profileSetup.name.trim() || "Your Name")
+                        .split(/\s+/)
+                        .map((part) => part[0])
+                        .join("")
+                        .slice(0, 2)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[10px] uppercase tracking-[0.2em] text-white/70">Profile preview</p>
+                      <p className="truncate text-lg font-semibold leading-tight">
+                        {profileSetup.name.trim() || "Your display name"}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-white/85">
+                        <span className="truncate">{profileSetup.program || "Your program"}</span>
+                        <span className="opacity-70">•</span>
+                        <span>Year {profileSetup.year}</span>
+                      </div>
+                    </div>
+                    <Sparkles className="h-5 w-5 shrink-0 text-white/80" />
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="onboarding-profile-name">Display name</Label>
+                    <Input
+                      id="onboarding-profile-name"
+                      value={profileSetup.name}
+                      onChange={(event) => setProfileSetup((prev) => ({ ...prev, name: event.target.value }))}
+                      placeholder="Your name"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Program</Label>
+                    <Select
+                      value={profileProgramCustom ? "custom" : profileSetup.program}
+                      onValueChange={(program) => {
+                        if (program === "custom") {
+                          setProfileProgramCustom(true)
+                          setProfileSetup((prev) => ({ ...prev, program: "" }))
+                          return
+                        }
+                        setProfileProgramCustom(false)
+                        setProfileSetup((prev) => ({ ...prev, program }))
+                      }}
+                    >
+                      <SelectTrigger className="bg-white dark:bg-slate-900">
+                        <SelectValue placeholder="Choose your program" />
+                      </SelectTrigger>
+                      <SelectContent className="z-[14000]" position="popper">
+                        {PROFILE_PROGRAM_OPTIONS.map((program) => (
+                          <SelectItem key={program} value={program}>{program}</SelectItem>
+                        ))}
+                        <SelectItem value="custom">Custom / Other</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {profileProgramCustom && (
+                      <Input
+                        value={profileSetup.program}
+                        onChange={(event) => setProfileSetup((prev) => ({ ...prev, program: event.target.value }))}
+                        placeholder="Enter your program"
+                        className="mt-2"
+                      />
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Year level</Label>
+                    <Select
+                      value={String(profileSetup.year)}
+                      onValueChange={(year) => {
+                        if (year === "extend") {
+                          setProfileYearOptionMax((prev) => prev + 5)
+                          setProfileSetup((prev) => ({ ...prev, year: prev.year > profileYearOptionMax ? prev.year : profileYearOptionMax + 1 }))
+                          return
+                        }
+                        setProfileSetup((prev) => ({ ...prev, year: Number(year) }))
+                      }}
+                    >
+                      <SelectTrigger className="bg-white dark:bg-slate-900">
+                        <SelectValue placeholder="Choose your year" />
+                      </SelectTrigger>
+                      <SelectContent className="z-[14000]" position="popper">
+                        {Array.from({ length: profileYearOptionMax }, (_, index) => index + 1).map((year) => (
+                          <SelectItem key={year} value={String(year)}>Year {year}</SelectItem>
+                        ))}
+                        <SelectItem value="extend">Year {profileYearOptionMax + 1}+</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Avatar color</Label>
+                    <div className="grid grid-cols-5 gap-2 pt-1">
+                      {PROFILE_COLOR_OPTIONS.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          aria-label={option.label}
+                          title={option.label}
+                          onClick={() => setProfileSetup((prev) => ({ ...prev, cardColor: option.value }))}
+                          className={cn(
+                            "h-9 rounded-md border-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500",
+                            profileSetup.cardColor === option.value ? "border-slate-900 ring-2 ring-violet-400 dark:border-white" : "border-white/70",
+                          )}
+                          style={{ background: option.value }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">Your profile details are saved in this browser and used across the app.</p>
+              </CardContent>
+            </Card>
+          </div>
+        )
       case "extension":
         return (
           <div className="space-y-3">
@@ -1515,7 +1744,7 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
                     onClick={handleOpenCourseOfferings}
                   >
                     <ExternalLink className="h-4 w-4" />
-                    Open Course Offerings
+                    {onboardingOfferingsStatus === "idle" ? "Open Course Offerings" : "Reopen Course Offerings Page"}
                   </Button>
                 </div>
                 {hasTriggeredOnboardingExtractor && (
@@ -1916,6 +2145,40 @@ export default function OnboardingDialog({ open, onOpenChange, onComplete, hasCo
               <Upload className="h-8 w-8 text-rose-600" />
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={offeringsGuidanceOpen} onOpenChange={setOfferingsGuidanceOpen}>
+        <DialogContent className="sm:max-w-md" onInteractOutside={(event) => event.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Before opening Course Offerings</DialogTitle>
+            <DialogDescription>
+              Have SOLAR ready so the extractor can load the sections you need.
+            </DialogDescription>
+          </DialogHeader>
+          <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
+            <li>Sign in to your SOLAR account first.</li>
+            <li>If you just signed in, open the Course Offerings page again.</li>
+            <li>Select the current or future term and school year you want the app to fetch.</li>
+          </ol>
+          <p className="text-xs text-muted-foreground">
+            If SOLAR redirects you to your student profile, sign in there and then reopen Course Offerings.
+          </p>
+          <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" onClick={() => setOfferingsGuidanceOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              className="gap-2"
+              onClick={() => {
+                setOfferingsGuidanceOpen(false)
+                handleLaunchCourseOfferings()
+              }}
+            >
+              <ExternalLink className="h-4 w-4" />
+              Open Course Offerings
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
